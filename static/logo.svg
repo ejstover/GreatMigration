@@ -1,0 +1,32 @@
+<!-- /static/logo.svg -->
+<svg width="240" height="56" viewBox="0 0 240 56" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="PortWeave">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#D40F7D"></stop>
+      <stop offset="1" stop-color="#0EA5E9"></stop>
+    </linearGradient>
+    <style>
+      .word { font: 600 20px/1.2 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; fill: #000000; }
+      .sub  { font: 400 14px/1.2 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; fill: #000000; opacity: .7; }
+    </style>
+  </defs>
+
+  <!-- Icon -->
+  <g transform="translate(6,6)">
+    <!-- 2x3 port tiles -->
+    <rect x="0" y="0" rx="6" width="16" height="16" fill="#ffffff" stroke="#D40F7D" stroke-width="2"></rect>
+    <rect x="24" y="0" rx="6" width="16" height="16" fill="#ffffff" stroke="#D40F7D" stroke-width="2"></rect>
+    <rect x="48" y="0" rx="6" width="16" height="16" fill="#ffffff" stroke="#D40F7D" stroke-width="2"></rect>
+    <rect x="0" y="24" rx="6" width="16" height="16" fill="#ffffff" stroke="#0EA5E9" stroke-width="2"></rect>
+    <rect x="24" y="24" rx="6" width="16" height="16" fill="#ffffff" stroke="#0EA5E9" stroke-width="2"></rect>
+    <rect x="48" y="24" rx="6" width="16" height="16" fill="#ffffff" stroke="#0EA5E9" stroke-width="2"></rect>
+
+    <!-- weave lines -->
+    <path d="M2,10 C20,10 28,34 54,34" stroke="url(#g)" stroke-width="3" fill="none" stroke-linecap="round"></path>
+    <path d="M2,34 C20,34 28,10 54,10" stroke="url(#g)" stroke-width="3" fill="none" stroke-linecap="round"></path>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="88" y="22" class="word">Switch Port Config</text>
+  <text x="88" y="42" class="sub">convert • preview • push</text>
+</svg>
