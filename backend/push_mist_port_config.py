@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
-# push_mist_port_config.py
-#
-# Build/normalize a Mist switch port_config and (optionally) push it.
-# - Accepts a converter JSON (with "interfaces") or a ready-made "port_config"
-# - Classifies ports using RULES_DOC (first match wins)
-# - Cleans bland descriptions; appends "converted by API <timestamp>"
-# - Maps Cisco -> EX4100 front-panel (index-based) when needed
-# - **Offsets the JUNIPER MEMBER (first number)** in ge-<member>/<pic>/<port>
-# - Per-run excludes
-# - Dry-run prints the exact body that would be PUT to Mist
-#
-# PowerShell examples:
-#   $env:MIST_TOKEN = "<token>"
-#   python push_mist_port_config.py --site-id <SITE> --device-id <DEV> --input C:\configs\stack1.json --dry-run
-#   python push_mist_port_config.py --site-id <SITE> --device-id <DEV> --input C:\configs\stack2.json --member-offset 3 --normalize-modules --dry-run
-#
-# Notes:
-# - --member-offset shifts the **member** (first number) in interface names.
-# - --normalize-modules re-bases the lowest member seen to 0 before applying the offset.
-# - Excludes are applied AFTER remapping.
+"""
+push_mist_port_config.py
+
+Build/normalize a Mist switch port_config and (optionally) push it.
+- Accepts a converter JSON with "interfaces" OR a ready-made "port_config"
+- Classifies ports via RULES_DOC (first match wins)
+- Maps Cisco Gi<sw>/<mod>/<port> -> Juniper names:
+    * Ports 1..48  -> <type>-0/0/<port-1>
+    * Ports 49..52 -> <uplink_type>-0/2/<port-49>   (uplinks)
+  (<type> is mge/ge for access rows, xe for uplinks on EX4100)
+- Shifts the **member** (first number) via --member-offset (or API handler)
+- Excludes interfaces by exact name AFTER remap
+- Dry-run prints exactly what would be PUT
+
+CLI examples (PowerShell):
+  $env:MIST_TOKEN="<token>"
+  python push_mist_port_config.py --site-id <SITE> --device-id <DEV> --input input.json --dry-run
+  python push_mist_port_config.py --site-id <SITE> --device-id <DEV> --input input.json --dry-run --member-offset 2 --normalize-modules
+
+This module is also imported by FastAPI (app.py) using:
+  ensure_port_config(), remap_members(), get_device_model(), timestamp_str()
+"""
 
 from __future__ import annotations
 
@@ -32,43 +34,44 @@ from typing import Any, Dict, List, Optional
 import requests
 
 try:
-    from zoneinfo import ZoneInfo  # Python 3.9+
+    from zoneinfo import ZoneInfo  # py3.9+
 except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore
 
-# ==============================
-# CONFIG DEFAULTS (override via CLI/env)
-# ==============================
-API_TOKEN = ""  # leave blank; prefer env var MIST_TOKEN
+# -------------------------------
+# Defaults (can be overridden by CLI or app layer)
+# -------------------------------
+API_TOKEN = ""  # prefer env var MIST_TOKEN
 BASE_URL  = "https://api.mist.com/api/v1"
 TZ        = "America/New_York"
 
-# ==============================
-# RULES (first match wins) — one rule per line for readability
-# ==============================
+# -------------------------------
+# Rules (first match wins) — one per line for readability
+# -------------------------------
 RULES_DOC: Dict[str, Any] = {
-    "defaults": { "no_local_overwrite": False, "critical": False },
+    "defaults": {"no_local_overwrite": False, "critical": False},
     "rules": [
         # AP trunks by explicit VLANs / natives (highest priority)
         {"name": "ap-trunk-n150-allowed-110-120-130-210", "when": {"mode": "trunk", "native_vlan": 150, "allowed_vlans_equals": [110, 120, 130, 210]}, "set": {"usage": "ap"}},
         {"name": "ap-trunk-n120", "when": {"mode": "trunk", "native_vlan": 120}, "set": {"usage": "ap"}},
-        # Try to find time clocks
+
+        # Time clocks (Kronos/UKG/etc.) -> it_peripherals
         {"name": "access-timeclocks-peripherals", "when": {"mode": "access", "description_regex": r"(?i)\b(time[-\s]?clock(s)?|time\s*keeping|timekeeper|kronos|ukg|workforce\s*(ready|central)|(in[\s-]*touch|intouch))\b"}, "set": {"usage": "it_peripherals"}},
-        # Try to find printers
+
+        # Printers (brands + generic) -> it_peripherals
         {"name": "access-printers-peripherals", "when": {"mode": "access", "description_regex": r"(?i)\b((hp\s*(laserjet|officejet|deskjet|pagewide))|lexmark|brother|canon(?:\s*(imageclass|imagerunner))?|epson|ricoh|xerox(?:\s*(workcentre|versalink|altalink|phaser))?|konica\s*minolta|kyocera(?:\s*(ecosys|taskalfa))?|sharp\s*(mx|al)|oki|toshiba|dell\s*(laser|laserjet)?|samsung\s*(xpress|ml|sl-)?|mfp|multi[-\s]?function|multifunction|printer|copier|print(?:er|ing))\b"}, "set": {"usage": "it_peripherals"}},
 
-        # Access ports for conference room panels
+        # Conference panels / Crestron -> it_peripherals
         {"name": "access-conf-panels-crestron", "when": {"mode": "access", "description_regex": r"(?i)\b(crestron|(conference\s*room.*(panel|sched))|(room\s*(sched(ul(e|ing))?|panel)))\b"}, "set": {"usage": "it_peripherals"}},
 
-        # Existing specific access VLANs
+        # Specific access VLAN patterns
+        {"name": "access-10-voice-15-end_user", "when": {"mode": "access", "data_vlan": 10, "voice_vlan": 15}, "set": {"usage": "end_user"}},
         {"name": "vlan-100-end_user", "when": {"mode": "access", "data_vlan": 100}, "set": {"usage": "end_user"}},
         {"name": "vlan-110-voice", "when": {"mode": "access", "data_vlan": 110}, "set": {"usage": "voice"}},
         {"name": "vlan-170-facility", "when": {"mode": "access", "data_vlan": 170}, "set": {"usage": "facility_mgmt"}},
         {"name": "vlan-160-it-periph", "when": {"mode": "access", "data_vlan": 160}, "set": {"usage": "it_peripherals"}},
         {"name": "vlan-3-end_user", "when": {"mode": "access", "data_vlan": 3}, "set": {"usage": "end_user"}},
-        {"name": "legacy-doors-vlan-5-end_user", "when": {"mode": "access", "data_vlan": 5}, "set": {"usage": "end_user"}},
-        {"name": "legacy-doors-access-10-voice-15-end_user", "when": {"mode": "access", "data_vlan": 10, "voice_vlan": 15}, "set": {"usage": "end_user"}},
-        {"name": "legacy-doors-access-10-voice-110-end_user", "when": {"mode": "access", "data_vlan": 10, "voice_vlan": 110}, "set": {"usage": "end_user"}},
+        {"name": "doors-vlan-5-end_user", "when": {"mode": "access", "data_vlan": 5}, "set": {"usage": "end_user"}},
 
         # AP trunks by description (lower priority than explicit VLAN rules)
         {"name": "ap-trunk", "when": {"mode": "trunk", "description_regex": r"(?i)\b(ap|access\s*point)\b"}, "set": {"usage": "ap"}},
@@ -76,14 +79,14 @@ RULES_DOC: Dict[str, Any] = {
         # Generic trunk default: IDF uplink
         {"name": "uplink-idf", "when": {"mode": "trunk"}, "set": {"usage": "uplink_idf", "no_local_overwrite": True}},
 
-        # Catch-all
+        # Catch-all (last)
         {"name": "catch-all-blackhole", "when": {"any": True}, "set": {"usage": "blackhole"}},
     ]
 }
 
-# ==============================
-# Description blacklist (drop if any match)
-# ==============================
+# -------------------------------
+# Description blacklist: drop bland/noisy descriptions
+# -------------------------------
 BLACKLIST_PATTERNS = [
     r"^\s*$",
     r"^\s*vla?n?\s*\d+\s*$",
@@ -107,13 +110,13 @@ def filter_description_blacklist(raw: str) -> str:
             return ""
     return d
 
-# ==============================
-# Helpers
-# ==============================
+# -------------------------------
+# Utilities
+# -------------------------------
 def load_token() -> str:
     tok = (API_TOKEN or "").strip() or (os.getenv("MIST_TOKEN") or "").strip()
     if not tok:
-        raise SystemExit("Missing API token: set env var MIST_TOKEN (preferred) or edit API_TOKEN in the script.")
+        raise SystemExit("Missing API token: set env var MIST_TOKEN (preferred) or edit API_TOKEN in this file.")
     return tok
 
 def timestamp_str(tz_name: str) -> str:
@@ -136,28 +139,21 @@ def _match_regex(val: Optional[str], pattern: str) -> bool:
     return re.search(pattern, val) is not None
 
 def _normalize_vlan_list(v) -> List[int]:
-    """
-    Accepts list[int] | list[str] | str("110,120,130") and returns a list[int].
-    Basic parser; doesn't expand ranges like '120-125'.
-    """
+    """Accept list[int]|list[str]|'110,120,130' and return list[int]."""
     if v is None:
         return []
     if isinstance(v, list):
-        out = []
+        out: List[int] = []
         for x in v:
-            try:
-                out.append(int(x))
-            except Exception:
-                pass
+            try: out.append(int(x))
+            except Exception: pass
         return out
     if isinstance(v, str):
         parts = [p.strip() for p in v.split(",") if p.strip()]
         out = []
         for p in parts:
-            try:
-                out.append(int(p))
-            except Exception:
-                pass
+            try: out.append(int(p))
+            except Exception: pass
         return out
     return []
 
@@ -171,7 +167,7 @@ def evaluate_rule(when: Dict[str, Any], intf: Dict[str, Any]) -> bool:
     native_vlan = int(intf["native_vlan"]) if intf.get("native_vlan") is not None else None
     allowed_vlans_list = _normalize_vlan_list(intf.get("allowed_vlans"))
     allowed_vlans_set  = set(allowed_vlans_list)
-    name = intf.get("name") or ""
+    name       = intf.get("name") or ""
     juniper_if = intf.get("juniper_if") or ""
 
     for k, v in when.items():
@@ -204,63 +200,99 @@ def evaluate_rule(when: Dict[str, Any], intf: Dict[str, Any]) -> bool:
             return False
     return True
 
-# ==============================
-# Cisco -> index mapping (Gi1/0/1 -> 1, Gi2/0/1 -> 49, ...)
-# ==============================
+# -------------------------------
+# Cisco parsing / mapping
+# -------------------------------
+# Accept Gi/Te/Fa with 2- or 3-part paths: Gi1/0/49 OR Gi1/49
+CISCO_2OR3_RE = re.compile(
+    r'(?ix)^(?:ten|tengig|te|gi|gigabitethernet|fa|fastethernet)\s*'
+    r'(?P<sw>\d+)\s*/\s*(?:(?P<mod>\d+)\s*/\s*)?(?P<port>\d+)$'
+)
+
+def cisco_split(name: str) -> Optional[Dict[str, int]]:
+    n = (name or "").replace("Ethernet", "ethernet").strip()
+    m = CISCO_2OR3_RE.match(n)
+    if not m:
+        return None
+    sw = int(m.group("sw"))
+    mod = int(m.group("mod")) if m.group("mod") is not None else 0
+    port = int(m.group("port"))
+    return {"sw": sw, "mod": mod, "port": port}
+
+# Legacy helpers (index-based) kept as fallback
 CISCO_IF_RE = re.compile(
     r"(?ix)^(?:ten|gig|fast)\s*gab?it(?:ethernet)?\s*(\d+)\s*/\s*(\d+)\s*/\s*(\d+)$|^(?:te|gi|fa)\s*(\d+)\s*/\s*(\d+)\s*/\s*(\d+)$"
 )
 
 def cisco_to_index(name: str) -> Optional[int]:
-    """
-    Returns 1-based canonical index: Gi1/0/1->1, Gi1/0/5->5, Gi2/0/1->49, etc.
-    """
+    """Return 1-based canonical index: Gi1/0/1->1, Gi2/0/1->49, etc."""
     n = (name or "").replace("Ethernet", "ethernet").strip()
     m = CISCO_IF_RE.match(n)
-    if not m:
-        return None
+    if not m: return None
     g = [x for x in m.groups() if x]
-    if len(g) != 3:
-        return None
+    if len(g) != 3: return None
     sw, _, port = map(int, g)
     return (sw - 1) * 48 + port
 
 def index_to_ex4100_if(model: Optional[str], index_1based: int) -> Optional[str]:
-    """
-    Map canonical index to EX4100 front-panel names:
-      EX4100-48MP: p=0..15 -> mge-0/0/p, p=16..47 -> ge-0/0/p
-      EX4100-24MP: p=0..7  -> mge-0/0/p, p=8..23  -> ge-0/0/p
-    We default to member=0, pic=0. Offset is applied later in remap step.
-    """
+    """Map index to EX4100-like names (PIC 0 only). Member offset applied later."""
     if index_1based is None or index_1based <= 0:
         return None
-    p = index_1based - 1  # zero-based front-panel port
-
+    p = index_1based - 1  # 0..47
     if model and model.startswith("EX4100-48MP"):
         return f"mge-0/0/{p}" if 0 <= p <= 15 else f"ge-0/0/{p}"
     if model and model.startswith("EX4100-24MP"):
         return f"mge-0/0/{p}" if 0 <= p <= 7 else f"ge-0/0/{p}"
-
-    # Fallback if model is unknown: default to ge (still index-based)
     return f"ge-0/0/{p}"
 
-# ==============================
-# Mist interface regex + **MEMBER** remap
-# ==============================
-# Juniper ELS style: <type>-<member>/<pic>/<port>, e.g., ge-0/0/5
-MIST_IF_RE = re.compile(r'^(?P<type>ge|mge)-(?P<member>\d+)/(?P<pic>\d+)/(?P<port>\d+)$')
+def cisco_to_ex_if_enhanced(model: Optional[str], name: str) -> Optional[str]:
+    """
+    Gi<sw>/<mod>/<port> -> Juniper:
+      1..48  -> <type>-0/0/<port-1>
+      49..52 -> <uplink_type>-0/2/<port-49>   (uplinks)
+    Member offset is applied later by remap_members().
+    """
+    p = cisco_split(name)
+    if not p: return None
+
+    port = p["port"]
+    member = 0  # base member; shifted later
+
+    # Uplink group: 49..52 -> PIC 2, ports 0..3; xe for EX4100 family
+    if 49 <= port <= 52:
+        pic = 2
+        jport = port - 49
+        itype = "xe" if (model or "").startswith("EX4100") else "ge"
+        return f"{itype}-{member}/{pic}/{jport}"
+
+    # Front-panel: 1..48 -> PIC 0, ports 0..47; mge window per model
+    pic = 0
+    jport = port - 1
+    if model and model.startswith("EX4100-48MP"):
+        itype = "mge" if 0 <= jport <= 15 else "ge"
+    elif model and model.startswith("EX4100-24MP"):
+        itype = "mge" if 0 <= jport <= 7 else "ge"
+    else:
+        itype = "ge"
+    return f"{itype}-{member}/{pic}/{jport}"
+
+# -------------------------------
+# Mist interface regex + MEMBER remap
+# -------------------------------
+# Accept ge/mge for access and xe/et for uplinks; shift <member> later
+MIST_IF_RE = re.compile(r'^(?P<type>ge|mge|xe|et)-(?P<member>\d+)/(?P<pic>\d+)/(?P<port>\d+)$')
 
 def _collect_members(port_config: Dict[str, Any]) -> List[int]:
-    members: List[int] = []
+    mems: List[int] = []
     for ifname in port_config.keys():
         m = MIST_IF_RE.match(ifname)
         if m:
-            members.append(int(m.group("member")))
-    return members
+            mems.append(int(m.group("member")))
+    return mems
 
 def remap_members(port_config: Dict[str, Any], member_offset: int = 0, normalize: bool = False) -> Dict[str, Any]:
     """
-    Shift the **member** (first component) in ge-<member>/<pic>/<port>.
+    Shift the **member** (first component) in <type>-<member>/<pic>/<port>.
     If normalize=True, rebase the minimum source member to 0, then add member_offset.
     """
     if member_offset == 0 and not normalize:
@@ -271,11 +303,11 @@ def remap_members(port_config: Dict[str, Any], member_offset: int = 0, normalize
         mems = _collect_members(port_config)
         base = min(mems) if mems else 0
 
-    new_pc: Dict[str, Any] = {}
+    out: Dict[str, Any] = {}
     for ifname, cfg in port_config.items():
         m = MIST_IF_RE.match(ifname)
         if not m:
-            new_pc[ifname] = cfg
+            out[ifname] = cfg
             continue
 
         itype  = m.group("type")
@@ -285,35 +317,39 @@ def remap_members(port_config: Dict[str, Any], member_offset: int = 0, normalize
 
         new_member = (member - base) + int(member_offset or 0)
         new_name = f"{itype}-{new_member}/{pic}/{port}"
-
-        if new_name in new_pc:
+        if new_name in out:
             raise SystemExit(f"Member remap collision on {new_name}")
-        new_pc[new_name] = cfg
-    return new_pc
+        out[new_name] = cfg
+    return out
 
-# Back-compat: if older code calls "remap_modules", route it to member remap
+# Back-compat alias if old callers used remap_modules()
 def remap_modules(port_config: Dict[str, Any], member_offset: int = 0, normalize: bool = False) -> Dict[str, Any]:
     return remap_members(port_config, member_offset=member_offset, normalize=normalize)
 
-# ==============================
+# -------------------------------
 # Mapping / normalization
-# ==============================
+# -------------------------------
 def map_interfaces_to_port_config(intfs: List[Dict[str, Any]], model: Optional[str]) -> Dict[str, Dict[str, Any]]:
     rules = RULES_DOC.get("rules", []) or []
     defaults = RULES_DOC.get("defaults", {}) or {}
 
     port_config: Dict[str, Dict[str, Any]] = {}
     for intf in intfs:
-        if intf.get("mode") == "routed":
+        if (intf.get("mode") or "").lower() == "routed":
             continue
 
-        # Compute front-panel name by index (prefer), default member/pic is 0/0 here
-        idx = cisco_to_index(intf.get("name", ""))
-        derived_if = index_to_ex4100_if(model, idx) if idx is not None else None
+        # Prefer our enhanced mapper (handles 49..52 uplinks -> PIC 2)
+        derived_if = cisco_to_ex_if_enhanced(model, intf.get("name", ""))
 
-        # If converter already added a juniper name, we can use it as a fallback
+        # Fallback to index-based mapper if needed
+        if not derived_if:
+            idx = cisco_to_index(intf.get("name", ""))
+            derived_if = index_to_ex4100_if(model, idx) if idx is not None else None
+
+        # If converter already included a Juniper name, use it as last resort
         mist_if = derived_if or intf.get("juniper_if") or intf.get("name", "")
 
+        # Evaluate rules (first match wins)
         chosen = None
         for r in rules:
             if evaluate_rule(r.get("when", {}) or {}, intf):
@@ -323,7 +359,6 @@ def map_interfaces_to_port_config(intfs: List[Dict[str, Any]], model: Optional[s
         usage = None
         no_overwrite = bool(defaults.get("no_local_overwrite", False))
         critical = bool(defaults.get("critical", False))
-
         if chosen:
             s = chosen.get("set", {}) or {}
             usage = s.get("usage", usage)
@@ -333,32 +368,31 @@ def map_interfaces_to_port_config(intfs: List[Dict[str, Any]], model: Optional[s
         raw_desc = intf.get("description", "") or ""
         filtered_desc = filter_description_blacklist(raw_desc)
 
-        cfg: Dict[str, Any] = {
-            "usage": usage or "blackhole",
-            "description": filtered_desc,
-            "no_local_overwrite": no_overwrite
-        }
+        cfg: Dict[str, Any] = {"usage": usage or "blackhole", "description": filtered_desc, "no_local_overwrite": no_overwrite}
         if critical:
             cfg["critical"] = True
 
+        if mist_if in port_config:
+            raise SystemExit(f"Key collision for {mist_if} (from {intf.get('name')}); check uplink mapping (49–52).")
         port_config[mist_if] = cfg
 
     return port_config
 
-# Flexible extractor used by app/backends
 def extract_port_config(input_json: Dict[str, Any], model: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
-    if "port_config" in input_json and isinstance(input_json["port_config"], dict):
-        return input_json["port_config"]
+    """
+    Prefer to compute from 'interfaces' (lets us fix Cisco->Juniper mapping),
+    but accept a ready 'port_config' if no interfaces are present.
+    """
     if "interfaces" in input_json and isinstance(input_json["interfaces"], list):
         return map_interfaces_to_port_config(input_json["interfaces"], model)
+    if "port_config" in input_json and isinstance(input_json["port_config"], dict):
+        return input_json["port_config"]
     raise SystemExit("Input JSON must contain either 'interfaces' or 'port_config'.")
 
-# Back-compat shim for different import signatures in app.py
+# Back-compat shim for imports in app.py
 def ensure_port_config(*args) -> Dict[str, Dict[str, Any]]:
     """
-    Accepts either:
-      ensure_port_config(input_json)
-      ensure_port_config(input_json, model)
+    ensure_port_config(input_json [, model])
     """
     if len(args) == 1:
         return extract_port_config(args[0], model=None)
@@ -367,9 +401,9 @@ def ensure_port_config(*args) -> Dict[str, Dict[str, Any]]:
     else:
         raise SystemExit("ensure_port_config requires 1 or 2 arguments.")
 
-# ==============================
-# Model lookup
-# ==============================
+# -------------------------------
+# Model lookup for CLI
+# -------------------------------
 def get_device_model(base_url: str, site_id: str, device_id: str, token: str) -> Optional[str]:
     url = f"{base_url.rstrip('/')}/sites/{site_id}/devices/{device_id}"
     try:
@@ -380,11 +414,11 @@ def get_device_model(base_url: str, site_id: str, device_id: str, token: str) ->
         pass
     return None
 
-# ==============================
-# Main
-# ==============================
+# -------------------------------
+# CLI entry
+# -------------------------------
 def main():
-    ap = argparse.ArgumentParser(description="Map and push Mist switch port_config with EX4100 GE/MGE normalization and MEMBER offset.")
+    ap = argparse.ArgumentParser(description="Map and push Mist switch port_config with EX4100 uplink mapping and MEMBER offset.")
     ap.add_argument("--site-id", required=True, help="Mist site_id")
     ap.add_argument("--device-id", required=True, help="Mist device_id")
     ap.add_argument("--input", required=True, help="Path to JSON (converter output OR mapped payload)")
@@ -393,9 +427,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="Print request payload instead of sending PUT")
     ap.add_argument("--save-output", default=None, help="Optional path to save the final PUT body JSON")
     ap.add_argument("--model", default=None, help="Device model override (skip API lookup)")
-    ap.add_argument("--exclude-interface", action="append", default=None, help="Interface name to exclude after remap (repeatable). Example: --exclude-interface ge-1/0/47")
-    # Offset flags (apply to JUNIPER MEMBER)
-    ap.add_argument("--member-offset", type=int, default=0, help="Shift the Juniper MEMBER (first number) in ge-<member>/<pic>/<port> by this offset.")
+    ap.add_argument("--exclude-interface", action="append", default=None, help="Exact interface name to exclude AFTER remap (repeatable). e.g. --exclude-interface xe-1/2/0")
+    ap.add_argument("--member-offset", type=int, default=0, help="Shift the Juniper MEMBER (first number) in <type>-<member>/<pic>/<port> by this offset.")
     ap.add_argument("--normalize-modules", action="store_true", help="Normalize the lowest source MEMBER to 0 before applying --member-offset.")
 
     args = ap.parse_args()
@@ -403,8 +436,6 @@ def main():
     token = load_token()
     base_url = (args.base_url or BASE_URL).rstrip("/")
     tz_name = (args.tz or TZ)
-
-    # Lookup/override model (used when mapping 'interfaces' -> 'port_config')
     model = args.model or get_device_model(base_url, args.site_id, args.device_id, token)
 
     with open(args.input, "r", encoding="utf-8") as f:
@@ -416,34 +447,23 @@ def main():
     # Apply MEMBER remap BEFORE excludes
     try:
         port_config = remap_members(port_config, member_offset=int(args.member_offset or 0), normalize=bool(args.normalize_modules))
-    except SystemExit:
-        raise
     except Exception as e:
         raise SystemExit(f"Failed to apply member offset: {e}")
 
-    # Apply exclude(s) (EXACT names after remap)
+    # Apply excludes by exact name (AFTER remap)
     excludes = set(args.exclude_interface or [])
     if excludes:
         port_config = {k: v for k, v in port_config.items() if k not in excludes}
 
-    # Add timestamped description tags
+    # Timestamp descriptions
     ts = timestamp_str(tz_name)
     final_port_config: Dict[str, Dict[str, Any]] = {}
     for ifname, cfg in port_config.items():
-        cfg = dict(cfg)
-        cfg["description"] = tag_description(cfg.get("description", ""), ts)
-        final_port_config[ifname] = cfg
+        c = dict(cfg)
+        c["description"] = tag_description(c.get("description", ""), ts)
+        final_port_config[ifname] = c
 
     body = {"port_config": final_port_config}
-
-    # Persist body if requested
-    if args.save_output:
-        try:
-            with open(args.save_output, "w", encoding="utf-8") as o:
-                json.dump(body, o, indent=2)
-        except Exception as e:
-            print(f"Warning: failed to save output to {args.save_output}: {e}")
-
     url = f"{base_url}/sites/{args.site_id}/devices/{args.device_id}"
     headers = {"Authorization": f"Token {token}", "Content-Type": "application/json", "Accept": "application/json"}
 
@@ -455,21 +475,20 @@ def main():
         return
 
     # Live PUT
-    resp = requests.put(url, headers=headers, data=json.dumps(body), timeout=60)
+    resp = requests.put(url, headers=headers, json=body, timeout=60)
+    try:
+        content = resp.json()
+    except Exception:
+        content = {"text": resp.text}
+
     if 200 <= resp.status_code < 300:
         print("✅ Success")
-        try:
-            print(json.dumps(resp.json(), indent=2))
-        except Exception:
-            print(resp.text)
+        print(json.dumps(content, indent=2))
     else:
         print(f"❌ Error {resp.status_code} on PUT {url}")
-        try:
-            print(json.dumps(resp.json(), indent=2))
-        except Exception:
-            print(resp.text)
+        print(json.dumps(content, indent=2))
         if resp.status_code == 404:
-            print("Hint: 404 usually means the device isn't in that site, the device_id/site_id is mistyped, or the base URL/region is wrong. Verify the device appears under that exact site in Mist.")
+            print("Hint: 404 usually means the device isn't in that site, the device_id/site_id is mistyped, or the base URL/region is wrong.")
         resp.raise_for_status()
 
 if __name__ == "__main__":
