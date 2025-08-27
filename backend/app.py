@@ -10,17 +10,26 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-# User modules (must be next to this file)
+# Optional .env support
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
+    load_dotenv()  # fallback search
+except Exception:
+    pass
+
+# User modules
 from convertciscotojson import convert_one_file  # type: ignore
 from push_mist_port_config import (  # type: ignore
     ensure_port_config,
     get_device_model,
     timestamp_str,
-    remap_members,      # <-- added
+    remap_members,
+    validate_port_config_against_model,
 )
 
 APP_TITLE = "Switch Port Config Frontend"
-DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"
+DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
 DEFAULT_TZ = "America/New_York"
 
 app = FastAPI(title=APP_TITLE)
@@ -33,7 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount /static only if folder exists (prevents startup errors on clean zips)
+# Mount /static only if folder exists
 static_path = Path(__file__).resolve().parent.parent / "static"
 if static_path.exists():
     app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
@@ -45,7 +54,6 @@ def index():
     return HTMLResponse(tpl)
 
 
-# ----- Helpers -----
 def _load_mist_token() -> str:
     tok = (os.getenv("MIST_TOKEN") or "").strip()
     if not tok:
@@ -53,13 +61,10 @@ def _load_mist_token() -> str:
     return tok
 
 
-# ----- Sites / Devices -----
 @app.get("/api/sites")
 def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
     """
-    Return all sites accessible to the token.
-    If org_id is provided, query that org directly.
-    Otherwise, discover orgs via /self then enumerate.
+    Returns the list of sites visible to the token. If org_id is provided, scopes to that org.
     """
     token = _load_mist_token()
     base_url = base_url.rstrip("/")
@@ -71,60 +76,41 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
             r = requests.get(f"{base_url}/orgs/{org_id}/sites", headers=headers, timeout=30)
             r.raise_for_status()
             for s in r.json() or []:
-                items.append({
-                    "id": s.get("id"),
-                    "name": s.get("name") or s.get("site_name") or s.get("id"),
-                    "org_id": org_id,
-                })
+                items.append({"id": s.get("id"), "name": s.get("name") or s.get("site_name") or s.get("id"), "org_id": org_id})
         else:
-            # Discover orgs from /self
+            # Discover orgs from /self and enumerate sites per org
             r = requests.get(f"{base_url}/self", headers=headers, timeout=30)
             r.raise_for_status()
             who = r.json() or {}
 
             org_ids = set()
-
-            # orgs can be a list of dicts or strings
-            orgs = who.get("orgs")
-            if isinstance(orgs, list):
-                for o in orgs:
+            if isinstance(who.get("orgs"), list):
+                for o in who["orgs"]:
                     if isinstance(o, dict) and o.get("org_id"):
                         org_ids.add(o["org_id"])
                     elif isinstance(o, dict) and o.get("id"):
                         org_ids.add(o["id"])
                     elif isinstance(o, str):
                         org_ids.add(o)
-
-            # privileges may be a list of dicts with org_id
-            priv = who.get("privileges")
-            if isinstance(priv, list):
-                for p in priv:
+            if isinstance(who.get("privileges"), list):
+                for p in who["privileges"]:
                     if isinstance(p, dict) and p.get("org_id"):
                         org_ids.add(p["org_id"])
-            elif isinstance(priv, dict):
-                org_ids.update([k for k in priv.keys() if isinstance(k, str)])
-
             if isinstance(who.get("org_id"), str):
                 org_ids.add(who["org_id"])
 
-            # enumerate sites per org
             for oid in org_ids:
                 try:
                     r2 = requests.get(f"{base_url}/orgs/{oid}/sites", headers=headers, timeout=30)
                     r2.raise_for_status()
                     for s in r2.json() or []:
-                        items.append({
-                            "id": s.get("id"),
-                            "name": s.get("name") or s.get("site_name") or s.get("id"),
-                            "org_id": oid,
-                        })
+                        items.append({"id": s.get("id"), "name": s.get("name") or s.get("site_name") or s.get("id"), "org_id": oid})
                 except Exception:
                     continue
 
         items.sort(key=lambda x: (x["name"] or "").lower())
         return {"ok": True, "items": items}
     except Exception as e:
-        # Try to surface the API error payload if available
         try:
             err_payload = r.json()  # type: ignore[name-defined]
         except Exception:
@@ -135,7 +121,7 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
 @app.get("/api/site_devices")
 def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
     """
-    Return devices for a given site (switches first).
+    Returns the list of switch devices in the given site.
     """
     token = _load_mist_token()
     base_url = base_url.rstrip("/")
@@ -155,7 +141,7 @@ def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
                 "type": dev_type,
                 "model": d.get("model"),
                 "mac": d.get("mac"),
-                "is_switch": is_switch,
+                "is_switch": is_switch
             })
         items.sort(key=lambda x: (not x["is_switch"], (x["name"] or "").lower()))
         return {"ok": True, "items": items}
@@ -167,7 +153,6 @@ def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
         return JSONResponse({"ok": False, "error": err_payload}, status_code=getattr(r, "status_code", 500))  # type: ignore[name-defined]
 
 
-# ----- Convert -----
 @app.post("/api/convert")
 async def api_convert(
     files: List[UploadFile] = File(...),
@@ -175,6 +160,9 @@ async def api_convert(
     force_model: Optional[str] = Form(None),
     strict_overflow: bool = Form(False),
 ) -> JSONResponse:
+    """
+    Converts one or more Cisco configs into the normalized JSON that the push script consumes.
+    """
     results = []
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
@@ -195,16 +183,96 @@ async def api_convert(
             except Exception as e:
                 return JSONResponse({"ok": False, "error": f"Failed to load JSON for {uf.filename}: {e}"}, status_code=400)
 
-            results.append({
-                "source_file": uf.filename,
-                "output_file": out_path.name,
-                "json": data,
-            })
+            results.append({"source_file": uf.filename, "output_file": out_path.name, "json": data})
 
     return JSONResponse({"ok": True, "items": results})
 
 
-# ----- Push -----
+def _build_payload_for_row(
+    *,
+    base_url: str,
+    tz: str,
+    token: str,
+    site_id: str,
+    device_id: str,
+    payload_in: Dict[str, Any],
+    model_override: Optional[str],
+    excludes: Optional[str],
+    member_offset: int,
+    normalize_modules: bool,
+    dry_run: bool,
+) -> Dict[str, Any]:
+    """
+    Shared logic used by both /api/push and /api/push_batch for a single row.
+    Returns a dict with keys: ok, payload, validation, device_model, (and for live push: status/response)
+    """
+    # Resolve model
+    model = model_override or get_device_model(base_url, site_id, device_id, token)
+
+    # Build port_config
+    port_config = ensure_port_config(payload_in, model)
+
+    # Apply member remap BEFORE excludes
+    port_config = remap_members(port_config, member_offset=int(member_offset or 0), normalize=bool(normalize_modules))
+
+    # Apply excludes AFTER remap
+    exclude_set = set([e.strip() for e in (excludes or "").split(",") if e.strip()])
+    if exclude_set:
+        port_config = {k: v for k, v in port_config.items() if k not in exclude_set}
+
+    # Capacity validation (block live push; warn on dry-run)
+    validation = validate_port_config_against_model(port_config, model)
+
+    # Timestamp descriptions
+    ts = timestamp_str(tz)
+    final_port_config: Dict[str, Dict[str, Any]] = {}
+    for ifname, cfg in port_config.items():
+        c = dict(cfg)
+        desc = (c.get("description") or "").strip()
+        c["description"] = f"{desc + ' - ' if desc else ''}converted by API {ts}"
+        final_port_config[ifname] = c
+
+    put_body = {"port_config": final_port_config}
+    url = f"{base_url}/sites/{site_id}/devices/{device_id}"
+    headers = {"Authorization": f"Token {token}", "Content-Type": "application/json", "Accept": "application/json"}
+
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "device_model": model,
+            "url": url,
+            "member_offset": int(member_offset or 0),
+            "normalize_modules": bool(normalize_modules),
+            "validation": validation,
+            "payload": put_body
+        }
+
+    # live push
+    if not validation.get("ok"):
+        return {
+            "ok": False,
+            "dry_run": False,
+            "error": "Model capacity mismatch",
+            "validation": validation,
+            "payload": put_body
+        }
+
+    resp = requests.put(url, headers=headers, json=put_body, timeout=60)
+    try:
+        content = resp.json()
+    except Exception:
+        content = {"text": resp.text}
+
+    return {
+        "ok": 200 <= resp.status_code < 300,
+        "dry_run": False,
+        "status": resp.status_code,
+        "response": content,
+        "payload": put_body
+    }
+
+
 @app.post("/api/push")
 async def api_push(
     site_id: str = Form(...),
@@ -216,12 +284,12 @@ async def api_push(
     model_override: Optional[str] = Form(None),
     excludes: Optional[str] = Form(None),
     save_output: Optional[bool] = Form(False),
-
-    # NEW: per-row member offset & normalization toggle
     member_offset: int = Form(0),
-    normalize_modules: bool = Form(True),  # UI says "Normalization is always on"
+    normalize_modules: bool = Form(True),
 ) -> JSONResponse:
-    # Parse payload
+    """
+    Single push. Response includes `payload` (the exact body to Mist) and `validation`.
+    """
     try:
         payload_in = json.loads(input_json)
     except Exception as e:
@@ -230,72 +298,98 @@ async def api_push(
     token = _load_mist_token()
     base_url = base_url.rstrip("/")
 
-    # Resolve device model (or use override)
-    model = model_override or get_device_model(base_url, site_id, device_id, token)
-
-    # Ensure we have Mist-style port_config (mapping from 'interfaces' if present)
     try:
-        port_config = ensure_port_config(payload_in, model)
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": f"Failed to build port_config: {e}"}, status_code=400)
-
-    # Apply MEMBER remap (first number in ge|mge-<member>/<pic>/<port>)
-    try:
-        port_config = remap_members(
-            port_config,
-            member_offset=int(member_offset or 0),
-            normalize=bool(normalize_modules),
+        row_result = _build_payload_for_row(
+            base_url=base_url, tz=tz, token=token,
+            site_id=site_id, device_id=device_id,
+            payload_in=payload_in, model_override=model_override,
+            excludes=excludes, member_offset=member_offset, normalize_modules=normalize_modules,
+            dry_run=dry_run,
         )
+        status = 200 if row_result.get("ok") else 400
+        return JSONResponse(row_result, status_code=status)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": f"Failed to apply member offset: {e}"}, status_code=400)
+        return JSONResponse({"ok": False, "error": f"Server error: {e}"}, status_code=500)
 
-    # Apply exact-name excludes AFTER remap
-    exclude_set = set([e.strip() for e in (excludes or "").split(",") if e.strip()])
-    if exclude_set:
-        port_config = {k: v for k, v in port_config.items() if k not in exclude_set}
 
-    # Timestamped description
-    ts = timestamp_str(tz)
-    final_port_config: Dict[str, Dict[str, Any]] = {}
-    for ifname, cfg in port_config.items():
-        c = dict(cfg)
-        desc = (c.get("description") or "").strip()
-        c["description"] = f"{desc + ' - ' if desc else ''}converted by API {ts}"
-        final_port_config[ifname] = c
+@app.post("/api/push_batch")
+async def api_push_batch(
+    rows: str = Form(...),  # JSON array of rows
+    dry_run: bool = Form(True),
+    base_url: str = Form(DEFAULT_BASE_URL),
+    tz: str = Form(DEFAULT_TZ),
+    model_override: Optional[str] = Form(None),  # optional global override (row can still override)
+    normalize_modules: bool = Form(True),
+) -> JSONResponse:
+    """
+    Batch push. Each row can specify: site_id, device_id, input_json (object),
+    excludes (str), member_offset (int), model_override (str, optional).
+    Returns per-row results with payload + validation, and never aborts the whole batch.
 
-    put_body = {"port_config": final_port_config}
-
-    url = f"{base_url}/sites/{site_id}/devices/{device_id}"
-    headers = {
-        "Authorization": f"Token {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-
-    # Dry run: echo debug fields so you can verify offset usage in UI
-    if dry_run:
-        return JSONResponse({
-            "ok": True,
-            "dry_run": True,
-            "device_model": model,
-            "url": url,
-            "member_offset": int(member_offset or 0),
-            "normalize_modules": bool(normalize_modules),
-            "body": put_body
-        })
-
-    # Live PUT
-    try:
-        resp = requests.put(url, headers=headers, json=put_body, timeout=60)
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": f"Request error: {e}"}, status_code=502)
+    NOTE: Duplicate devices ARE allowed as long as (device_id, member_offset) pairs are unique.
+    If the same pair appears more than once, those rows are rejected with a clear error.
+    """
+    token = _load_mist_token()
+    base_url = base_url.rstrip("/")
 
     try:
-        content = resp.json()
-    except Exception:
-        content = {"text": resp.text}
+        row_list = json.loads(rows)
+        assert isinstance(row_list, list)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"Invalid 'rows' payload: {e}"}, status_code=400)
 
-    if 200 <= resp.status_code < 300:
-        return JSONResponse({"ok": True, "dry_run": False, "status": resp.status_code, "response": content})
-    else:
-        return JSONResponse({"ok": False, "dry_run": False, "status": resp.status_code, "response": content}, status_code=resp.status_code)
+    # Pre-scan for duplicate (device_id, member_offset) pairs
+    pair_counts: Dict[str, int] = {}
+    for r in row_list:
+        device_id = (r.get("device_id") or "").strip()
+        member_offset = int(r.get("member_offset") or 0)
+        key = f"{device_id}@@{member_offset}"
+        if device_id:
+            pair_counts[key] = pair_counts.get(key, 0) + 1
+
+    results: List[Dict[str, Any]] = []
+    for i, r in enumerate(row_list):
+        try:
+            site_id = (r.get("site_id") or "").strip()
+            device_id = (r.get("device_id") or "").strip()
+            payload_in = r.get("input_json")
+            excludes = r.get("excludes") or ""
+            member_offset = int(r.get("member_offset") or 0)
+            row_model_override = r.get("model_override") or model_override
+
+            if not site_id or not device_id or not isinstance(payload_in, (dict, list)):
+                results.append({"ok": False, "row_index": i, "error": "Missing site_id/device_id or malformed input_json"})
+                continue
+
+            # Reject duplicate (device_id, member_offset) pairs
+            key = f"{device_id}@@{member_offset}"
+            if pair_counts.get(key, 0) > 1:
+                results.append({
+                    "ok": False,
+                    "row_index": i,
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "error": "Duplicate device with the same Start member detected. Use a distinct Start member for repeated device selections."
+                })
+                continue
+
+            if isinstance(payload_in, list):
+                payload_in = {"interfaces": payload_in}
+
+            row_result = _build_payload_for_row(
+                base_url=base_url, tz=tz, token=token,
+                site_id=site_id, device_id=device_id,
+                payload_in=payload_in, model_override=row_model_override,
+                excludes=excludes, member_offset=member_offset, normalize_modules=normalize_modules,
+                dry_run=dry_run,
+            )
+            row_result["row_index"] = i
+            row_result["site_id"] = site_id
+            row_result["device_id"] = device_id
+            results.append(row_result)
+
+        except Exception as e:
+            results.append({"ok": False, "row_index": i, "error": f"Server error: {e}"})
+
+    top_ok = all(r.get("ok") for r in results) if results else False
+    return JSONResponse({"ok": top_ok, "dry_run": bool(dry_run), "results": results})

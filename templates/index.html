@@ -4,737 +4,638 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Switch Port Config Frontend</title>
-  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- Brand font (optional) -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <!-- No-flash theme init: set 'dark' class before paint based on saved or system pref -->
+  <script>
+    (function () {
+      try {
+        const saved = localStorage.getItem('theme');
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if ((saved === 'dark') || (!saved && prefersDark)) {
+          document.documentElement.classList.add('dark');
+        }
+      } catch {}
+    })();
+  </script>
+
+  <!-- Tailwind Play CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Configure Tailwind: enable dark mode via class -->
+  <script>
+    tailwind.config = { darkMode: 'class' };
+  </script>
 
   <style>
-    :root { --brand: #D40F7D; --brand-hover: #b90e6c; }
-    body { font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
-
     .dropzone { border: 2px dashed #cbd5e1; }
     .dropzone.dragover { border-color: #60a5fa; background: #f8fafc; }
     pre { white-space: pre-wrap; word-wrap: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }
     .status-info { border-color: #bae6fd; background: #ecfeff; }
     .status-success { border-color: #86efac; background: #f0fdf4; }
     .status-error { border-color: #fecaca; background: #fef2f2; }
-
-    /* Tooltip */
-    .tooltip-group:focus-within .tooltip, .tooltip-group:hover .tooltip {
-      opacity: 1; transform: translateY(0); pointer-events: auto;
+    .tooltip { position: relative; display: inline-flex; align-items: center; gap: .35rem; }
+    .tooltip .tip {
+      visibility: hidden; opacity: 0; transition: opacity .15s ease;
+      position: absolute; left: 50%; transform: translateX(-50%);
+      bottom: 130%; min-width: 18rem; max-width: 28rem;
+      background: #0f172a; color: #f8fafc; padding: .5rem .75rem; border-radius: .5rem; font-size: .75rem;
+      box-shadow: 0 10px 25px rgba(2,6,23,0.25); z-index: 50; text-align: left;
     }
-    .tooltip {
-      opacity: 0; pointer-events: none; transform: translateY(-4px);
-      transition: opacity .15s ease, transform .15s ease;
-    }
+    .tooltip:hover .tip { visibility: visible; opacity: 1; }
   </style>
 </head>
-<body class="bg-slate-50 text-slate-900">
+<body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
   <div class="max-w-7xl mx-auto p-6">
-    <header class="mb-6">
-      <div class="flex items-center gap-3">
-        <img src="/static/logo.svg" alt="Switch Port Config" class="h-10 w-auto">
-        <div>
-          <h1 class="text-2xl font-semibold">Switch Port Config Frontend</h1>
-          <p class="text-sm text-slate-600">Upload Cisco configs → preview JSON → push to Mist</p>
-        </div>
+    <header class="mb-6 flex items-center justify-between">
+      <div>
+        <h1 class="text-2xl font-semibold">Switch Port Config Frontend</h1>
+        <p class="text-sm text-slate-600 dark:text-slate-300">Upload Cisco configs → map rows → batch test/push to Mist</p>
       </div>
+      <button id="theme_toggle" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">
+        <span id="theme_label">Toggle Dark Mode</span>
+      </button>
     </header>
 
     <!-- Drag & Drop -->
     <section class="mb-6">
-      <div id="dz" class="dropzone rounded-2xl bg-white p-8 text-center text-slate-500">
+      <div id="dz" class="dropzone rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 p-8 text-center text-slate-500 dark:text-slate-300">
         <p class="mb-2">Drag & drop Cisco config files here (or click to select)</p>
-        <input id="file_input" type="file" multiple class="hidden" accept=".txt,.cfg,.conf" />
-        <button id="choose_files" class="px-4 py-2 rounded text-white bg-[var(--brand)] hover:bg-[var(--brand-hover)]">Choose files</button>
+        <input id="file_input" type="file" multiple class="hidden" accept=".txt,.cfg,.conf,.json" />
+        <button id="choose_files" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Choose files</button>
       </div>
       <div class="flex items-center justify-between mt-2">
-        <div id="convert_status" class="text-sm text-slate-600"></div>
-        <button id="clear_all" class="px-3 py-2 text-sm rounded bg-slate-100 hover:bg-slate-200">Clear</button>
+        <div id="convert_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
+        <button id="clear_all" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Clear</button>
       </div>
     </section>
 
-    <!-- Global Options -->
-    <section class="mb-6">
-      <div class="bg-white rounded-2xl shadow p-4 space-y-3">
-        <div class="grid md:grid-cols-3 gap-4">
-          <div>
-            <label class="block text-sm font-medium mb-1">Time zone</label>
-            <input id="tz" type="text" class="w-full border rounded p-2" value="America/New_York" />
-          </div>
-          <div>
-            <label class="block text-sm font-medium mb-1">Model override (optional)</label>
-            <input id="model_override" type="text" class="w-full border rounded p-2" placeholder="EX4100-48MP" />
-          </div>
-          <div>
-            <label class="block text-sm font-medium mb-1">Global exclude interfaces (optional)</label>
-            <input id="excludes" type="text" class="w-full border rounded p-2" placeholder="ge-0/0/47, ge-0/0/10" />
-            <p class="text-xs text-slate-500 mt-1">Each row can override this; leave blank per row to use this global list.</p>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-6">
-          <label class="inline-flex items-center gap-2">
-            <input id="dry_run" type="checkbox" class="w-4 h-4" checked />
-            <span class="text-sm">Test mode (no changes)</span>
-          </label>
-
-          <!-- Strict overflow with tooltip -->
-          <div class="relative tooltip-group">
-            <label class="inline-flex items-center gap-2">
-              <input id="strict_overflow" type="checkbox" class="w-4 h-4" />
-              <span class="text-sm">Strict overflow</span>
-              <button type="button" class="w-5 h-5 rounded-full text-xs bg-slate-100 text-slate-600 hover:bg-slate-200"
-                      aria-label="What is strict overflow?" tabindex="0">ⓘ</button>
-            </label>
-            <div class="tooltip absolute z-10 left-0 mt-2 w-72 rounded-lg border bg-white p-3 text-xs text-slate-600 shadow-lg">
-              <div class="font-semibold mb-1">Strict overflow</div>
-              If enabled, the conversion/push will <span class="font-medium">fail</span> when generated changes exceed device or API limits
-              (e.g., more ports/config entries than the target supports). If disabled, extra items are
-              <span class="font-medium">silently skipped or truncated</span>. Enable this when you want safety over convenience.
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Converted JSON (preview only) -->
-    <section id="results" class="hidden mb-10">
+    <!-- Converted JSON -->
+    <section id="results" class="hidden mb-8">
       <h2 class="text-lg font-medium mb-2">Converted JSON Preview</h2>
       <div id="results_list" class="space-y-4"></div>
     </section>
 
-    <!-- Batch Push (only mode) -->
-    <section id="batch_section" class="hidden mt-6">
-      <div class="flex items-center justify-between mb-2">
-        <h2 class="text-lg font-medium">Batch push (one row per uploaded file)</h2>
-        <button id="push_all_btn" class="px-4 py-2 rounded text-white bg-[var(--brand)] hover:bg-[var(--brand-hover)]">
-          <span id="push_all_label">Test all mapped</span>
-        </button>
+    <!-- Batch Push -->
+    <section id="batch_section" class="hidden">
+      <h2 class="text-lg font-medium mb-2">Batch: Map files to switches</h2>
+
+      <!-- Global options -->
+      <div class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-4 mb-4">
+        <div class="grid md:grid-cols-3 gap-4">
+          <div>
+            <label class="block text-sm font-medium mb-1">Time zone</label>
+            <input id="tz" type="text" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" value="America/New_York" readonly />
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1">Model override (optional, applies to rows without their own override)</label>
+            <input id="model_override" type="text" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" placeholder="EX4100-48MP" />
+          </div>
+          <div class="flex items-center gap-6 mt-6 md:mt-0">
+            <label class="tooltip">
+              <span class="inline-flex items-center gap-2">
+                <input id="dry_run" type="checkbox" class="w-4 h-4" checked />
+                <span class="text-sm">Test mode (no changes)</span>
+              </span>
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
+              <span class="tip">Sends the exact payload to Mist <em>without</em> applying changes. You’ll see the JSON and any warnings, but devices aren’t modified.</span>
+            </label>
+
+            <label class="tooltip">
+              <span class="inline-flex items-center gap-2">
+                <input id="strict_overflow" type="checkbox" class="w-4 h-4" />
+                <span class="text-sm">Strict overflow (convert)</span>
+              </span>
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
+              <span class="tip">If checked during conversion, any interface that can’t be mapped cleanly (e.g., out-of-range module/port) is dropped instead of guessed.</span>
+            </label>
+          </div>
+        </div>
       </div>
 
-      <!-- Status banner (overall) -->
-      <div id="push_status" class="hidden mt-2 rounded-lg border p-3 text-sm status-info">
-        <div class="flex items-center gap-2">
-          <span id="status_icon" class="inline-block w-2 h-2 rounded-full bg-sky-400"></span>
-          <span id="status_text" class="font-medium">Ready.</span>
-          <span id="status_time" class="text-xs text-slate-500 ml-auto"></span>
-        </div>
-        <div class="mt-2 h-2 w-full bg-slate-200 rounded overflow-hidden">
-          <div id="progress_bar" class="h-2 w-0 transition-all duration-300 bg-[var(--brand)]"></div>
-        </div>
+      <!-- Rows -->
+      <div id="rows_warning" class="hidden rounded-lg border p-3 mb-3 status-error text-sm dark:bg-rose-950"></div>
+      <div id="batch_rows" class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow divide-y dark:divide-slate-700"></div>
+
+      <div class="flex items-center gap-3 mt-4">
+        <button id="push_batch_btn" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Test configuration for all</button>
+        <div id="batch_status" class="text-sm text-slate-600 dark:text-slate-300 ml-2"></div>
       </div>
 
-      <div id="batch_rows" class="space-y-3 mt-3"></div>
-      <p class="text-xs text-slate-500 mt-2">
-        Rows start with <span class="font-medium">Row 1’s Site</span>. Change any row’s Site to override it.
-      </p>
+      <!-- Results -->
+      <div id="batch_output" class="mt-4 space-y-4"></div>
     </section>
   </div>
 
   <script>
-  (function(){
-    "use strict";
+    // --- Theme toggle (persist & label) ---
+    const themeToggle = document.getElementById('theme_toggle');
+    const themeLabel  = document.getElementById('theme_label');
+    const rootEl = document.documentElement;
 
-    // Elements
+    function setTheme(mode) {
+      rootEl.classList.toggle('dark', mode === 'dark');
+      localStorage.setItem('theme', mode);
+      if (themeLabel) themeLabel.textContent = (mode === 'dark') ? 'Toggle Light Mode' : 'Toggle Dark Mode';
+    }
+    (function initTheme() {
+      const saved = localStorage.getItem('theme');
+      const mode = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      setTheme(mode);
+    })();
+    themeToggle?.addEventListener('click', (e) => {
+      e.preventDefault();
+      setTheme(rootEl.classList.contains('dark') ? 'light' : 'dark');
+    });
+
+    // --- Elements ---
     const dz = document.getElementById('dz');
     const fileInput = document.getElementById('file_input');
     const chooseBtn = document.getElementById('choose_files');
     const convertStatus = document.getElementById('convert_status');
     const clearAll = document.getElementById('clear_all');
-
     const results = document.getElementById('results');
     const resultsList = document.getElementById('results_list');
 
+    const batchSection = document.getElementById('batch_section');
+    const rowsWarning = document.getElementById('rows_warning');
+    const batchRows = document.getElementById('batch_rows');
+    const pushBatchBtn = document.getElementById('push_batch_btn');
+    const batchStatus = document.getElementById('batch_status');
+    const batchOutput = document.getElementById('batch_output');
+
+    const strictOverflow = document.getElementById('strict_overflow');
+    const dryRun = document.getElementById('dry_run');
     const tz = document.getElementById('tz');
     const modelOverride = document.getElementById('model_override');
-    const excludes = document.getElementById('excludes');
-    const dryRun = document.getElementById('dry_run');
-    const strictOverflow = document.getElementById('strict_overflow');
 
-    const batchSection = document.getElementById('batch_section');
-    const batchRows = document.getElementById('batch_rows');
-    const pushAllBtn = document.getElementById('push_all_btn');
-    const pushAllLabel = document.getElementById('push_all_label');
+    // --- Data ---
+    let convertedItems = []; // [{ source_file, output_file, json }]
+    let rows = []; // [{ idx, site_id, device_id, excludes, member_offset, model_override?, userChangedSite? }]
+    let seenFiles = new Set(); // dedupe chooser/dnd
+    let sitesCache = []; // list of sites
+    const devicesBySite = new Map(); // site_id -> devices[]
 
-    const pushStatus = document.getElementById('push_status');
-    const statusText = document.getElementById('status_text');
-    const statusTime = document.getElementById('status_time');
-    const statusIcon = document.getElementById('status_icon');
-    const progressBar = document.getElementById('progress_bar');
+    // --- Utils ---
+    function show(el){ el.classList.remove('hidden'); }
+    function hide(el){ el.classList.add('hidden'); }
+    function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
 
-    // State
-    let convertedItems = [];
-    let cachedSites = null;
-    let fileKeySet = new Set();
-    let userTouchedSite = {}; // rowIndex -> true if manually changed
-
-    // Helpers
-    const qsa = (sel, root=document) => Array.prototype.slice.call(root.querySelectorAll(sel));
-    const byId = id => document.getElementById(id);
-    const show = el => el && el.classList.remove('hidden');
-    const hide = el => el && el.classList.add('hidden');
-    const escapeHtml = str => String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
-    const nowTime = () => new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-
-    function setProgress(pct, label, mode='info'){
-      show(pushStatus);
-      progressBar.style.width = pct + '%';
-      statusText.textContent = label || '';
-      statusTime.textContent = nowTime();
-      pushStatus.classList.remove('status-info','status-success','status-error');
-      statusIcon.classList.remove('bg-sky-400','bg-emerald-500','bg-rose-500');
-      if (mode === 'success'){ pushStatus.classList.add('status-success'); statusIcon.classList.add('bg-emerald-500'); }
-      else if (mode === 'error'){ pushStatus.classList.add('status-error'); statusIcon.classList.add('bg-rose-500'); }
-      else { pushStatus.classList.add('status-info'); statusIcon.classList.add('bg-sky-400'); }
-      pushStatus.scrollIntoView({behavior:'smooth', block:'nearest'});
-    }
-
-    const getRowSiteSelect   = i => byId('row_site_' + i);
-    const getRowDeviceSelect = i => byId('row_device_' + i);
-    const getRowStatus       = i => byId('row_status_' + i);
-    const getRowOffsetInput  = i => byId('row_member_offset_' + i);
-    const getRowExcludesInp  = i => byId('row_excludes_' + i);
-
-    // Drag & Drop
-    chooseBtn.addEventListener('click', () => fileInput.click());
-    dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
-    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-    dz.addEventListener('drop', e => {
-      e.preventDefault(); dz.classList.remove('dragover');
-      if (e.dataTransfer.files && e.dataTransfer.files.length) {
-        handleFiles(Array.from(e.dataTransfer.files));
-      }
+    // --- File input UX (Chrome/Edge: single dialog & same-file reselect) ---
+    chooseBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      fileInput.value = '';
+      fileInput.click();
     });
-    dz.addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', () => handleFiles(Array.from(fileInput.files)));
+    dz.addEventListener('click', (e) => {
+      if (e.target === dz) { fileInput.value = ''; fileInput.click(); }
+    });
+    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+    dz.addEventListener('drop', (e) => { e.preventDefault(); dz.classList.remove('dragover'); if (e.dataTransfer.files?.length) handleFiles([...e.dataTransfer.files]); });
+    fileInput.addEventListener('change', () => { handleFiles([...fileInput.files]); fileInput.value = ''; });
 
     clearAll.addEventListener('click', () => {
       convertedItems = [];
+      rows = [];
+      seenFiles.clear();
       resultsList.innerHTML = '';
-      hide(results);
-      fileInput.value = '';
-      convertStatus.textContent = '';
       batchRows.innerHTML = '';
+      batchOutput.innerHTML = '';
+      convertStatus.textContent = '';
+      hide(results);
       hide(batchSection);
-      userTouchedSite = {};
-      fileKeySet.clear();
-      hide(pushStatus);
-      validateRows(); // ensure buttons reset
+      hide(rowsWarning);
+      batchStatus.textContent = '';
+      dryRun.checked = true;
+      pushBatchBtn.textContent = 'Test configuration for all';
     });
 
-    // Convert + dedupe by name|size|mtime
+    // --- Sites/Devices ---
+    async function fetchSites(){
+      try {
+        const res = await fetch('/api/sites');
+        const data = await res.json();
+        if (!data.ok) throw new Error(JSON.stringify(data.error));
+        sitesCache = data.items || [];
+      } catch (e){
+        sitesCache = [];
+        console.error('Failed to fetch sites', e);
+      }
+    }
+    async function fetchDevices(site_id){
+      if (!site_id) return [];
+      if (devicesBySite.has(site_id)) return devicesBySite.get(site_id);
+      try {
+        const url = new URL('/api/site_devices', window.location.origin);
+        url.searchParams.set('site_id', site_id);
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!data.ok) throw new Error(JSON.stringify(data.error));
+        devicesBySite.set(site_id, data.items || []);
+        return data.items || [];
+      } catch (e){
+        console.error('Failed to fetch devices', e);
+        devicesBySite.set(site_id, []);
+        return [];
+      }
+    }
+
+    // --- Conversion ---
+    function keyForFile(f){ return `${f.name}|${f.size}|${f.lastModified}`; }
+
     async function handleFiles(files){
       if (!files.length) return;
 
-      const unique = [], dupes = [];
+      // dedupe files
+      const unique = [];
       for (const f of files){
-        const key = [f.name, f.size, f.lastModified].join('|');
-        if (fileKeySet.has(key)) { dupes.push(f.name); continue; }
-        fileKeySet.add(key); unique.push(f);
+        const key = keyForFile(f);
+        if (!seenFiles.has(key)) { seenFiles.add(key); unique.push(f); }
       }
-      if (!unique.length){
-        if (dupes.length) convertStatus.textContent = 'Skipped duplicate file(s): ' + dupes.join(', ');
-        return;
-      }
+      if (!unique.length){ convertStatus.textContent = 'All selected files were duplicates.'; return; }
 
-      const hadRows = convertedItems.length;
-      convertStatus.textContent = 'Converting...' + (dupes.length ? ' (skipped: ' + dupes.join(', ') + ')' : '');
-
+      convertStatus.textContent = 'Converting...';
       const form = new FormData();
       unique.forEach(f => form.append('files', f));
-      form.append('strict_overflow', (strictOverflow && strictOverflow.checked) ? 'true' : 'false');
+      form.append('strict_overflow', strictOverflow.checked ? 'true' : 'false');
 
       const res = await fetch('/api/convert', { method: 'POST', body: form });
       const data = await res.json();
       if (!data.ok){
-        convertStatus.textContent = 'Error: ' + (data.error || res.status);
+        convertStatus.textContent = `Error: ${data.error || res.status}`;
         return;
       }
+      (data.items || []).forEach(it => convertedItems.push(it));
+      renderConvertedList();
+      convertStatus.textContent = `Converted ${data.items.length} file(s). Total: ${convertedItems.length}.`;
 
-      const newItems = data.items || [];
-      if (!newItems.length){ convertStatus.textContent = 'No new files converted.'; return; }
+      if (!sitesCache.length) await fetchSites();
 
-      const startIndex = convertedItems.length;
-      convertedItems = convertedItems.concat(newItems);
+      // New rows: site defaults to first row's site if exists, else first site in list
+      const defaultSite = rows.length ? rows[0].site_id : (sitesCache[0]?.id || '');
+      for (let i = rows.length; i < convertedItems.length; i++){
+        rows.push({
+          idx: i,
+          site_id: defaultSite || '',
+          device_id: '',
+          excludes: '',
+          member_offset: 0,
+          model_override: '',
+          userChangedSite: false
+        });
+        if (defaultSite) await fetchDevices(defaultSite);
+      }
 
-      appendResults(newItems);
-      if (hadRows === 0) renderBatch(convertedItems);
-      else appendBatchRows(newItems, startIndex);
-
-      convertStatus.textContent = 'Converted ' + newItems.length + ' new file(s).' + (dupes.length ? ' (skipped: ' + dupes.length + ')' : '');
-      show(results);
+      renderBatchRows();
       show(batchSection);
-
-      await fetchSites();
-      propagateFromFirstRowSite(false);
-      validateRows();
     }
 
-    // Preview cards
-    function appendResults(items){
-      items.forEach(it => {
+    function renderConvertedList(){
+      show(results);
+      resultsList.innerHTML = '';
+      convertedItems.forEach((it, idx) => {
         const card = document.createElement('div');
-        card.className = 'rounded-xl border bg-white p-4';
-        card.innerHTML =
-          '<div class="text-sm font-medium">' + escapeHtml(it.source_file) + '</div>' +
-          '<details class="mt-2">' +
-          '  <summary class="cursor-pointer text-sm text-slate-600">Preview JSON</summary>' +
-          '  <pre class="text-xs mt-2 p-2 bg-slate-50 border rounded overflow-auto max-h-80">' + escapeHtml(JSON.stringify(it.json, null, 2)) + '</pre>' +
-          '</details>';
+        card.className = 'rounded-xl border bg-white dark:bg-slate-800 dark:border-slate-700 p-4';
+        card.innerHTML = `
+          <div class="flex items-center justify-between">
+            <div class="text-sm font-medium">${escapeHtml(it.source_file)}</div>
+            <div class="text-xs text-slate-500 dark:text-slate-300">Row ${idx+1}</div>
+          </div>
+          <details class="mt-2">
+            <summary class="cursor-pointer text-sm text-slate-600 dark:text-slate-300">Preview JSON</summary>
+            <pre class="text-xs mt-2 p-2 bg-slate-50 dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80">${escapeHtml(JSON.stringify(it.json, null, 2))}</pre>
+          </details>
+        `;
         resultsList.appendChild(card);
       });
     }
 
-    // Fetch sites once; fill placeholders on demand
-    async function fetchSites(){
-      try {
-        const url = new URL('/api/sites', window.location.origin);
-        const res = await fetch(url);
-        const data = await res.json();
-        if (!data.ok) throw new Error(JSON.stringify(data.error));
-        cachedSites = data.items || [];
-        qsa('[id^="row_site_"]').forEach(sel => {
-          if (sel.options.length <= 1) fillRowSites(sel, cachedSites);
-        });
-        validateRows();
-      } catch (e){
-        console.error('Error loading sites', e);
-        cachedSites = [];
-      }
-    }
-
-    // Batch rendering
-    function renderBatch(items){
-      batchRows.innerHTML = '';
-      userTouchedSite = {};
-      if(!items.length){ hide(batchSection); return; }
-      appendBatchRows(items, 0);
-      updatePushLabels();
-      validateRows();
-    }
-
-    function appendBatchRows(items, startIndex){
-      for (let offset=0; offset<items.length; offset++){
-        const idx = startIndex + offset;
-        const it  = convertedItems[idx];
-
-        const row = document.createElement('div');
-        row.className = 'batch-row bg-white rounded-2xl shadow p-4';
-        row.dataset.index = idx;
-
-        row.innerHTML =
-          '<div class="flex items-center justify-between">' +
-          '  <div class="text-sm font-medium">' + escapeHtml(it.source_file) + '</div>' +
-          '  <div class="text-xs text-slate-500" id="row_status_' + idx + '">Not mapped</div>' +
-          '</div>' +
-          '<div class="grid md:grid-cols-5 gap-4 mt-3">' +
-          '  <div>' +
-          '    <label class="block text-sm font-medium mb-1">Site</label>' +
-          '    <select id="row_site_' + idx + '" class="w-full border rounded p-2" autocomplete="off">' +
-          '      <option value="">Loading sites…</option>' +
-          '    </select>' +
-          '  </div>' +
-          '  <div>' +
-          '    <label class="block text-sm font-medium mb-1">Device</label>' +
-          '    <select id="row_device_' + idx + '" class="w-full border rounded p-2" autocomplete="off">' +
-          '      <option value="">Select a site first</option>' +
-          '    </select>' +
-          '    <p class="text-xs text-slate-500 mt-1">Multiple rows can target the same device if offsets differ.</p>' +
-          '  </div>' +
-          '  <div>' +
-          '    <label class="block text-sm font-medium mb-1">' +
-          '      Starting member (offset)' +
-          '      <span class="relative inline-block tooltip-group align-middle ml-1">' +
-          '        <button type="button" class="w-5 h-5 rounded-full text-xs bg-slate-100 text-slate-600 hover:bg-slate-200" aria-describedby="tt_offset_' + idx + '" tabindex="0">ⓘ</button>' +
-          '        <div id="tt_offset_' + idx + '" role="tooltip" class="tooltip absolute z-10 left-0 mt-2 w-80 rounded-lg border bg-white p-3 text-xs text-slate-600 shadow-lg">' +
-          '          <div class="font-semibold mb-1">What does “Starting member” mean?</div>' +
-          '          <ul class="list-disc pl-4 space-y-1">' +
-          '            <li>0-based target member index where this row’s ports should land.</li>' +
-          '            <li>We normalize the source stack to start at 0, then add this number.</li>' +
-          '            <li><span class="font-medium">Example:</span> A 3-member file at offset <code>0</code> maps to members <code>0–2</code>. Another 2-member file at offset <code>3</code> maps to <code>3–4</code>.</li>' +
-          '          </ul>' +
-          '        </div>' +
-          '      </span>' +
-          '    </label>' +
-          '    <input id="row_member_offset_' + idx + '" type="number" min="0" step="1" class="w-full border rounded p-2" value="0" />' +
-          '    <p class="text-xs text-slate-500 mt-1">Per-row offset. Normalization is always on.</p>' +
-          '  </div>' +
-          '  <div>' +
-          '    <label class="block text-sm font-medium mb-1">Exclude interfaces (optional)</label>' +
-          '    <input id="row_excludes_' + idx + '" type="text" class="w-full border rounded p-2" placeholder="ge-0/0/47, ge-0/0/10" />' +
-          '  </div>' +
-          '  <div class="flex items-end">' +
-          '    <button id="row_push_' + idx + '" class="row-push-btn w-full px-3 py-2 rounded text-white bg-[var(--brand)] hover:bg-[var(--brand-hover)]">' +
-          (dryRun && dryRun.checked ? 'Test configuration' : 'Push configuration') +
-          '    </button>' +
-          '  </div>' +
-          '</div>' +
-          '<details id="row_details_' + idx + '" class="mt-3">' +
-          '  <summary class="cursor-pointer text-sm text-slate-600">Row output</summary>' +
-          '  <pre id="row_output_' + idx + '" class="text-xs mt-2 p-2 bg-slate-50 border rounded overflow-auto max-h-64"></pre>' +
-          '</details>';
-
-        batchRows.appendChild(row);
-
-        // Fill row defaults
-        const siteSel = getRowSiteSelect(idx);
-        const devSel  = getRowDeviceSelect(idx);
-        const status  = getRowStatus(idx);
-        const exclInp = getRowExcludesInp(idx);
-        const offsetInput = getRowOffsetInput(idx);
-
-        if (cachedSites && cachedSites.length){ fillRowSites(siteSel, cachedSites); }
-        if (excludes && excludes.value){ exclInp.value = excludes.value; }
-
-        // Default site: copy Row 1 (if any), device remains unselected
-        const first = getRowSiteSelect(0);
-        if (first && first.value){
-          siteSel.value = first.value;
-          status.textContent = 'Site selected';
-          fillRowDevices(devSel, first.value);
-        }
-
-        // Offset default must be 0
-        offsetInput.value = '0';
-      }
-      updatePushLabels();
-      validateRows();
-    }
-
-    // Sites/devices plumbing
-    function fillRowSites(selectEl, sites){
-      const current = selectEl.value;
+    // --- Batch rows UI ---
+    function siteOptionsHtml(selectedId){
       const opts = ['<option value="">Select a site…</option>'];
-      sites.forEach(s => {
+      sitesCache.forEach(s => {
+        const sel = (s.id === selectedId) ? 'selected' : '';
         const shortId = s.id ? s.id.slice(0,8) : '';
-        opts.push('<option value="'+s.id+'">'+escapeHtml(s.name)+(shortId ? ' ('+shortId+')' : '')+'</option>');
+        opts.push(`<option value="${s.id}" ${sel}>${escapeHtml(s.name)}${shortId ? ' ('+shortId+')' : ''}</option>`);
       });
-      selectEl.innerHTML = opts.join('');
-      if (current && Array.from(selectEl.options).some(o => o.value === current)) {
-        selectEl.value = current;
-      }
+      return opts.join('');
+    }
+    function deviceOptionsHtml(site_id, selectedId){
+      const devs = devicesBySite.get(site_id) || [];
+      const opts = ['<option value="">Select a device…</option>'];
+      devs.forEach(d => {
+        const label = `${d.name} — ${d.model || ''} ${d.type ? `(${d.type})` : ''}`.trim();
+        const sel = (d.id === selectedId) ? 'selected' : '';
+        opts.push(`<option value="${d.id}" ${sel}>${escapeHtml(label)}</option>`);
+      });
+      return opts.join('');
     }
 
-    async function fillRowDevices(selectEl, siteIdVal){
-      try{
-        const url = new URL('/api/site_devices', window.location.origin);
-        url.searchParams.set('site_id', siteIdVal);
-        const res = await fetch(url);
-        const data = await res.json();
-        if(!data.ok) throw new Error(JSON.stringify(data.error));
-        const opts = ['<option value="">Select a device…</option>'];
-        (data.items || []).forEach(d => {
-          const label = (d.name || '') + ' — ' + (d.model || '') + (d.type ? ' (' + d.type + ')' : '');
-          opts.push('<option value="'+d.id+'">'+escapeHtml(label)+'</option>');
+    function renderBatchRows(){
+      batchRows.innerHTML = '';
+      rows.forEach((row, i) => {
+        const dup = isPairDuplicate(row.device_id, row.member_offset);
+        const dupClass = dup ? 'ring-2 ring-rose-500' : '';
+        const el = document.createElement('div');
+        el.className = 'p-4';
+        el.innerHTML = `
+          <div class="grid md:grid-cols-12 gap-2 items-end">
+            <div class="md:col-span-1">
+              <label class="block text-xs font-medium mb-1">File</label>
+              <div class="text-sm text-slate-700 dark:text-slate-200 truncate" title="${escapeHtml(convertedItems[row.idx]?.source_file || '')}">
+                ${escapeHtml(convertedItems[row.idx]?.source_file || '(missing)')}
+              </div>
+            </div>
+
+            <div class="md:col-span-3">
+              <label class="block text-xs font-medium mb-1">Site</label>
+              <select data-rowsel="site" data-row="${i}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700">${siteOptionsHtml(row.site_id)}</select>
+            </div>
+
+            <div class="md:col-span-2">
+              <label class="block text-xs font-medium mb-1">Device</label>
+              <select data-rowsel="device" data-row="${i}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700 ${dupClass}">
+                ${row.site_id ? deviceOptionsHtml(row.site_id, row.device_id) : '<option value="">Select a site first</option>'}
+              </select>
+            </div>
+
+            <div class="md:col-span-1">
+              <label class="block text-xs font-medium mb-1 tooltip">
+                <span class="inline-flex items-center gap-1">Start member
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
+                </span>
+                <span class="tip">Offset Cisco member numbering when mapping to a Juniper VC. Example: two 48-port Cisco stacks become a single 5-member VC—set rows destined for members 0,1,2,3,4 accordingly.</span>
+              </label>
+              <input data-rowsel="offset" data-row="${i}" type="number" min="0" step="1" value="${row.member_offset}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700 ${dupClass}" />
+            </div>
+
+            <div class="md:col-span-4">
+              <label class="block text-xs font-medium mb-1 tooltip">
+                <span class="inline-flex items-center gap-1">Exclude interfaces
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
+                </span>
+                <span class="tip">Skip specific interfaces from being pushed (e.g., uplinks or special ports). Use full Juniper names, comma-separated. Example: <code>ge-0/2/0, ge-0/2/1</code>.</span>
+              </label>
+              <input data-rowsel="excludes" data-row="${i}" type="text" placeholder="ge-0/2/0, xe-0/2/1" value="${escapeHtml(row.excludes)}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" />
+            </div>
+
+            <div class="md:col-span-1 flex items-end justify-end">
+              <button class="h-9 w-9 flex items-center justify-center rounded border border-rose-500 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30" title="Remove row" data-rowremove="${i}">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 8.586l3.536-3.536 1.414 1.414L11.414 10l3.536 3.536-1.414 1.414L10 11.414l-3.536 3.536-1.414-1.414L8.586 10 5.05 6.464l1.414-1.414L10 8.586z" clip-rule="evenodd"/></svg>
+              </button>
+            </div>
+          </div>
+        `;
+        batchRows.appendChild(el);
+      });
+
+      // listeners
+      batchRows.querySelectorAll('select[data-rowsel="site"]').forEach(sel => {
+        sel.addEventListener('change', async () => {
+          const i = parseInt(sel.getAttribute('data-row'));
+          const oldFirst = rows[0]?.site_id || '';
+          rows[i].site_id = sel.value;
+          rows[i].device_id = '';
+          rows[i].userChangedSite = true;
+
+          if (rows[i].site_id) await fetchDevices(rows[i].site_id);
+          updateDeviceSelect(i);
+          updatePairDuplicateWarning();
+
+          // Propagate from first row to others (only rows not manually changed)
+          if (i === 0 && sel.value !== oldFirst) {
+            await propagateFirstSite(rows[0].site_id);
+          }
         });
-        selectEl.innerHTML = opts.join('');
-      }catch(e){
-        selectEl.innerHTML = '<option value="">Failed to load devices</option>';
-        console.error(e);
-      } finally {
-        validateRows();
+      });
+      batchRows.querySelectorAll('select[data-rowsel="device"]').forEach(sel => {
+        sel.addEventListener('change', () => {
+          const i = parseInt(sel.getAttribute('data-row'));
+          rows[i].device_id = sel.value;
+          updatePairDuplicateWarning();
+          markPairDuplicateClass(i);
+        });
+      });
+      batchRows.querySelectorAll('input[data-rowsel="offset"]').forEach(inp => {
+        inp.addEventListener('input', () => {
+          const i = parseInt(inp.getAttribute('data-row'));
+          const v = parseInt(inp.value || '0'); rows[i].member_offset = isNaN(v) ? 0 : Math.max(0, v);
+          updatePairDuplicateWarning();
+          markPairDuplicateClass(i);
+        });
+      });
+      batchRows.querySelectorAll('input[data-rowsel="excludes"]').forEach(inp => {
+        inp.addEventListener('input', () => {
+          const i = parseInt(inp.getAttribute('data-row'));
+          rows[i].excludes = inp.value || '';
+        });
+      });
+      batchRows.querySelectorAll('button[data-rowremove]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const i = parseInt(btn.getAttribute('data-rowremove'));
+          rows.splice(i, 1);
+          renderBatchRows();
+          updatePairDuplicateWarning();
+        });
+      });
+
+      updatePairDuplicateWarning();
+    }
+
+    // Propagate first row's Site to rows that were NOT manually changed
+    async function propagateFirstSite(newSiteId){
+      if (!newSiteId) return;
+      await fetchDevices(newSiteId); // prime cache
+      for (let j = 1; j < rows.length; j++){
+        if (!rows[j].userChangedSite) {
+          rows[j].site_id = newSiteId;
+          rows[j].device_id = '';
+          updateSiteSelect(j);
+          updateDeviceSelect(j);
+        }
       }
     }
 
-    // Propagate Row 1 site to rows not manually touched
-    async function propagateFromFirstRowSite(overrideTouched){
-      const first = getRowSiteSelect(0);
-      if (!first) return;
-      const siteVal = first.value || '';
-      const rows = qsa('.batch-row');
-
-      for (let i=0; i<rows.length; i++){
-        const siteSel = getRowSiteSelect(i);
-        const devSel  = getRowDeviceSelect(i);
-        const status  = getRowStatus(i);
-
-        if (!siteSel) continue;
-        if (i > 0 && userTouchedSite[i] && !overrideTouched) continue;
-
-        if (!siteVal) {
-          if (i > 0 && (!userTouchedSite[i] || overrideTouched)) {
-            siteSel.value = '';
-            devSel.innerHTML = '<option value="">Select a site first</option>';
-            if (status) status.textContent = 'Not mapped';
-          }
-          continue;
-        }
-
-        if (siteSel.value !== siteVal || overrideTouched){
-          siteSel.value = siteVal;
-          devSel.innerHTML = '<option value="">Loading devices…</option>';
-          if (status) status.textContent = 'Site selected';
-          await fillRowDevices(devSel, siteVal);
-          if (overrideTouched) userTouchedSite[i] = false;
-        }
-      }
-      validateRows();
+    function updateSiteSelect(i){
+      const row = rows[i];
+      const sel = batchRows.querySelector(`select[data-rowsel="site"][data-row="${i}"]`);
+      if (!sel) return;
+      sel.innerHTML = siteOptionsHtml(row.site_id);
+    }
+    function updateDeviceSelect(i){
+      const row = rows[i];
+      const sel = batchRows.querySelector(`select[data-rowsel="device"][data-row="${i}"]`);
+      if (!sel) return;
+      if (!row.site_id) { sel.innerHTML = '<option value="">Select a site first</option>'; return; }
+      sel.innerHTML = deviceOptionsHtml(row.site_id, row.device_id);
+      markPairDuplicateClass(i);
     }
 
-    // Change handlers (site/device)
-    batchRows.addEventListener('change', async (e) => {
-      const siteSel = e.target.closest('select[id^="row_site_"]');
-      const devSel  = e.target.closest('select[id^="row_device_"]');
+    // Duplicate logic: allow same device multiple times if Start member differs
+    function isPairDuplicate(device_id, member_offset){
+      if (!device_id) return false;
+      const key = `${device_id}@@${member_offset}`;
+      let seen = 0;
+      for (const r of rows){
+        if (r.device_id && `${r.device_id}@@${r.member_offset}` === key) {
+          seen += 1;
+          if (seen > 1) return true;
+        }
+      }
+      return false;
+    }
+    function updatePairDuplicateWarning(){
+      let hasDup = false;
+      const counter = new Map();
+      for (const r of rows){
+        if (!r.device_id) continue;
+        const key = `${r.device_id}@@${r.member_offset}`;
+        counter.set(key, (counter.get(key) || 0) + 1);
+      }
+      for (const count of counter.values()){
+        if (count > 1) { hasDup = true; break; }
+      }
+      if (hasDup){
+        rowsWarning.innerHTML = 'Duplicate device with the same <em>Start member</em> detected. Use a different Start member for repeated device selections.';
+        show(rowsWarning);
+        pushBatchBtn.disabled = true;
+        pushBatchBtn.classList.add('cursor-not-allowed','opacity-70');
+      } else {
+        hide(rowsWarning);
+        pushBatchBtn.disabled = false;
+        pushBatchBtn.classList.remove('cursor-not-allowed','opacity-70');
+      }
+      rows.forEach((_, i) => markPairDuplicateClass(i));
+    }
+    function markPairDuplicateClass(i){
+      const row = rows[i];
+      const devSel = batchRows.querySelector(`select[data-rowsel="device"][data-row="${i}"]`);
+      const offInp = batchRows.querySelector(`input[data-rowsel="offset"][data-row="${i}"]`);
+      const dup = isPairDuplicate(row.device_id, row.member_offset);
+      [devSel, offInp].forEach(el => {
+        if (!el) return;
+        el.classList.toggle('ring-2', dup);
+        el.classList.toggle('ring-rose-500', dup);
+      });
+    }
 
-      if (siteSel){
-        const idx = parseInt(siteSel.id.split('_').pop(), 10);
-        if (isNaN(idx)) return;
+    // --- Batch push ---
+    function syncPushBtnLabel(){ pushBatchBtn.textContent = dryRun.checked ? 'Test configuration for all' : 'Push configuration for all'; }
+    dryRun.addEventListener('change', syncPushBtnLabel);
+    syncPushBtnLabel();
 
-        if (idx === 0){
-          // Row 1 is master site: refresh its devices, then mirror to others (not touched)
-          const dev0 = getRowDeviceSelect(0);
-          const status0 = getRowStatus(0);
-          if (siteSel.value){
-            dev0.innerHTML = '<option value="">Loading devices…</option>';
-            await fillRowDevices(dev0, siteSel.value);
-            if (status0) status0.textContent = 'Site selected';
-          } else {
-            dev0.innerHTML = '<option value="">Select a site first</option>';
-            if (status0) status0.textContent = 'Not mapped';
-          }
-          await propagateFromFirstRowSite(false);
-          validateRows();
+    pushBatchBtn.addEventListener('click', async () => {
+      batchOutput.innerHTML = '';
+      batchStatus.textContent = '';
+
+      for (const r of rows){
+        if (!r.site_id || !r.device_id){
+          alert('Each row must have a Site and a Device selected.');
           return;
         }
-
-        // Row > 0: mark touched and reload its devices
-        userTouchedSite[idx] = true;
-        const dev = getRowDeviceSelect(idx);
-        const status = getRowStatus(idx);
-        if (siteSel.value){
-          dev.innerHTML = '<option value="">Loading devices…</option>';
-          status.textContent = 'Site selected';
-          await fillRowDevices(dev, siteSel.value);
-        } else {
-          dev.innerHTML = '<option value="">Select a site first</option>';
-          status.textContent = 'Not mapped';
-        }
-        validateRows();
-        return;
       }
+      if (pushBatchBtn.disabled) return;
 
-      if (devSel){
-        const idx = parseInt(devSel.id.split('_').pop(), 10);
-        if (isNaN(idx)) return;
-        const status = getRowStatus(idx);
-        if (status){
-          status.textContent = (getRowSiteSelect(idx).value && devSel.value) ? 'Ready to push' :
-                               (getRowSiteSelect(idx).value ? 'Site selected' : 'Not mapped');
-        }
-        validateRows();
-      }
-    });
-
-    // Offset input validation hook
-    batchRows.addEventListener('input', (e) => {
-      const offInp = e.target.closest('input[id^="row_member_offset_"]');
-      if (offInp) validateRows();
-    });
-
-    // Test/Push labels (global toggle)
-    function updatePushLabels(){
-      const label = (dryRun && dryRun.checked) ? 'Test configuration' : 'Push configuration';
-      pushAllLabel.textContent = (dryRun && dryRun.checked) ? 'Test all mapped' : 'Push all mapped';
-      qsa('.row-push-btn').forEach(b => { b.textContent = label; });
-    }
-    dryRun.addEventListener('change', () => { updatePushLabels(); validateRows(); });
-
-    // Duplicate validator: same Device + same Offset not allowed
-    function validateRows() {
-      // deviceId -> offset -> [rowIdx, ...]
-      const deviceOffsetMap = new Map();
-      const rows = Array.from(document.querySelectorAll('.batch-row'));
-
-      // Clear previous highlights & enable buttons by default
-      rows.forEach(row => {
-        row.classList.remove('ring', 'ring-2', 'ring-rose-300', 'border-rose-300');
-        const idx = parseInt(row.dataset.index, 10);
-        const btn = document.getElementById('row_push_' + idx);
-        const status = document.getElementById('row_status_' + idx);
-        const offEl = document.getElementById('row_member_offset_' + idx);
-        if (btn) btn.disabled = false;
-        if (offEl) offEl.classList.remove('ring', 'ring-1', 'ring-rose-300');
-        if (status && status.textContent.startsWith('Duplicate:')) {
-          const siteSel = document.getElementById('row_site_' + idx);
-          const devSel  = document.getElementById('row_device_' + idx);
-          status.textContent = (siteSel?.value && devSel?.value) ? 'Ready to push' :
-                               (siteSel?.value ? 'Site selected' : 'Not mapped');
-        }
-      });
-
-      // Build map
-      rows.forEach(row => {
-        const idx = parseInt(row.dataset.index, 10);
-        const devSel = document.getElementById('row_device_' + idx);
-        const offInp = document.getElementById('row_member_offset_' + idx);
-        const deviceId = (devSel?.value || '').trim();
-        const offset = parseInt((offInp?.value || '0'), 10) || 0;
-        if (!deviceId) return; // only validate rows mapped to a device
-
-        if (!deviceOffsetMap.has(deviceId)) deviceOffsetMap.set(deviceId, new Map());
-        const offMap = deviceOffsetMap.get(deviceId);
-        const list = offMap.get(offset) || [];
-        list.push(idx);
-        offMap.set(offset, list);
-      });
-
-      // Mark duplicates
-      let hasDup = false;
-      deviceOffsetMap.forEach((offMap) => {
-        offMap.forEach((idxList, offset) => {
-          if (idxList.length > 1) {
-            hasDup = true;
-            idxList.forEach(i => {
-              const rowEl = document.querySelector(`.batch-row[data-index="${i}"]`);
-              const status = document.getElementById('row_status_' + i);
-              const btn    = document.getElementById('row_push_' + i);
-              const offEl  = document.getElementById('row_member_offset_' + i);
-              if (rowEl) rowEl.classList.add('ring', 'ring-2', 'ring-rose-300');
-              if (offEl) offEl.classList.add('ring', 'ring-1', 'ring-rose-300');
-              if (status) status.textContent = `Duplicate: device + offset ${offset} already used`;
-              if (btn) btn.disabled = true;
-            });
-          }
-        });
-      });
-
-      // Disable/label Push All if any duplicate exists
-      if (hasDup) {
-        pushAllBtn.disabled = true;
-        pushAllLabel.textContent = 'Resolve duplicates';
-      } else {
-        pushAllBtn.disabled = false;
-        pushAllLabel.textContent = (dryRun && dryRun.checked) ? 'Test all mapped' : 'Push all mapped';
-      }
-      return !hasDup;
-    }
-
-    // Row push
-    batchRows.addEventListener('click', async (e) => {
-      const btn = e.target.closest('.row-push-btn');
-      if (!btn) return;
-
-      if (!validateRows()) {
-        alert('Resolve duplicate rows: the same device cannot be used with the same Starting member (offset) more than once.');
-        return;
-      }
-
-      const row = e.target.closest('.batch-row');
-      const idx = parseInt(row.dataset.index, 10);
-      if (isNaN(idx)) return;
-
-      const siteSel = getRowSiteSelect(idx);
-      const devSel  = getRowDeviceSelect(idx);
-      const outBox  = byId('row_output_' + idx);
-      const status  = getRowStatus(idx);
-      const exclInp = getRowExcludesInp(idx);
-      const offInp  = getRowOffsetInput(idx);
-
-      if(!(siteSel && siteSel.value && devSel && devSel.value)){
-        alert('Pick a Site and Device for this row first.');
-        return;
-      }
-
-      await pushOneRow(idx, convertedItems[idx], {
-        site_id: siteSel.value, device_id: devSel.value,
-        member_offset: parseInt(offInp.value || '0', 10) || 0,
-        excludes: (exclInp && exclInp.value) ? exclInp.value.trim() : (excludes.value.trim() || '')
-      }, outBox, status, btn);
-    });
-
-    // Push one row helper
-    async function pushOneRow(idx, item, opts, outBox, statusEl, btnEl){
-      const label = (dryRun && dryRun.checked) ? 'Testing…' : 'Applying…';
-      btnEl.disabled = true;
-      const orig = btnEl.textContent;
-      btnEl.textContent = label;
-      statusEl.textContent = 'Sending…';
+      const payloadRows = rows.map(r => ({
+        site_id: r.site_id,
+        device_id: r.device_id,
+        input_json: convertedItems[r.idx].json,
+        excludes: r.excludes,
+        member_offset: r.member_offset,
+        model_override: r.model_override || ''
+      }));
 
       const form = new FormData();
-      form.append('site_id', opts.site_id);
-      form.append('device_id', opts.device_id);
-      form.append('input_json', JSON.stringify(item.json));
-      form.append('dry_run', (dryRun && dryRun.checked) ? 'true' : 'false');
+      form.append('rows', JSON.stringify(payloadRows));
+      form.append('dry_run', dryRun.checked ? 'true' : 'false');
       form.append('tz', tz.value.trim());
-      if (modelOverride.value.trim()) form.append('model_override', modelOverride.value.trim());
-      if (opts.excludes) form.append('excludes', opts.excludes);
-      form.append('member_offset', String(opts.member_offset));
-      form.append('normalize_modules', 'true'); // per-row normalization always on
+      const mo = (modelOverride.value || '').trim();
+      if (mo) form.append('model_override', mo);
 
-      try{
-        const res = await fetch('/api/push', { method: 'POST', body: form });
+      pushBatchBtn.disabled = true;
+      pushBatchBtn.textContent = dryRun.checked ? 'Testing…' : 'Applying…';
+
+      try {
+        const res = await fetch('/api/push_batch', { method: 'POST', body: form });
         const data = await res.json();
-        outBox.textContent = JSON.stringify(data, null, 2);
-        statusEl.textContent = data.ok
-          ? ((dryRun && dryRun.checked) ? 'Test successful' : 'Push successful')
-          : 'Failed';
-      }catch(e){
-        outBox.textContent = 'Error: ' + String(e);
-        statusEl.textContent = 'Error';
-      }finally{
-        btnEl.disabled = false;
-        btnEl.textContent = orig;
+
+        const okCount = (data.results || []).filter(r => r.ok).length;
+        const total = (data.results || []).length;
+        batchStatus.textContent = `${okCount}/${total} ${dryRun.checked ? 'tests' : 'pushes'} succeeded.`;
+
+        renderBatchResults(data.results || []);
+
+      } catch (e){
+        batchOutput.innerHTML = `
+          <div class="rounded-lg border p-3 status-error dark:bg-rose-950">
+            <div class="font-medium">Unexpected error</div>
+            <div class="text-sm mt-1">${escapeHtml(String(e))}</div>
+          </div>`;
+      } finally {
+        pushBatchBtn.disabled = false;
+        syncPushBtnLabel();
       }
-    }
+    });
 
-    // Batch push all (sequential)
-    pushAllBtn.addEventListener('click', async function(){
-      if (!validateRows()) {
-        alert('Resolve duplicate rows before pushing.');
-        return;
-      }
+    function renderBatchResults(results){
+      batchOutput.innerHTML = '';
+      results.forEach((r, i) => {
+        const fileLabel = convertedItems[rows[r.row_index]?.idx || 0]?.source_file || `Row ${i+1}`;
+        const statusBadge = r.ok
+          ? '<span class="inline-block px-2 py-0.5 text-xs rounded bg-emerald-100 text-emerald-800">OK</span>'
+          : '<span class="inline-block px-2 py-0.5 text-xs rounded bg-rose-100 text-rose-800">Failed</span>';
 
-      const rows = qsa('.batch-row');
-      if(!rows.length){ alert('No rows to process. Upload files first.'); return; }
-
-      pushAllBtn.disabled = true;
-      const orig = pushAllLabel.textContent;
-      pushAllLabel.textContent = (dryRun && dryRun.checked) ? 'Testing all…' : 'Pushing all…';
-      setProgress(5, 'Starting batch…');
-
-      for(let i=0;i<rows.length;i++){
-        const row = rows[i];
-        const idx = parseInt(row.dataset.index, 10);
-        const it  = convertedItems[idx];
-        const siteSel = getRowSiteSelect(idx);
-        const devSel  = getRowDeviceSelect(idx);
-        const outBox  = byId('row_output_' + idx);
-        const statusEl= getRowStatus(idx);
-        const offInp  = getRowOffsetInput(idx);
-        const exclInp = getRowExcludesInp(idx);
-
-        if(!(siteSel && siteSel.value && devSel && devSel.value)){
-          statusEl.textContent = 'Skipped (not mapped)';
-          continue;
+        const warnings = (r.validation && Array.isArray(r.validation.warnings)) ? r.validation.warnings : [];
+        const errors   = (r.validation && Array.isArray(r.validation.errors))   ? r.validation.errors   : [];
+        let metaHtml = '';
+        if (warnings.length || errors.length) {
+          const items = []
+            .concat(errors.map(e => `<li class="text-rose-700">• ${escapeHtml(String(e))}</li>`))
+            .concat(warnings.map(w => `<li class="text-amber-700">• ${escapeHtml(String(w))}</li>`))
+            .join('');
+          metaHtml = `
+            <div class="rounded-lg border p-3 mb-3 ${errors.length ? 'status-error dark:bg-rose-950' : 'status-info dark:bg-slate-800/60'}">
+              <div class="font-medium">${errors.length ? 'Issues detected' : 'Warnings'}</div>
+              <ul class="mt-1 text-sm">${items}</ul>
+            </div>
+          `;
         }
 
-        setProgress(15 + Math.floor((i/rows.length)*70), 'Processing row ' + (i+1) + ' of ' + rows.length + '…');
+        const payloadStr = escapeHtml(JSON.stringify(r.payload || {}, null, 2));
+        const mistResp = (!r.dry_run && r.response) ? `
+          <details class="mt-3">
+            <summary class="cursor-pointer text-sm text-slate-600 dark:text-slate-300">Mist API response</summary>
+            <pre class="text-xs mt-2 p-2 bg-white dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-96">${escapeHtml(JSON.stringify(r.response, null, 2))}</pre>
+          </details>` : '';
 
-        await pushOneRow(idx, it, {
-          site_id: siteSel.value.trim(),
-          device_id: devSel.value.trim(),
-          member_offset: parseInt(offInp.value || '0', 10) || 0,
-          excludes: (exclInp && exclInp.value) ? exclInp.value.trim() : (excludes.value.trim() || '')
-        }, outBox, statusEl, byId('row_push_' + idx));
-      }
+        const card = document.createElement('div');
+        card.className = 'bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl border p-4';
+        card.innerHTML = `
+          <div class="flex items-center justify-between">
+            <div class="text-sm font-medium">${escapeHtml(fileLabel)}</div>
+            <div class="text-xs text-slate-600 dark:text-slate-300 flex items-center gap-2">
+              <span>Site: ${escapeHtml(r.site_id || '')}</span>
+              <span>Device: ${escapeHtml(r.device_id || '')}</span>
+              ${statusBadge}
+            </div>
+          </div>
+          ${metaHtml}
+          <div class="rounded-lg border dark:border-slate-700 p-3 bg-white dark:bg-slate-800">
+            <div class="text-sm font-medium mb-2">Payload to Mist</div>
+            <pre class="text-xs p-2 bg-slate-50 dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-96">${payloadStr}</pre>
+          </div>
+          ${mistResp}
+        `;
+        batchOutput.appendChild(card);
+      });
+    }
 
-      setProgress(100, 'Batch complete.', 'success');
-      pushAllBtn.disabled = false;
-      pushAllLabel.textContent = orig;
-    });
-
-    // On load
-    window.addEventListener('load', async function(){
+    // --- Init ---
+    window.addEventListener('load', async () => {
       await fetchSites();
-      validateRows();
+      dryRun.checked = true;
+      pushBatchBtn.textContent = 'Test configuration for all';
     });
-
-  })();
   </script>
 </body>
 </html>
