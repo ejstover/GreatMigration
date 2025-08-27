@@ -3,7 +3,7 @@
   One-shot setup & run:
   - Clone (or update) repo
   - Create virtualenv
-  - Install requirements
+  - Install deps
   - Ensure backend/.env (MIST_* vars)
   - Start the FastAPI app with uvicorn
 #>
@@ -17,13 +17,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Require-Tool($name) {
-  if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
-    throw "$name is not installed or not on PATH."
+function Require-Tool {
+  param([Parameter(Mandatory)][string]$Name)
+  if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
+    throw "$Name is not installed or not on PATH."
   }
 }
 
-function Ensure-GitRepo($url, $dir, $branch) {
+function Ensure-GitRepo {
+  param([string]$url, [string]$dir, [string]$branch)
   if (-not (Test-Path $dir)) {
     New-Item -ItemType Directory -Path $dir | Out-Null
   }
@@ -42,7 +44,8 @@ function Ensure-GitRepo($url, $dir, $branch) {
   }
 }
 
-function Ensure-Venv($dir) {
+function Ensure-Venv {
+  param([string]$dir)
   $venvPath = Join-Path $dir ".venv"
   if (-not (Test-Path $venvPath)) {
     Write-Host "Creating Python virtual environment..." -ForegroundColor Cyan
@@ -55,15 +58,18 @@ function Ensure-Venv($dir) {
   return $venvPath
 }
 
-function Pip($venvPython, $args) {
+function Pip {
+  param([string]$venvPython, [string]$args)
   & $venvPython -m pip $args
   if ($LASTEXITCODE -ne 0) { throw "pip failed: $args" }
 }
 
-function Ensure-Requirements($projectDir, $venvPython) {
+function Ensure-Requirements {
+  param([string]$projectDir, [string]$venvPython)
   $reqPath = Join-Path $projectDir "backend\requirements.txt"
+
   Write-Host "Upgrading pip..." -ForegroundColor Cyan
-  Pip $venvPython "install --upgrade pip"
+  Pip $venvPython "install --upgrade pip wheel setuptools"
 
   if (Test-Path $reqPath) {
     Write-Host "Installing dependencies from backend\requirements.txt ..." -ForegroundColor Cyan
@@ -74,7 +80,8 @@ function Ensure-Requirements($projectDir, $venvPython) {
   }
 }
 
-function Ensure-Env($projectDir) {
+function Ensure-Env {
+  param([string]$projectDir)
   $envPath = Join-Path $projectDir "backend\.env"
   if (-not (Test-Path $envPath)) {
     Write-Host "Creating backend\.env ..." -ForegroundColor Cyan
@@ -91,35 +98,38 @@ MIST_ORG_ID=$org
   }
 }
 
-function Start-App($projectDir, $venvPath, $port) {
+function Start-App {
+  param([string]$projectDir, [string]$venvPath, [int]$port)
   $venvPython = Join-Path $venvPath "Scripts\python.exe"
   $backendDir = Join-Path $projectDir "backend"
 
-  # Export env for this process in case .env loader isn't present
+  # Export env VARS for this process in case the app doesn't load .env itself
   $dotenv = Join-Path $backendDir ".env"
   if (Test-Path $dotenv) {
-    (Get-Content $dotenv) | ForEach-Object {
+    Get-Content $dotenv | ForEach-Object {
       if ($_ -match "^\s*([^=#]+)\s*=\s*(.*)\s*$") {
         $name = $Matches[1].Trim()
-        $val  = $Matches[2]
+        $val  = $Matches[2].Trim()
         if ($val.StartsWith('"') -and $val.EndsWith('"')) { $val = $val.Trim('"') }
         if ($val.StartsWith("'") -and $val.EndsWith("'")) { $val = $val.Trim("'") }
-        if ($name) { $env:$name = $val }
+        if ($name) {
+          # Correct dynamic env var assignment (current process):
+          Set-Item -Path ("Env:{0}" -f $name) -Value $val
+          # Alternatively: [System.Environment]::SetEnvironmentVariable($name, $val, 'Process')
+        }
       }
     }
   }
 
   Write-Host "Starting API on http://0.0.0.0:$port ..." -ForegroundColor Green
-  # Use --app-dir so we can run from project root
   & $venvPython -m uvicorn app:app --host 0.0.0.0 --port $port --app-dir "$backendDir"
 }
 
 # ---------- Main ----------
 Require-Tool git
-Require-Tool python  -ErrorAction SilentlyContinue
-# "py" is optional; we try it first during venv creation if present
+Require-Tool python
 
-$projectDir = Resolve-Path $TargetDir | Select-Object -ExpandProperty Path
+$projectDir = (Resolve-Path $TargetDir).Path
 
 Ensure-GitRepo -url $RepoUrl -dir $projectDir -branch $Branch
 
