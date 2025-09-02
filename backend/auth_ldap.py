@@ -96,13 +96,12 @@ def _html_login(error: Optional[str] = None) -> str:
     <div class="min-h-screen flex items-center justify-center p-6">
       <div class="w-full max-w-md bg-white rounded-2xl shadow p-6">
         <h1 class="text-xl font-semibold">Sign in</h1>
-        <p class="text-sm text-slate-600">Use your corporate AD credentials</p>
+        <p class="text-sm text-slate-600">Use your OC AD credentials</p>
         {msg}
         <form method="post" action="/login" class="mt-4 space-y-3">
           <div>
             <label class="block text-sm font-medium mb-1">Username</label>
             <input name="username" autocomplete="username" class="w-full border rounded p-2" required />
-            <p class="text-xs text-slate-500 mt-1">Format: {hint}</p>
           </div>
           <div>
             <label class="block text-sm font-medium mb-1">Password</label>
