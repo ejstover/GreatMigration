@@ -47,6 +47,18 @@ static_path = Path(__file__).resolve().parent.parent / "static"
 if static_path.exists():
     app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
+# Optional authentication
+AUTH_METHOD = (os.getenv("AUTH_METHOD") or "").lower()
+if AUTH_METHOD == "ldap":
+    try:
+        from auth_ldap import install_auth as _install_auth
+        _install_auth(app)
+    except Exception as e:  # pragma: no cover - surface import errors
+        raise RuntimeError(f"Failed to load LDAP auth: {e}")
+elif AUTH_METHOD == "local":
+    from auth_local import install_auth as _install_auth
+    _install_auth(app)
+
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -369,7 +381,7 @@ async def api_push_batch(
                     "row_index": i,
                     "site_id": site_id,
                     "device_id": device_id,
-                    "error": "Duplicate device with the same Start member detected. Use a distinct Start member for repeated device selections."
+                    "error": "Duplicate device with the same Start member detected. Use a distinct Start member for repeated device selections.",
                 })
                 continue
 
