@@ -1,10 +1,9 @@
-+114-0
 # auth_local.py
 import os
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")
@@ -21,12 +20,7 @@ def _load_users() -> Dict[str, str]:
     return users
 
 
-def _load_push_users() -> set[str]:
-    return {x.strip() for x in os.getenv("LOCAL_PUSH_USERS", "").split(",") if x.strip()}
-
-
 USERS = _load_users()
-_PUSH_USERS = _load_push_users()
 router = APIRouter()
 
 
@@ -78,7 +72,7 @@ def post_login(request: Request, username: str = Form(...), password: str = Form
     request.session["user"] = {
         "name": username,
         "email": "",
-        "can_push": username in _PUSH_USERS,
+        "can_push": True,
     }
     return RedirectResponse("/", status_code=302)
 
@@ -99,8 +93,6 @@ def current_user(request: Request) -> Dict[str, Any]:
 
 
 def require_push_rights(user=Depends(current_user)):
-    if not user.get("can_push"):
-        raise HTTPException(status_code=403, detail="Push permission required")
     return user
 
 

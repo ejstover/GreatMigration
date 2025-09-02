@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 import requests
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +27,7 @@ from push_mist_port_config import (  # type: ignore
     timestamp_str,
     remap_members,
     validate_port_config_against_model,
+    tag_description,
 )
 
 APP_TITLE = "Switch Port Config Frontend"
@@ -57,17 +58,14 @@ if AUTH_METHOD == "ldap":
         import auth_ldap as _auth
         _auth.install_auth(app)
         current_user = _auth.current_user  # type: ignore[attr-defined]
-        require_push_rights = _auth.require_push_rights  # type: ignore[attr-defined]
     except Exception as e:  # pragma: no cover - surface import errors
         raise RuntimeError(f"Failed to load LDAP auth: {e}")
 elif AUTH_METHOD == "local":
     import auth_local as _auth
     _auth.install_auth(app)
     current_user = _auth.current_user  # type: ignore[attr-defined]
-    require_push_rights = _auth.require_push_rights  # type: ignore[attr-defined]
 else:
     current_user = lambda: {"name": "anon", "can_push": True}  # type: ignore
-    require_push_rights = lambda user=current_user(): user  # type: ignore
 
     @app.middleware("http")
     async def _auth_missing(request: Request, call_next):
@@ -231,6 +229,7 @@ def _build_payload_for_row(
     member_offset: int,
     normalize_modules: bool,
     dry_run: bool,
+    username: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Shared logic used by both /api/push and /api/push_batch for a single row.
@@ -258,8 +257,7 @@ def _build_payload_for_row(
     final_port_config: Dict[str, Dict[str, Any]] = {}
     for ifname, cfg in port_config.items():
         c = dict(cfg)
-        desc = (c.get("description") or "").strip()
-        c["description"] = f"{desc + ' - ' if desc else ''}converted by API {ts}"
+        c["description"] = tag_description(c.get("description", ""), ts, username)
         final_port_config[ifname] = c
 
     put_body = {"port_config": final_port_config}
@@ -316,6 +314,7 @@ async def api_push(
     save_output: Optional[bool] = Form(False),
     member_offset: int = Form(0),
     normalize_modules: bool = Form(True),
+    user: Dict[str, Any] = Depends(current_user),
 ) -> JSONResponse:
     """
     Single push. Response includes `payload` (the exact body to Mist) and `validation`.
@@ -334,7 +333,7 @@ async def api_push(
             site_id=site_id, device_id=device_id,
             payload_in=payload_in, model_override=model_override,
             excludes=excludes, member_offset=member_offset, normalize_modules=normalize_modules,
-            dry_run=dry_run,
+            dry_run=dry_run, username=user.get("name"),
         )
         status = 200 if row_result.get("ok") else 400
         return JSONResponse(row_result, status_code=status)
@@ -350,6 +349,7 @@ async def api_push_batch(
     tz: str = Form(DEFAULT_TZ),
     model_override: Optional[str] = Form(None),  # optional global override (row can still override)
     normalize_modules: bool = Form(True),
+    user: Dict[str, Any] = Depends(current_user),
 ) -> JSONResponse:
     """
     Batch push. Each row can specify: site_id, device_id, input_json (object),
@@ -411,7 +411,7 @@ async def api_push_batch(
                 site_id=site_id, device_id=device_id,
                 payload_in=payload_in, model_override=row_model_override,
                 excludes=excludes, member_offset=member_offset, normalize_modules=normalize_modules,
-                dry_run=dry_run,
+                dry_run=dry_run, username=user.get("name"),
             )
             row_result["row_index"] = i
             row_result["site_id"] = site_id

@@ -100,9 +100,10 @@ def timestamp_str(tz_name: str) -> str:
         now = datetime.now()
     return now.strftime("%Y-%m-%d %H:%M")
 
-def tag_description(desc: str, ts: str) -> str:
+def tag_description(desc: str, ts: str, username: Optional[str] = None) -> str:
     d = (desc or "").strip()
-    return f"{d} - converted by API {ts}" if d else f"converted by API {ts}"
+    user_note = f" ({username})" if username else ""
+    return f"{d} - converted by API {ts}{user_note}" if d else f"converted by API {ts}{user_note}"
 
 def _match_regex(val: Optional[str], pattern: str) -> bool:
     if val is None:

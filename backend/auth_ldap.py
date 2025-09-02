@@ -1,9 +1,9 @@
 # auth_ldap.py
 import os
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from ldap3 import Server, Connection, ALL, Tls, NTLM, SUBTREE
 
@@ -11,11 +11,6 @@ SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")
 LDAP_SERVER_URL = os.getenv("LDAP_SERVER_URL", "ldaps://dc01.testdomain.local:636")
 LDAP_SEARCH_BASE = os.getenv("LDAP_SEARCH_BASE", "DC=testdomain,DC=local")
 LDAP_BIND_TEMPLATE = os.getenv("LDAP_BIND_TEMPLATE", "{username}@testdomain.local")
-PUSH_GROUP_DN = os.getenv("PUSH_GROUP_DN")  # CN=NetAuto-Push,OU=Groups,...
-
-# Optional service account for searches
-LDAP_SERVICE_DN = os.getenv("LDAP_SERVICE_DN", "CN=GreatMigration,CN=Users,DC=testdomain,DC=local")
-LDAP_SERVICE_PASSWORD = os.getenv("LDAP_SERVICE_PASSWORD")
 
 router = APIRouter()
 
@@ -28,12 +23,6 @@ def _bind_as(username: str, password: str) -> Connection:
     user_bind = LDAP_BIND_TEMPLATE.format(username=username)
     conn = Connection(_server(), user=user_bind, password=password, auto_bind=True)
     return conn
-
-def _bind_service() -> Optional[Connection]:
-    """Bind as service account for searches, if configured."""
-    if not LDAP_SERVICE_DN or not LDAP_SERVICE_PASSWORD:
-        return None
-    return Connection(_server(), user=LDAP_SERVICE_DN, password=LDAP_SERVICE_PASSWORD, auto_bind=True)
 
 def _search_user(conn: Connection, username: str) -> Optional[Dict[str, Any]]:
     """Find user entry by UPN or sAMAccountName."""
@@ -69,16 +58,6 @@ def _search_user(conn: Connection, username: str) -> Optional[Dict[str, Any]]:
         "upn": str(getattr(e, "userPrincipalName", "")),
         "memberOf": _list("memberOf"),
     }
-
-def _is_member_of_group(user_dn: str, group_dn: str, search_conn: Connection) -> bool:
-    """
-    Recursive group check via LDAP_MATCHING_RULE_IN_CHAIN
-    """
-    # (memberOf:1.2.840.113556.1.4.1941:=<groupDN>) true if user is directly or indirectly a member
-    filt = f"(&(distinguishedName={user_dn})(memberOf:1.2.840.113556.1.4.1941:={group_dn}))"
-    ok = search_conn.search(search_base=LDAP_SEARCH_BASE, search_filter=filt,
-                            search_scope=SUBTREE, attributes=["distinguishedName"], size_limit=1)
-    return bool(ok and search_conn.entries)
 
 def _html_login(error: Optional[str] = None) -> str:
     msg = f'<p class="text-sm text-rose-600 mt-2">{error}</p>' if error else ''
@@ -132,23 +111,13 @@ def post_login(request: Request, username: str = Form(...), password: str = Form
     if not entry:
         return HTMLResponse(_html_login("User not found in directory."), status_code=401)
 
-    # 3) If we need recursive group check, bind service (or reuse user bind if permitted)
-    can_push = False
-    if PUSH_GROUP_DN:
-        try:
-            svc = _bind_service() or user_conn
-            can_push = _is_member_of_group(entry["dn"], PUSH_GROUP_DN, svc)
-        except Exception:
-            # if check fails, default to False
-            can_push = False
-
-    # 4) Store session
+    # 3) Store session (all authenticated users may push)
     request.session["user"] = {
         "name": entry.get("displayName") or username,
         "email": entry.get("mail") or entry.get("upn") or "",
         "dn": entry["dn"],
         "upn": entry.get("upn") or "",
-        "can_push": bool(can_push),
+        "can_push": True,
     }
     return RedirectResponse("/", status_code=302)
 
@@ -166,8 +135,7 @@ def current_user(request: Request) -> Dict[str, Any]:
     return u
 
 def require_push_rights(user = Depends(current_user)):
-    if not user.get("can_push"):
-        raise HTTPException(status_code=403, detail="Push permission required")
+    """All authenticated users may push."""
     return user
 
 @router.get("/me")
