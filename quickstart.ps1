@@ -59,9 +59,13 @@ function Ensure-Venv {
 }
 
 function Pip {
-  param([string]$venvPython, [string]$args)
-  & $venvPython -m pip $args
-  if ($LASTEXITCODE -ne 0) { throw "pip failed: $args" }
+  param(
+    [string]$venvPython,
+    [Parameter(ValueFromRemainingArguments=$true)]
+    [string[]]$Args
+  )
+  & $venvPython -m pip @Args
+  if ($LASTEXITCODE -ne 0) { throw "pip failed: $Args" }
 }
 
 function Ensure-Requirements {
@@ -69,14 +73,14 @@ function Ensure-Requirements {
   $reqPath = Join-Path $projectDir "backend\requirements.txt"
 
   Write-Host "Upgrading pip..." -ForegroundColor Cyan
-  Pip $venvPython "install --upgrade pip wheel setuptools"
+  Pip $venvPython install --upgrade pip wheel setuptools
 
   if (Test-Path $reqPath) {
     Write-Host "Installing dependencies from backend\requirements.txt ..." -ForegroundColor Cyan
-    Pip $venvPython "install -r `"$reqPath`""
+    Pip $venvPython install -r $reqPath
   } else {
     Write-Host "requirements.txt not found; installing core deps..." -ForegroundColor Yellow
-    Pip $venvPython "install fastapi==0.115.0 uvicorn==0.30.6 python-multipart==0.0.9 jinja2==3.1.4 requests ciscoconfparse>=1.6.52 python-dotenv"
+    Pip $venvPython install fastapi==0.115.0 uvicorn==0.30.6 python-multipart==0.0.9 jinja2==3.1.4 requests 'ciscoconfparse>=1.6.52' python-dotenv
   }
 }
 
