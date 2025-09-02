@@ -49,18 +49,26 @@ if static_path.exists():
     app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
 # Optional authentication
+# Optional authentication
 README_URL = "https://github.com/jacob-hopkins/GreatMigration#readme"
 AUTH_METHOD = (os.getenv("AUTH_METHOD") or "").lower()
 if AUTH_METHOD == "ldap":
     try:
-        from auth_ldap import install_auth as _install_auth
-        _install_auth(app)
+        import auth_ldap as _auth
+        _auth.install_auth(app)
+        current_user = _auth.current_user  # type: ignore[attr-defined]
+        require_push_rights = _auth.require_push_rights  # type: ignore[attr-defined]
     except Exception as e:  # pragma: no cover - surface import errors
         raise RuntimeError(f"Failed to load LDAP auth: {e}")
 elif AUTH_METHOD == "local":
-    from auth_local import install_auth as _install_auth
-    _install_auth(app)
+    import auth_local as _auth
+    _auth.install_auth(app)
+    current_user = _auth.current_user  # type: ignore[attr-defined]
+    require_push_rights = _auth.require_push_rights  # type: ignore[attr-defined]
 else:
+    current_user = lambda: {"name": "anon", "can_push": True}  # type: ignore
+    require_push_rights = lambda user=current_user(): user  # type: ignore
+
     @app.middleware("http")
     async def _auth_missing(request: Request, call_next):
         return HTMLResponse(
@@ -69,8 +77,6 @@ else:
             f"See the <a href='{README_URL}'>README</a> for setup instructions.</p>",
             status_code=500,
         )
-
-
 
 @app.get("/", response_class=HTMLResponse)
 def index():

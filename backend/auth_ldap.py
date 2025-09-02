@@ -40,7 +40,23 @@ def _search_user(conn: Connection, username: str) -> Optional[Dict[str, Any]]:
     # Two filters to be robust
     upn = LDAP_BIND_TEMPLATE.format(username=username)
     search_filter = f"(|(userPrincipalName={upn})(sAMAccountName={username}))"
-@@ -49,70 +49,71 @@ def _search_user(conn: Connection, username: str) -> Optional[Dict[str, Any]]:
+    attrs = [
+        "distinguishedName",
+        "displayName",
+        "mail",
+        "userPrincipalName",
+        "memberOf",
+    ]
+    ok = conn.search(
+        search_base=LDAP_SEARCH_BASE,
+        search_filter=search_filter,
+        search_scope=SUBTREE,
+        attributes=attrs,
+        size_limit=1,
+    )
+    if not ok or not conn.entries:
+        return None
+    e = conn.entries[0]
     def _list(attr):
         try:
             return [str(x) for x in getattr(e, attr).values]
@@ -111,3 +127,59 @@ def post_login(request: Request, username: str = Form(...), password: str = Form
         user_conn = _bind_as(username, password)
     except Exception:
         return HTMLResponse(_html_login("Invalid username or password."), status_code=401)
+
+    # 2) Find user entry (with groups)
+    entry = _search_user(user_conn, username)
+    if not entry:
+        return HTMLResponse(_html_login("User not found in directory."), status_code=401)
+
+    # 3) If we need recursive group check, bind service (or reuse user bind if permitted)
+    can_push = False
+    if PUSH_GROUP_DN:
+        try:
+            svc = _bind_service() or user_conn
+            can_push = _is_member_of_group(entry["dn"], PUSH_GROUP_DN, svc)
+        except Exception:
+            # if check fails, default to False
+            can_push = False
+
+    # 4) Store session
+    request.session["user"] = {
+        "name": entry.get("displayName") or username,
+        "email": entry.get("mail") or entry.get("upn") or "",
+        "dn": entry["dn"],
+        "upn": entry.get("upn") or "",
+        "can_push": bool(can_push),
+    }
+    return RedirectResponse("/", status_code=302)
+
+@router.get("/logout")
+def logout(request: Request):
+    request.session.clear()
+    resp = RedirectResponse("/", status_code=302)
+    return resp
+
+# ----- Dependencies you can use to protect routes -----
+def current_user(request: Request) -> Dict[str, Any]:
+    u = request.session.get("user")
+    if not u:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Auth required")
+    return u
+
+def require_push_rights(user = Depends(current_user)):
+    if not user.get("can_push"):
+        raise HTTPException(status_code=403, detail="Push permission required")
+    return user
+
+@router.get("/me")
+def me(user = Depends(current_user)):
+    # Minimal info for the frontend
+    return {"ok": True, "user": {"name": user.get("name"), "email": user.get("email"), "can_push": user.get("can_push", False)}}
+
+def install_auth(app):
+    """Call this from app.py to enable sessions + routes."""
+    # Add SessionMiddleware if not already present
+    app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", https_only=False)
+    app.include_router(router)
+
+__all__ = ["install_auth", "current_user", "require_push_rights"]
