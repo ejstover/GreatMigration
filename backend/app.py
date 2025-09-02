@@ -48,6 +48,7 @@ if static_path.exists():
     app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
 # Optional authentication
+README_URL = "https://github.com/jacob-hopkins/GreatMigration#readme"
 AUTH_METHOD = (os.getenv("AUTH_METHOD") or "").lower()
 if AUTH_METHOD == "ldap":
     try:
@@ -58,6 +59,16 @@ if AUTH_METHOD == "ldap":
 elif AUTH_METHOD == "local":
     from auth_local import install_auth as _install_auth
     _install_auth(app)
+else:
+    @app.middleware("http")
+    async def _auth_missing(request: Request, call_next):
+        return HTMLResponse(
+            f"<h1>Authentication not configured</h1>"
+            f"<p>Set the AUTH_METHOD environment variable to 'local' or 'ldap'. "
+            f"See the <a href='{README_URL}'>README</a> for setup instructions.</p>",
+            status_code=500,
+        )
+
 
 
 @app.get("/", response_class=HTMLResponse)

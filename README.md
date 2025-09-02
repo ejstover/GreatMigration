@@ -2,10 +2,14 @@
 
 Tools for converting Cisco switch port configurations and pushing them to Mist.
 
+Copy `backend/.env.sample` to `backend/.env` and update the values with your own
+credentials before running the backend.
+
 ## Authentication
 
-The backend supports pluggable authentication. Select the method with the `AUTH_METHOD`
-environment variable:
+The backend supports pluggable authentication and **requires** the `AUTH_METHOD`
+environment variable to be set. If it's missing, the server responds with a setup
+page that links back to this README. Choose one of the following values:
 
 - `local` – authenticate against a list of username/password pairs stored in the
   `LOCAL_USERS` environment variable (`user1:pass1,user2:pass2`). Users listed in

@@ -7,9 +7,14 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")
-# LOCAL_USERS format: "user1:pass1,user2:pass2"
-_LOCAL_USERS_RAW = os.getenv("LOCAL_USERS", "admin:adminpass")
-_PUSH_USERS = {x.strip() for x in os.getenv("LOCAL_PUSH_USERS", "").split(",") if x.strip()}
+LDAP_SERVER_URL = os.getenv("LDAP_SERVER_URL", "ldaps://dc01.testdomain.local:636")
+LDAP_SEARCH_BASE = os.getenv("LDAP_SEARCH_BASE", "DC=testdomain,DC=local")
+LDAP_BIND_TEMPLATE = os.getenv("LDAP_BIND_TEMPLATE", "{username}@testdomain.local")
+PUSH_GROUP_DN = os.getenv("PUSH_GROUP_DN")  # CN=NetAuto-Push,OU=Groups,...
+
+# Optional service account for searches
+LDAP_SERVICE_DN = os.getenv("LDAP_SERVICE_DN", "CN=GreatMigration,CN=Users,DC=testdomain,DC=local")
+LDAP_SERVICE_PASSWORD = os.getenv("LDAP_SERVICE_PASSWORD")
 
 
 def _load_users() -> Dict[str, str]:
