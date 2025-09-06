@@ -159,7 +159,7 @@
 
     // --- Data ---
     let convertedItems = []; // [{ source_file, output_file, json }]
-    let rows = []; // [{ idx, site_id, device_id, excludes, member_offset, model_override?, userChangedSite? }]
+    let rows = []; // [{ idx, site_id, device_id, excludes, member_offset, port_offset, model_override?, userChangedSite? }]
     let seenFiles = new Set(); // dedupe chooser/dnd
     let sitesCache = []; // list of sites
     const devicesBySite = new Map(); // site_id -> devices[]
@@ -270,6 +270,7 @@
           device_id: '',
           excludes: '',
           member_offset: 0,
+          port_offset: 0,
           model_override: '',
           userChangedSite: false
         });
@@ -324,7 +325,7 @@
     function renderBatchRows(){
       batchRows.innerHTML = '';
       rows.forEach((row, i) => {
-        const dup = isPairDuplicate(row.device_id, row.member_offset);
+        const dup = isPairDuplicate(row.device_id, row.member_offset, row.port_offset);
         const dupClass = dup ? 'ring-2 ring-rose-500' : '';
         const el = document.createElement('div');
         el.className = 'p-4';
@@ -349,7 +350,7 @@
               </select>
             </div>
 
-            <div class="md:col-span-1">
+          <div class="md:col-span-1">
               <label class="block text-xs font-medium mb-1 tooltip">
                 <span class="inline-flex items-center gap-1">Start member
                   <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
@@ -359,7 +360,17 @@
               <input data-rowsel="offset" data-row="${i}" type="number" min="0" step="1" value="${row.member_offset}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700 ${dupClass}" />
             </div>
 
-            <div class="md:col-span-4">
+            <div class="md:col-span-1">
+              <label class="block text-xs font-medium mb-1 tooltip">
+                <span class="inline-flex items-center gap-1">Start port
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
+                </span>
+                <span class="tip">Shift port numbering within a member. Example: two 24-port switches forming one 48-port device—set the second row to Start port 24 so its ports map to 24–47.</span>
+              </label>
+              <input data-rowsel="port" data-row="${i}" type="number" min="0" step="1" value="${row.port_offset}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700 ${dupClass}" />
+            </div>
+
+            <div class="md:col-span-3">
               <label class="block text-xs font-medium mb-1 tooltip">
                 <span class="inline-flex items-center gap-1">Exclude interfaces
                   <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
@@ -414,6 +425,14 @@
           markPairDuplicateClass(i);
         });
       });
+      batchRows.querySelectorAll('input[data-rowsel="port"]').forEach(inp => {
+        inp.addEventListener('input', () => {
+          const i = parseInt(inp.getAttribute('data-row'));
+          const v = parseInt(inp.value || '0'); rows[i].port_offset = isNaN(v) ? 0 : Math.max(0, v);
+          updatePairDuplicateWarning();
+          markPairDuplicateClass(i);
+        });
+      });
       batchRows.querySelectorAll('input[data-rowsel="excludes"]').forEach(inp => {
         inp.addEventListener('input', () => {
           const i = parseInt(inp.getAttribute('data-row'));
@@ -461,13 +480,13 @@
       markPairDuplicateClass(i);
     }
 
-    // Duplicate logic: allow same device multiple times if Start member differs
-    function isPairDuplicate(device_id, member_offset){
+    // Duplicate logic: allow same device multiple times if Start member/Start port differ
+    function isPairDuplicate(device_id, member_offset, port_offset){
       if (!device_id) return false;
-      const key = `${device_id}@@${member_offset}`;
+      const key = `${device_id}@@${member_offset}@@${port_offset}`;
       let seen = 0;
       for (const r of rows){
-        if (r.device_id && `${r.device_id}@@${r.member_offset}` === key) {
+        if (r.device_id && `${r.device_id}@@${r.member_offset}@@${r.port_offset}` === key) {
           seen += 1;
           if (seen > 1) return true;
         }
@@ -479,14 +498,14 @@
       const counter = new Map();
       for (const r of rows){
         if (!r.device_id) continue;
-        const key = `${r.device_id}@@${r.member_offset}`;
+        const key = `${r.device_id}@@${r.member_offset}@@${r.port_offset}`;
         counter.set(key, (counter.get(key) || 0) + 1);
       }
       for (const count of counter.values()){
         if (count > 1) { hasDup = true; break; }
       }
       if (hasDup){
-        rowsWarning.innerHTML = 'Duplicate device with the same <em>Start member</em> detected. Use a different Start member for repeated device selections.';
+        rowsWarning.innerHTML = 'Duplicate device with the same <em>Start member</em> and <em>Start port</em> detected. Use different offsets for repeated device selections.';
         show(rowsWarning);
         pushBatchBtn.disabled = true;
         pushBatchBtn.classList.add('cursor-not-allowed','opacity-70');
@@ -501,8 +520,9 @@
       const row = rows[i];
       const devSel = batchRows.querySelector(`select[data-rowsel="device"][data-row="${i}"]`);
       const offInp = batchRows.querySelector(`input[data-rowsel="offset"][data-row="${i}"]`);
-      const dup = isPairDuplicate(row.device_id, row.member_offset);
-      [devSel, offInp].forEach(el => {
+      const portInp = batchRows.querySelector(`input[data-rowsel="port"][data-row="${i}"]`);
+      const dup = isPairDuplicate(row.device_id, row.member_offset, row.port_offset);
+      [devSel, offInp, portInp].forEach(el => {
         if (!el) return;
         el.classList.toggle('ring-2', dup);
         el.classList.toggle('ring-rose-500', dup);
@@ -532,6 +552,7 @@
         input_json: convertedItems[r.idx].json,
         excludes: r.excludes,
         member_offset: r.member_offset,
+        port_offset: r.port_offset,
         model_override: r.model_override || ''
       }));
 

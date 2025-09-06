@@ -26,6 +26,7 @@ from push_mist_port_config import (  # type: ignore
     get_device_model,
     timestamp_str,
     remap_members,
+    remap_ports,
     validate_port_config_against_model,
 )
 
@@ -232,6 +233,7 @@ def _build_payload_for_row(
     model_override: Optional[str],
     excludes: Optional[str],
     member_offset: int,
+    port_offset: int,
     normalize_modules: bool,
     dry_run: bool,
 ) -> Dict[str, Any]:
@@ -245,8 +247,9 @@ def _build_payload_for_row(
     # Build port_config
     port_config = ensure_port_config(payload_in, model)
 
-    # Apply member remap BEFORE excludes
+    # Apply member/port remap BEFORE excludes
     port_config = remap_members(port_config, member_offset=int(member_offset or 0), normalize=bool(normalize_modules))
+    port_config = remap_ports(port_config, port_offset=int(port_offset or 0), model=model)
 
     # Apply excludes AFTER remap
     exclude_set = set([e.strip() for e in (excludes or "").split(",") if e.strip()])
@@ -276,6 +279,7 @@ def _build_payload_for_row(
             "device_model": model,
             "url": url,
             "member_offset": int(member_offset or 0),
+            "port_offset": int(port_offset or 0),
             "normalize_modules": bool(normalize_modules),
             "validation": validation,
             "payload": put_body
@@ -318,6 +322,7 @@ async def api_push(
     excludes: Optional[str] = Form(None),
     save_output: Optional[bool] = Form(False),
     member_offset: int = Form(0),
+    port_offset: int = Form(0),
     normalize_modules: bool = Form(True),
 ) -> JSONResponse:
     """
@@ -336,7 +341,7 @@ async def api_push(
             base_url=base_url, tz=tz, token=token,
             site_id=site_id, device_id=device_id,
             payload_in=payload_in, model_override=model_override,
-            excludes=excludes, member_offset=member_offset, normalize_modules=normalize_modules,
+            excludes=excludes, member_offset=member_offset, port_offset=port_offset, normalize_modules=normalize_modules,
             dry_run=dry_run,
         )
         status = 200 if row_result.get("ok") else 400
@@ -356,11 +361,11 @@ async def api_push_batch(
 ) -> JSONResponse:
     """
     Batch push. Each row can specify: site_id, device_id, input_json (object),
-    excludes (str), member_offset (int), model_override (str, optional).
+    excludes (str), member_offset (int), port_offset (int), model_override (str, optional).
     Returns per-row results with payload + validation, and never aborts the whole batch.
 
-    NOTE: Duplicate devices ARE allowed as long as (device_id, member_offset) pairs are unique.
-    If the same pair appears more than once, those rows are rejected with a clear error.
+    NOTE: Duplicate devices ARE allowed as long as (device_id, member_offset, port_offset) triples are unique.
+    If the same triple appears more than once, those rows are rejected with a clear error.
     """
     token = _load_mist_token()
     base_url = base_url.rstrip("/")
@@ -371,16 +376,18 @@ async def api_push_batch(
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Invalid 'rows' payload: {e}"}, status_code=400)
 
-    # Pre-scan for duplicate (device_id, member_offset) pairs
+    # Pre-scan for duplicate (device_id, member_offset, port_offset) triples
     pair_counts: Dict[str, int] = {}
     for r in row_list:
         device_id = (r.get("device_id") or "").strip()
         member_offset = int(r.get("member_offset") or 0)
-        key = f"{device_id}@@{member_offset}"
+        port_offset = int(r.get("port_offset") or 0)
+        key = f"{device_id}@@{member_offset}@@{port_offset}"
         if device_id:
             pair_counts[key] = pair_counts.get(key, 0) + 1
 
     results: List[Dict[str, Any]] = []
+    used_ifnames: Dict[str, set[str]] = {}
     for i, r in enumerate(row_list):
         try:
             site_id = (r.get("site_id") or "").strip()
@@ -388,21 +395,22 @@ async def api_push_batch(
             payload_in = r.get("input_json")
             excludes = r.get("excludes") or ""
             member_offset = int(r.get("member_offset") or 0)
+            port_offset = int(r.get("port_offset") or 0)
             row_model_override = r.get("model_override") or model_override
 
             if not site_id or not device_id or not isinstance(payload_in, (dict, list)):
                 results.append({"ok": False, "row_index": i, "error": "Missing site_id/device_id or malformed input_json"})
                 continue
 
-            # Reject duplicate (device_id, member_offset) pairs
-            key = f"{device_id}@@{member_offset}"
+            # Reject duplicate (device_id, member_offset, port_offset) triples
+            key = f"{device_id}@@{member_offset}@@{port_offset}"
             if pair_counts.get(key, 0) > 1:
                 results.append({
                     "ok": False,
                     "row_index": i,
                     "site_id": site_id,
                     "device_id": device_id,
-                    "error": "Duplicate device with the same Start member detected. Use a distinct Start member for repeated device selections.",
+                    "error": "Duplicate device with the same Start member and Start port detected. Use distinct offsets for repeated device selections.",
                 })
                 continue
 
@@ -413,12 +421,21 @@ async def api_push_batch(
                 base_url=base_url, tz=tz, token=token,
                 site_id=site_id, device_id=device_id,
                 payload_in=payload_in, model_override=row_model_override,
-                excludes=excludes, member_offset=member_offset, normalize_modules=normalize_modules,
+                excludes=excludes, member_offset=member_offset, port_offset=port_offset, normalize_modules=normalize_modules,
                 dry_run=dry_run,
             )
             row_result["row_index"] = i
             row_result["site_id"] = site_id
             row_result["device_id"] = device_id
+            if row_result.get("ok"):
+                names = set((row_result.get("payload") or {}).get("port_config", {}).keys())
+                used = used_ifnames.setdefault(device_id, set())
+                overlap = used.intersection(names)
+                if overlap:
+                    row_result["ok"] = False
+                    row_result["error"] = "Port overlap detected with another row for this device."
+                else:
+                    used.update(names)
             results.append(row_result)
 
         except Exception as e:
