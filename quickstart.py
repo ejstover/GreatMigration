@@ -114,10 +114,11 @@ def ensure_env_file(project_dir: Path):
     token = getpass("MIST_TOKEN (input hidden): ").strip()
     base = input("MIST_BASE_URL [default https://api.ac2.mist.com]: ").strip() or "https://api.ac2.mist.com"
     org  = input("MIST_ORG_ID (optional): ").strip()
+    tmpl = input("SWITCH_TEMPLATE_ID (optional): ").strip()
 
     env_file.parent.mkdir(parents=True, exist_ok=True)
     env_file.write_text(
-        "MIST_TOKEN={}\nMIST_BASE_URL={}\nMIST_ORG_ID={}\n".format(token, base, org),
+        "MIST_TOKEN={}\nMIST_BASE_URL={}\nMIST_ORG_ID={}\nSWITCH_TEMPLATE_ID={}\n".format(token, base, org, tmpl),
         encoding="utf-8",
     )
     print(f"Wrote {env_file}")

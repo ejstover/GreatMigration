@@ -93,11 +93,13 @@ function Ensure-Env {
     $base  = Read-Host "Enter MIST_BASE_URL (or press Enter for default https://api.ac2.mist.com)"
     if (-not $base) { $base = "https://api.ac2.mist.com" }
     $org   = Read-Host "Enter MIST_ORG_ID (optional; press Enter to skip)"
+    $tmpl  = Read-Host "Enter SWITCH_TEMPLATE_ID (optional; press Enter to skip)"
 
     @"
 MIST_TOKEN=$token
 MIST_BASE_URL=$base
 MIST_ORG_ID=$org
+SWITCH_TEMPLATE_ID=$tmpl
 "@ | Out-File -Encoding UTF8 $envPath -Force
   }
 }

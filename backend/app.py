@@ -56,6 +56,8 @@ README_URL = "https://github.com/jacob-hopkins/GreatMigration#readme"
 # Where to send users when they click the help icon
 HELP_URL = os.getenv("HELP_URL", README_URL)
 RULES_PATH = Path(__file__).resolve().parent / "port_rules.json"
+SWITCH_TEMPLATE_ID = (os.getenv("SWITCH_TEMPLATE_ID") or "").strip()
+DEFAULT_ORG_ID = (os.getenv("MIST_ORG_ID") or "").strip()
 AUTH_METHOD = (os.getenv("AUTH_METHOD") or "").lower()
 if AUTH_METHOD == "ldap":
     try:
@@ -229,8 +231,27 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
         token = _load_mist_token()
         base_url = base_url.rstrip("/")
         headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
-        if org_id:
-            r = requests.get(f"{base_url}/orgs/{org_id}/portprofiles", headers=headers, timeout=30)
+
+        template_id = SWITCH_TEMPLATE_ID
+        org_id = org_id or DEFAULT_ORG_ID or None
+        if template_id:
+            if not org_id:
+                return JSONResponse(
+                    {"ok": False, "error": "SWITCH_TEMPLATE_ID set but MIST_ORG_ID missing"},
+                    status_code=400,
+                )
+            r = requests.get(
+                f"{base_url}/orgs/{org_id}/templates/{template_id}/portprofiles",
+                headers=headers,
+                timeout=30,
+            )
+            r.raise_for_status()
+            for p in r.json() or []:
+                items.append({"id": p.get("id"), "name": p.get("name"), "org_id": org_id})
+        elif org_id:
+            r = requests.get(
+                f"{base_url}/orgs/{org_id}/portprofiles", headers=headers, timeout=30
+            )
             r.raise_for_status()
             for p in r.json() or []:
                 items.append({"id": p.get("id"), "name": p.get("name"), "org_id": org_id})
@@ -251,7 +272,9 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
                 org_ids.add(who["org_id"])
             for oid in org_ids:
                 try:
-                    r2 = requests.get(f"{base_url}/orgs/{oid}/portprofiles", headers=headers, timeout=30)
+                    r2 = requests.get(
+                        f"{base_url}/orgs/{oid}/portprofiles", headers=headers, timeout=30
+                    )
                     r2.raise_for_status()
                     for p in r2.json() or []:
                         items.append({"id": p.get("id"), "name": p.get("name"), "org_id": oid})
@@ -264,7 +287,10 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
             err_payload = r.json()  # type: ignore[name-defined]
         except Exception:
             err_payload = {"error": str(e)}
-        return JSONResponse({"ok": False, "error": err_payload}, status_code=getattr(r, "status_code", 500))  # type: ignore[name-defined]
+        return JSONResponse(
+            {"ok": False, "error": err_payload},
+            status_code=getattr(r, "status_code", 500),
+        )  # type: ignore[name-defined]
 
 
 @app.post("/api/convert")
