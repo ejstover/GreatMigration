@@ -54,7 +54,7 @@ def load_rules(path: Path = RULES_PATH) -> Dict[str, Any]:
         with path.open("r", encoding="utf-8") as fh:
             return json.load(fh)
     except Exception:
-        return {"defaults": {"no_local_overwrite": False, "critical": False}, "rules": []}
+        return {"rules": []}
 
 
 RULES_DOC: Dict[str, Any] = load_rules()
@@ -71,7 +71,7 @@ def validate_rules_doc(doc: Dict[str, Any]) -> None:
         raise ValueError("Rules document missing 'rules' list")
 
     allowed_when = {"mode", "data_vlan", "voice_vlan", "native_vlan", "description_regex"}
-    allowed_set = {"usage", "no_local_overwrite", "critical"}
+    allowed_set = {"usage"}
 
     for idx, rule in enumerate(rules, 1):
         if not isinstance(rule, dict):
@@ -363,7 +363,6 @@ def remap_modules(port_config: Dict[str, Any], member_offset: int = 0, normalize
 
 def map_interfaces_to_port_config(intfs: List[Dict[str, Any]], model: Optional[str]) -> Dict[str, Dict[str, Any]]:
     rules = RULES_DOC.get("rules", []) or []
-    defaults = RULES_DOC.get("defaults", {}) or {}
 
     port_config: Dict[str, Dict[str, Any]] = {}
     for intf in intfs:
@@ -384,20 +383,14 @@ def map_interfaces_to_port_config(intfs: List[Dict[str, Any]], model: Optional[s
                 break
 
         usage = None
-        no_overwrite = bool(defaults.get("no_local_overwrite", False))
-        critical = bool(defaults.get("critical", False))
         if chosen:
             s = chosen.get("set", {}) or {}
             usage = s.get("usage", usage)
-            no_overwrite = bool(s.get("no_local_overwrite", no_overwrite))
-            critical = bool(s.get("critical", critical))
 
         raw_desc = intf.get("description", "") or ""
         filtered_desc = filter_description_blacklist(raw_desc)
 
-        cfg: Dict[str, Any] = {"usage": usage or "blackhole", "description": filtered_desc, "no_local_overwrite": no_overwrite}
-        if critical:
-            cfg["critical"] = True
+        cfg: Dict[str, Any] = {"usage": usage or "blackhole", "description": filtered_desc}
 
         if mist_if in port_config:
             raise SystemExit(f"Key collision for {mist_if} (from {intf.get('name')}); check Cisco mapping.")

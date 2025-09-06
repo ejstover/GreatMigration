@@ -117,8 +117,8 @@ def api_get_rules():
 @app.post("/api/rules")
 def api_save_rules(doc: Dict[str, Any]):
     """Persist rule document and refresh in memory."""
-    require_push_rights(current_user())
     try:
+        require_push_rights(current_user())
         pm.validate_rules_doc(doc)
         RULES_PATH.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         pm.RULES_DOC = pm.load_rules()
@@ -224,11 +224,11 @@ def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
 @app.get("/api/port_profiles")
 def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
     """Return port profiles visible to the token."""
-    token = _load_mist_token()
-    base_url = base_url.rstrip("/")
-    headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
     items: List[Dict[str, Any]] = []
     try:
+        token = _load_mist_token()
+        base_url = base_url.rstrip("/")
+        headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
         if org_id:
             r = requests.get(f"{base_url}/orgs/{org_id}/portprofiles", headers=headers, timeout=30)
             r.raise_for_status()

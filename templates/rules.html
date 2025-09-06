@@ -83,8 +83,16 @@
     const saveBtn = document.getElementById('save_rules');
     const saveStatus = document.getElementById('save_status');
     const profileStatus = document.getElementById('profile_status');
-    let rulesDoc = {defaults: {no_local_overwrite: false, critical: false}, rules: []};
+    let rulesDoc = {rules: []};
     let portProfiles = [];
+
+    function updateAndLabels(container){
+      [...container.children].forEach((child, idx)=>{
+        let lbl = child.querySelector('.and-label');
+        if(idx===0){ if(lbl) lbl.remove(); }
+        else { if(!lbl){ const span=document.createElement('span'); span.textContent='and'; span.className='and-label text-xs'; child.insertBefore(span, child.firstChild); } }
+      });
+    }
 
     function createConditionRow(cond){
       const div = document.createElement('div');
@@ -97,12 +105,20 @@
       const val = document.createElement('input');
       val.className = 'border rounded p-1 flex-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
       val.value = cond.value || '';
-      div.appendChild(sel); div.appendChild(val);
+      div.appendChild(sel);
+      div.appendChild(val);
+      const regexTip = document.createElement('span');
+      regexTip.className = 'tooltip hidden';
+      regexTip.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 112 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg><span class="tip">Supports regular expressions.</span>';
+      div.appendChild(regexTip);
       const del = document.createElement('button');
       del.textContent='✕';
       del.className='text-red-500 text-sm';
-      del.addEventListener('click',()=>{div.remove();});
+      del.addEventListener('click',()=>{ const parent=div.parentElement; div.remove(); if(parent) updateAndLabels(parent); });
       div.appendChild(del);
+      function toggleTip(){ if(sel.value.includes('regex')) regexTip.classList.remove('hidden'); else regexTip.classList.add('hidden'); }
+      sel.addEventListener('change',toggleTip);
+      toggleTip();
       return div;
     }
 
@@ -120,8 +136,6 @@
               <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 112 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
               <span class="tip">Select the Mist port profile to apply when this rule matches.</span>
             </label>
-            <label class="text-xs"><input type="checkbox" class="nlo mr-1" ${rule.set?.no_local_overwrite? 'checked':''}/>no overwrite</label>
-            <label class="text-xs ml-2"><input type="checkbox" class="crit mr-1" ${rule.set?.critical? 'checked':''}/>critical</label>
           </td>
           <td class="p-2"><button class="del text-red-500">✕</button></td>`;
         const condsDiv = tr.querySelector('.conds');
@@ -130,7 +144,8 @@
           const cond = {field:k, value: v};
           condsDiv.appendChild(createConditionRow(cond));
         });
-        tr.querySelector('.add-cond').addEventListener('click',()=>{condsDiv.appendChild(createConditionRow({field:'mode', value:''}));});
+        updateAndLabels(condsDiv);
+        tr.querySelector('.add-cond').addEventListener('click',()=>{const row=createConditionRow({field:'mode', value:''}); condsDiv.appendChild(row); updateAndLabels(condsDiv);});
         const usageSel = tr.querySelector('.usage');
         const empty=document.createElement('option'); empty.value=''; empty.textContent='--usage--'; usageSel.appendChild(empty);
         portProfiles.forEach(p=>{ const o=document.createElement('option'); o.value=p.name; o.textContent=p.name; if(rule.set?.usage===p.name) o.selected=true; usageSel.appendChild(o); });
@@ -155,25 +170,30 @@
         const when={};
         tr.querySelectorAll('.conds > div').forEach(div=>{ const f=div.querySelector('select').value; const v=div.querySelector('input').value; if(v) when[f]=isNaN(Number(v))? v: Number(v); });
         const usage = tr.querySelector('.usage').value;
-        const nlo = tr.querySelector('.nlo').checked;
-        const crit = tr.querySelector('.crit').checked;
         const set={};
         if(usage) set.usage=usage;
-        if(nlo) set.no_local_overwrite=true;
-        if(crit) set.critical=true;
         return {name, when, set};
       });
-      fetch('/api/rules',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(rulesDoc)}).then(r=>r.json()).then(resp=>{
-        saveStatus.textContent = resp.ok ? 'Saved!' : ('Error: ' + (resp.error || 'saving rules'));
-        if(resp.ok) setTimeout(()=>{saveStatus.textContent='';},3000);
-      }).catch(err=>{ saveStatus.textContent='Error: ' + err.message; });
+      fetch('/api/rules',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(rulesDoc)})
+        .then(async r=>{ const txt=await r.text(); try { return JSON.parse(txt);} catch { throw new Error(txt);} })
+        .then(resp=>{
+          saveStatus.textContent = resp.ok ? 'Saved!' : ('Error: ' + (resp.error || 'saving rules'));
+          if(resp.ok) setTimeout(()=>{saveStatus.textContent='';},3000);
+        }).catch(err=>{ saveStatus.textContent='Error: ' + err.message; });
     });
 
     // Load existing rules & port profiles
-    fetch('/api/port_profiles').then(r=>r.json()).then(d=>{
-      if(d.ok){ profileStatus.textContent=''; portProfiles=d.items; renderRules(); }
-      else { profileStatus.textContent='Error loading port profiles: ' + (d.error?.error || d.error); }
-    }).catch(err=>{ profileStatus.textContent='Error loading port profiles: ' + err.message; });
+    fetch('/api/port_profiles')
+      .then(async r=>{ const txt=await r.text(); try { return JSON.parse(txt);} catch { throw new Error(txt);} })
+      .then(d=>{
+        if(d.ok){
+          portProfiles=d.items || [];
+          if(!portProfiles.length) profileStatus.textContent='No port profiles found.'; else profileStatus.textContent='';
+          renderRules();
+        } else {
+          profileStatus.textContent='Error loading port profiles: ' + (d.error?.error || d.error);
+        }
+      }).catch(err=>{ profileStatus.textContent='Error loading port profiles: ' + err.message; });
     fetch('/api/rules').then(r=>r.json()).then(d=>{ if(d.ok) { rulesDoc=d.doc; renderRules(); } });
   </script>
 </body>

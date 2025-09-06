@@ -1,5 +1,4 @@
 {
-  "defaults": {"no_local_overwrite": false, "critical": false},
   "rules": [
     {"name": "ap-trunk-n150-allowed-110-120-130-210", "when": {"mode": "trunk", "native_vlan": 150, "allowed_vlans_equals": [110, 120, 130, 210]}, "set": {"usage": "ap"}},
     {"name": "ap-trunk-n120", "when": {"mode": "trunk", "native_vlan": 120}, "set": {"usage": "ap"}},
@@ -15,7 +14,7 @@
     {"name": "doors-vlan-5-end_user", "when": {"mode": "access", "data_vlan": 5}, "set": {"usage": "end_user"}},
     {"name": "doors-vlan-4-end_user", "when": {"mode": "access", "data_vlan": 4}, "set": {"usage": "end_user"}},
     {"name": "ap-trunk", "when": {"mode": "trunk", "description_regex": "(?i)\\b(ap|access\\s*point)\\b"}, "set": {"usage": "ap"}},
-    {"name": "uplink-idf", "when": {"mode": "trunk"}, "set": {"usage": "uplink_idf", "no_local_overwrite": true}},
+    {"name": "uplink-idf", "when": {"mode": "trunk"}, "set": {"usage": "uplink_idf"}},
     {"name": "catch-all-blackhole", "when": {"any": true}, "set": {"usage": "blackhole"}}
   ]
 }
