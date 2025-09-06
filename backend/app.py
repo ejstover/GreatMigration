@@ -235,19 +235,45 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
         template_id = SWITCH_TEMPLATE_ID
         org_id = org_id or DEFAULT_ORG_ID or None
         if template_id:
-            if not org_id:
+            org_ids: List[str] = []
+            if org_id:
+                org_ids = [org_id]
+            else:
+                r = requests.get(f"{base_url}/self", headers=headers, timeout=30)
+                r.raise_for_status()
+                who = r.json() or {}
+                if isinstance(who.get("orgs"), list):
+                    for o in who["orgs"]:
+                        if isinstance(o, dict) and o.get("org_id"):
+                            org_ids.append(o["org_id"])
+                        elif isinstance(o, dict) and o.get("id"):
+                            org_ids.append(o["id"])
+                        elif isinstance(o, str):
+                            org_ids.append(o)
+                if isinstance(who.get("org_id"), str):
+                    org_ids.append(who["org_id"])
+            for oid in org_ids:
+                try:
+                    r = requests.get(
+                        f"{base_url}/orgs/{oid}/templates/{template_id}/portprofiles",
+                        headers=headers,
+                        timeout=30,
+                    )
+                    r.raise_for_status()
+                    for p in r.json() or []:
+                        items.append({"id": p.get("id"), "name": p.get("name"), "org_id": oid})
+                    if items:
+                        break
+                except Exception:
+                    continue
+            if not items:
                 return JSONResponse(
-                    {"ok": False, "error": "SWITCH_TEMPLATE_ID set but MIST_ORG_ID missing"},
+                    {
+                        "ok": False,
+                        "error": "SWITCH_TEMPLATE_ID set but org could not be determined; set MIST_ORG_ID",
+                    },
                     status_code=400,
                 )
-            r = requests.get(
-                f"{base_url}/orgs/{org_id}/templates/{template_id}/portprofiles",
-                headers=headers,
-                timeout=30,
-            )
-            r.raise_for_status()
-            for p in r.json() or []:
-                items.append({"id": p.get("id"), "name": p.get("name"), "org_id": org_id})
         elif org_id:
             r = requests.get(
                 f"{base_url}/orgs/{org_id}/portprofiles", headers=headers, timeout=30
