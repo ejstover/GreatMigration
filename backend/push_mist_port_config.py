@@ -59,6 +59,46 @@ def load_rules(path: Path = RULES_PATH) -> Dict[str, Any]:
 
 RULES_DOC: Dict[str, Any] = load_rules()
 
+def validate_rules_doc(doc: Dict[str, Any]) -> None:
+    """Validate structure and field types for a rules document.
+
+    Raises ValueError with a descriptive message on problems.
+    """
+    if not isinstance(doc, dict):
+        raise ValueError("Rules document must be a JSON object")
+    rules = doc.get("rules")
+    if not isinstance(rules, list):
+        raise ValueError("Rules document missing 'rules' list")
+
+    allowed_when = {"mode", "data_vlan", "voice_vlan", "native_vlan", "description_regex"}
+    allowed_set = {"usage", "no_local_overwrite", "critical"}
+
+    for idx, rule in enumerate(rules, 1):
+        if not isinstance(rule, dict):
+            raise ValueError(f"Rule {idx} is not an object")
+        when = rule.get("when", {})
+        if not isinstance(when, dict):
+            raise ValueError(f"Rule {idx} 'when' must be an object")
+        for k, v in when.items():
+            if k not in allowed_when:
+                raise ValueError(f"Rule {idx} uses unknown condition '{k}'")
+            if k.endswith("_vlan"):
+                try:
+                    int(v)
+                except Exception:
+                    raise ValueError(f"Rule {idx} condition '{k}' must be an integer")
+            if k == "description_regex":
+                try:
+                    re.compile(str(v))
+                except re.error as e:
+                    raise ValueError(f"Rule {idx} has invalid regex: {e}")
+        setp = rule.get("set", {})
+        if not isinstance(setp, dict):
+            raise ValueError(f"Rule {idx} 'set' must be an object")
+        for k in setp:
+            if k not in allowed_set:
+                raise ValueError(f"Rule {idx} has unknown action '{k}'")
+
 BLACKLIST_PATTERNS = [
     r"^\s*$", r"^\s*vla?n?\s*\d+\s*$", r"^\s*(data|voice)\s*(port)?\s*$",
     r"^\s*end\s*user\s*$", r"^\s*user\s*$", r".*\bdata\s*vla?n?\b.*",

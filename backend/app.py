@@ -119,9 +119,12 @@ def api_save_rules(doc: Dict[str, Any]):
     """Persist rule document and refresh in memory."""
     require_push_rights(current_user())
     try:
+        pm.validate_rules_doc(doc)
         RULES_PATH.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         pm.RULES_DOC = pm.load_rules()
         return {"ok": True}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 

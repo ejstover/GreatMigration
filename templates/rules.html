@@ -9,6 +9,15 @@
   <style>
     .drag-handle { cursor: move; }
     tbody tr.dragging { opacity: .5; }
+    .tooltip { position: relative; display: inline-flex; align-items: center; gap: .35rem; }
+    .tooltip .tip {
+      visibility: hidden; opacity: 0; transition: opacity .15s ease;
+      position: absolute; left: 50%; transform: translateX(-50%);
+      bottom: 130%; min-width: 18rem; max-width: 28rem;
+      background: #0f172a; color: #f8fafc; padding: .5rem .75rem; border-radius: .5rem; font-size: .75rem;
+      box-shadow: 0 10px 25px rgba(2,6,23,0.25); z-index: 50; text-align: left;
+    }
+    .tooltip:hover .tip { visibility: visible; opacity: 1; }
   </style>
 </head>
 <body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
@@ -54,6 +63,7 @@
       </table>
     </div>
     <div id="save_status" class="text-sm mt-4"></div>
+    <div id="profile_status" class="text-sm text-red-600 dark:text-red-400 mt-2"></div>
   </div>
 
   <script>
@@ -72,6 +82,7 @@
     const addRuleBtn = document.getElementById('add_rule');
     const saveBtn = document.getElementById('save_rules');
     const saveStatus = document.getElementById('save_status');
+    const profileStatus = document.getElementById('profile_status');
     let rulesDoc = {defaults: {no_local_overwrite: false, critical: false}, rules: []};
     let portProfiles = [];
 
@@ -79,12 +90,12 @@
       const div = document.createElement('div');
       div.className = 'flex items-center gap-2 mb-1';
       const sel = document.createElement('select');
-      sel.className = 'border rounded p-1';
+      sel.className = 'border rounded p-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
       ['mode','data_vlan','voice_vlan','native_vlan','description_regex'].forEach(f=>{
         const o=document.createElement('option'); o.value=f; o.textContent=f; if(f===cond.field) o.selected=true; sel.appendChild(o);
       });
       const val = document.createElement('input');
-      val.className = 'border rounded p-1 flex-1';
+      val.className = 'border rounded p-1 flex-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
       val.value = cond.value || '';
       div.appendChild(sel); div.appendChild(val);
       const del = document.createElement('button');
@@ -101,9 +112,14 @@
         const tr=document.createElement('tr');
         tr.draggable=true; tr.dataset.idx=idx;
         tr.innerHTML=`<td class="p-2 drag-handle">☰</td>
-          <td class="p-2"><input class="border rounded p-1 w-full name" value="${rule.name||''}"/></td>
+          <td class="p-2"><input class="border rounded p-1 w-full name bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${rule.name||''}"/></td>
           <td class="p-2"><div class="conds"></div><button class="add-cond text-xs text-sky-600">+ condition</button></td>
-          <td class="p-2"><select class="usage border rounded p-1 mr-2"></select>
+          <td class="p-2">
+            <label class="tooltip">
+              <select class="usage border rounded p-1 mr-2 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700"></select>
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 112 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
+              <span class="tip">Select the Mist port profile to apply when this rule matches.</span>
+            </label>
             <label class="text-xs"><input type="checkbox" class="nlo mr-1" ${rule.set?.no_local_overwrite? 'checked':''}/>no overwrite</label>
             <label class="text-xs ml-2"><input type="checkbox" class="crit mr-1" ${rule.set?.critical? 'checked':''}/>critical</label>
           </td>
@@ -130,7 +146,7 @@
     tbody.addEventListener('dragover',e=>{ e.preventDefault(); });
     tbody.addEventListener('drop',e=>{ e.preventDefault(); const dest=e.target.closest('tr'); if(!dest) return; const destIdx=+dest.dataset.idx; const [m]=rulesDoc.rules.splice(dragIdx,1); rulesDoc.rules.splice(destIdx,0,m); renderRules(); });
 
-    addRuleBtn.addEventListener('click',()=>{ rulesDoc.rules.push({name:'', when:{}, set:{}}); renderRules(); });
+    addRuleBtn.addEventListener('click',()=>{ rulesDoc.rules.push({name:'', when:{}, set:{}}); renderRules(); tbody.lastElementChild?.scrollIntoView({behavior:'smooth'}); });
 
     saveBtn.addEventListener('click',()=>{
       // collect from DOM
@@ -148,13 +164,16 @@
         return {name, when, set};
       });
       fetch('/api/rules',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(rulesDoc)}).then(r=>r.json()).then(resp=>{
-        saveStatus.textContent = resp.ok ? 'Saved!' : 'Error saving rules';
-        setTimeout(()=>{saveStatus.textContent='';},3000);
-      }).catch(()=>{ saveStatus.textContent='Error saving rules'; });
+        saveStatus.textContent = resp.ok ? 'Saved!' : ('Error: ' + (resp.error || 'saving rules'));
+        if(resp.ok) setTimeout(()=>{saveStatus.textContent='';},3000);
+      }).catch(err=>{ saveStatus.textContent='Error: ' + err.message; });
     });
 
     // Load existing rules & port profiles
-    fetch('/api/port_profiles').then(r=>r.json()).then(d=>{ if(d.ok) portProfiles=d.items; renderRules(); });
+    fetch('/api/port_profiles').then(r=>r.json()).then(d=>{
+      if(d.ok){ profileStatus.textContent=''; portProfiles=d.items; renderRules(); }
+      else { profileStatus.textContent='Error loading port profiles: ' + (d.error?.error || d.error); }
+    }).catch(err=>{ profileStatus.textContent='Error loading port profiles: ' + err.message; });
     fetch('/api/rules').then(r=>r.json()).then(d=>{ if(d.ok) { rulesDoc=d.doc; renderRules(); } });
   </script>
 </body>
