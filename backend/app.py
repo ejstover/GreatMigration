@@ -5,11 +5,10 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 import requests
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Request, Body
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Request
 
 # Optional .env support
 try:
@@ -117,10 +116,10 @@ def api_get_rules():
 
 
 @app.post("/api/rules")
-def api_save_rules(doc: Dict[str, Any]):
+def api_save_rules(request: Request, doc: Dict[str, Any] = Body(...)):
     """Persist rule document and refresh in memory."""
     try:
-        require_push_rights(current_user())
+        require_push_rights(current_user(request))
         pm.validate_rules_doc(doc)
         RULES_PATH.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         pm.RULES_DOC = pm.load_rules()
@@ -224,6 +223,30 @@ def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
 
 
 @app.get("/api/port_profiles")
+def _discover_org_ids(base_url: str, headers: Dict[str, str]) -> List[str]:
+    """Return list of org IDs visible to the token using /self."""
+    r = requests.get(f"{base_url}/self", headers=headers, timeout=30)
+    r.raise_for_status()
+    who = r.json() or {}
+    org_ids: set[str] = set()
+    if isinstance(who.get("orgs"), list):
+        for o in who["orgs"]:
+            if isinstance(o, dict) and o.get("org_id"):
+                org_ids.add(o["org_id"])
+            elif isinstance(o, dict) and o.get("id"):
+                org_ids.add(o["id"])
+            elif isinstance(o, str):
+                org_ids.add(o)
+    if isinstance(who.get("privileges"), list):
+        for p in who["privileges"]:
+            if isinstance(p, dict) and p.get("org_id"):
+                org_ids.add(p["org_id"])
+    if isinstance(who.get("org_id"), str):
+        org_ids.add(who["org_id"])
+    return list(org_ids)
+
+
+@app.get("/api/port_profiles")
 def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
     """Return port profiles visible to the token."""
     items: List[Dict[str, Any]] = []
@@ -247,23 +270,7 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
             return [{"id": name, "name": name, "org_id": oid} for name in port_usages.keys()]
 
         if template_id:
-            org_ids: List[str] = []
-            if org_id:
-                org_ids = [org_id]
-            else:
-                r = requests.get(f"{base_url}/self", headers=headers, timeout=30)
-                r.raise_for_status()
-                who = r.json() or {}
-                if isinstance(who.get("orgs"), list):
-                    for o in who["orgs"]:
-                        if isinstance(o, dict) and o.get("org_id"):
-                            org_ids.append(o["org_id"])
-                        elif isinstance(o, dict) and o.get("id"):
-                            org_ids.append(o["id"])
-                        elif isinstance(o, str):
-                            org_ids.append(o)
-                if isinstance(who.get("org_id"), str):
-                    org_ids.append(who["org_id"])
+            org_ids = [org_id] if org_id else _discover_org_ids(base_url, headers)
             for oid in org_ids:
                 try:
                     items = _fetch_from_template(oid, template_id)
@@ -275,28 +282,12 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
                 return JSONResponse(
                     {
                         "ok": False,
-                        "error": "SWITCH_TEMPLATE_ID set but org could not be determined; set MIST_ORG_ID",
+                        "error": "Unable to locate switch template in accessible organizations",
                     },
-                    status_code=400,
+                    status_code=404,
                 )
         else:
-            org_ids: List[str] = []
-            if org_id:
-                org_ids = [org_id]
-            else:
-                r = requests.get(f"{base_url}/self", headers=headers, timeout=30)
-                r.raise_for_status()
-                who = r.json() or {}
-                if isinstance(who.get("orgs"), list):
-                    for o in who["orgs"]:
-                        if isinstance(o, dict) and o.get("org_id"):
-                            org_ids.append(o["org_id"])
-                        elif isinstance(o, dict) and o.get("id"):
-                            org_ids.append(o["id"])
-                        elif isinstance(o, str):
-                            org_ids.append(o)
-                if isinstance(who.get("org_id"), str):
-                    org_ids.append(who["org_id"])
+            org_ids = [org_id] if org_id else _discover_org_ids(base_url, headers)
             seen: set[str] = set()
             for oid in org_ids:
                 try:

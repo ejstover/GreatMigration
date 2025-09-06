@@ -129,8 +129,8 @@
       tbody.innerHTML='';
       rulesDoc.rules.forEach((rule, idx)=>{
         const tr=document.createElement('tr');
-        tr.draggable=true; tr.dataset.idx=idx;
-        tr.innerHTML=`<td class="p-2 drag-handle">☰</td>
+        tr.dataset.idx=idx;
+        tr.innerHTML=`<td class="p-2 drag-handle" draggable="true">☰</td>
           <td class="p-2"><input class="border rounded p-1 w-full name bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${rule.name||''}"/></td>
           <td class="p-2"><div class="conds"></div><button class="add-cond text-xs text-sky-600">+ condition</button></td>
           <td class="p-2">
@@ -159,8 +159,8 @@
 
     // Drag & drop ordering
     let dragIdx=null;
-    tbody.addEventListener('dragstart',e=>{ dragIdx=+e.target.closest('tr').dataset.idx; e.dataTransfer.effectAllowed='move'; e.target.classList.add('dragging'); });
-    tbody.addEventListener('dragend',e=>{ e.target.classList.remove('dragging'); });
+    tbody.addEventListener('dragstart',e=>{ const tr=e.target.closest('tr'); if(!tr) return; dragIdx=+tr.dataset.idx; e.dataTransfer.effectAllowed='move'; tr.classList.add('dragging'); });
+    tbody.addEventListener('dragend',e=>{ const tr=e.target.closest('tr'); if(tr) tr.classList.remove('dragging'); });
     tbody.addEventListener('dragover',e=>{ e.preventDefault(); });
     tbody.addEventListener('drop',e=>{ e.preventDefault(); const dest=e.target.closest('tr'); if(!dest) return; const destIdx=+dest.dataset.idx; const [m]=rulesDoc.rules.splice(dragIdx,1); rulesDoc.rules.splice(destIdx,0,m); renderRules(); });
 
