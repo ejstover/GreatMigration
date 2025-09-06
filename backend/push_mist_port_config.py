@@ -278,26 +278,48 @@ def remap_members(port_config: Dict[str, Any], member_offset: int = 0, normalize
         out[new_name] = cfg
     return out
 
-def remap_ports(port_config: Dict[str, Any], port_offset: int = 0) -> Dict[str, Any]:
-    """Shift the <port> component in interface names by ``port_offset``.
+def remap_ports(
+    port_config: Dict[str, Any],
+    port_offset: int = 0,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Shift the ``<port>`` component in interface names by ``port_offset`` and
+    adjust ``ge``/``mge`` prefixes when the shifted port crosses the model's
+    speed boundary.
 
-    Example: ``ge-0/0/0`` with ``port_offset=24`` -> ``ge-0/0/24``.  Collisions
-    raise ``SystemExit`` to match ``remap_members`` behaviour.
+    Example: ``mge-0/0/0`` with ``port_offset=24`` on an EX4100-48MP becomes
+    ``ge-0/0/24``.  Collisions raise ``SystemExit`` to match
+    :func:`remap_members` behaviour.
     """
     if int(port_offset or 0) == 0:
         return port_config
+
+    # Determine mge/ge cutoff based on model (default 16 like EX4100-48MP)
+    cutoff = 16
+    if model:
+        m = model.strip().lower()
+        if m.startswith("ex4100-24"):
+            cutoff = 8
+        elif m.startswith("ex4100-48"):
+            cutoff = 16
+
     out: Dict[str, Any] = {}
     for ifname, cfg in port_config.items():
         m = MIST_IF_RE.match(ifname)
         if not m:
             out[ifname] = cfg
             continue
-        itype  = m.group("type")
+        itype = m.group("type")
         member = int(m.group("member"))
-        pic    = int(m.group("pic"))
-        port   = int(m.group("port"))
+        pic = int(m.group("pic"))
+        port = int(m.group("port"))
         new_port = port + int(port_offset or 0)
-        new_name = f"{itype}-{member}/{pic}/{new_port}"
+
+        new_type = itype
+        if itype in {"ge", "mge"}:
+            new_type = "mge" if new_port < cutoff else "ge"
+
+        new_name = f"{new_type}-{member}/{pic}/{new_port}"
         if new_name in out:
             raise SystemExit(f"Port remap collision on {new_name}")
         out[new_name] = cfg
@@ -475,7 +497,7 @@ def main():
 
     # Apply member/port remap BEFORE excludes
     port_config = remap_members(port_config, member_offset=int(args.member_offset or 0), normalize=bool(args.normalize_modules))
-    port_config = remap_ports(port_config, port_offset=int(args.port_offset or 0))
+    port_config = remap_ports(port_config, port_offset=int(args.port_offset or 0), model=model)
 
     # Apply excludes AFTER remap
     excludes = set(args.exclude_interface or [])

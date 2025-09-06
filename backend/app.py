@@ -249,7 +249,7 @@ def _build_payload_for_row(
 
     # Apply member/port remap BEFORE excludes
     port_config = remap_members(port_config, member_offset=int(member_offset or 0), normalize=bool(normalize_modules))
-    port_config = remap_ports(port_config, port_offset=int(port_offset or 0))
+    port_config = remap_ports(port_config, port_offset=int(port_offset or 0), model=model)
 
     # Apply excludes AFTER remap
     exclude_set = set([e.strip() for e in (excludes or "").split(",") if e.strip()])
