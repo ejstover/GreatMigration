@@ -5,25 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Switch Port Config Frontend</title>
 
-  <!-- No-flash theme init: set 'dark' class before paint based on saved or system pref -->
-  <script>
-    (function () {
-      try {
-        const saved = localStorage.getItem('theme');
-        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        if ((saved === 'dark') || (!saved && prefersDark)) {
-          document.documentElement.classList.add('dark');
-        }
-      } catch {}
-    })();
-  </script>
-
-  <!-- Tailwind Play CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Configure Tailwind: enable dark mode via class -->
-  <script>
-    tailwind.config = { darkMode: 'class' };
-  </script>
+  <script>tailwind.config = { darkMode: 'media' };</script>
 
   <style>
     .dropzone { border: 2px dashed #cbd5e1; }
@@ -54,9 +37,6 @@
         </div>
       </div>
       <div class="flex items-center gap-4">
-        <button id="theme_toggle" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">
-          <span id="theme_label">Toggle Dark Mode</span>
-        </button>
         <a id="login_link" href="/login" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Log in</a>
         <button id="logout_btn" class="hidden px-4 py-2 rounded bg-rose-600 text-white hover:bg-rose-700">Log out</button>
       </div>
@@ -133,29 +113,10 @@
   </div>
 
   <script>
-    // --- Theme toggle (persist & label) ---
-    const themeToggle = document.getElementById('theme_toggle');
-    const themeLabel  = document.getElementById('theme_label');
-    const rootEl = document.documentElement;
     const loginLink = document.getElementById('login_link');
     const logoutBtn = document.getElementById('logout_btn');
 
-    function setTheme(mode) {
-      rootEl.classList.toggle('dark', mode === 'dark');
-      localStorage.setItem('theme', mode);
-      if (themeLabel) themeLabel.textContent = (mode === 'dark') ? 'Toggle Light Mode' : 'Toggle Dark Mode';
-    }
-    (function initTheme() {
-      const saved = localStorage.getItem('theme');
-      const mode = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-      setTheme(mode);
-    })();
-    themeToggle?.addEventListener('click', (e) => {
-      e.preventDefault();
-      setTheme(rootEl.classList.contains('dark') ? 'light' : 'dark');
-    });
-  
-  // --- Auth status ---
+    // --- Auth status ---
     fetch('/me').then(res => {
       if (!res.ok) throw new Error('not authed');
       return res.json();
