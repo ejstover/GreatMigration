@@ -51,6 +51,8 @@ if static_path.exists():
 # Optional authentication
 # Optional authentication
 README_URL = "https://github.com/jacob-hopkins/GreatMigration#readme"
+# Where to send users when they click the help icon
+HELP_URL = os.getenv("HELP_URL", README_URL)
 AUTH_METHOD = (os.getenv("AUTH_METHOD") or "").lower()
 if AUTH_METHOD == "ldap":
     try:
@@ -80,8 +82,9 @@ else:
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    tpl = (Path(__file__).resolve().parent.parent / "templates" / "index.html").read_text(encoding="utf-8")
-    return HTMLResponse(tpl)
+    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "index.html"
+    tpl = tpl_path.read_text(encoding="utf-8")
+    return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
 
 
 def _load_mist_token() -> str:
