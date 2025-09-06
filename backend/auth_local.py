@@ -1,5 +1,4 @@
-+114-0
-# auth_local.py
+"""Local authentication routes."""
 import os
 from typing import Dict, Any, Optional
 
@@ -31,7 +30,7 @@ router = APIRouter()
 
 
 def _html_login(error: Optional[str] = None) -> str:
-    msg = f'<p class="text-sm text-rose-600 mt-2">{error}</p>' if error else ''
+    msg = f'<p class="text-sm text-rose-600 dark:text-rose-400 mt-2">{error}</p>' if error else ''
     return f"""
 <!doctype html>
 <html>
@@ -40,21 +39,22 @@ def _html_login(error: Optional[str] = None) -> str:
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Sign in</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>tailwind.config = {{ darkMode: 'media' }};</script>
   </head>
-  <body class="bg-slate-50 text-slate-900">
-    <div class="min-h-screen flex items-center justify-center p-6" style="background-image: url('/static/logo.png'); background-position: center; background-repeat: no-repeat; background-size: 1500px;">
-      <div class="w-full max-w-md bg-white rounded-2xl shadow p-6">
+  <body class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100" style="background-image: url('/static/logo.png'); background-position: center; background-repeat: no-repeat; background-size: 1500px;">
+    <div class="min-h-screen flex items-center justify-center p-6">
+      <div class="w-full max-w-md bg-white dark:bg-slate-800 rounded-2xl shadow p-6">
         <h1 class="text-xl font-semibold">Sign in</h1>
-        <p class="text-sm text-slate-600">Use your local account</p>
+        <p class="text-sm text-slate-600 dark:text-slate-300">Use your local account</p>
         {msg}
         <form method="post" action="/login" class="mt-4 space-y-3">
           <div>
             <label class="block text-sm font-medium mb-1">Username</label>
-            <input name="username" autocomplete="username" class="w-full border rounded p-2" required />
+            <input name="username" autocomplete="username" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" required />
           </div>
           <div>
             <label class="block text-sm font-medium mb-1">Password</label>
-            <input name="password" type="password" autocomplete="current-password" class="w-full border rounded p-2" required />
+            <input name="password" type="password" autocomplete="current-password" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" required />
           </div>
           <button class="w-full mt-2 px-3 py-2 rounded text-white bg-emerald-600 hover:bg-emerald-700">Sign in</button>
         </form>
@@ -113,3 +113,4 @@ def install_auth(app):
     """Enable session auth routes."""
     app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", https_only=False)
     app.include_router(router)
+
