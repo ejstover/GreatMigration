@@ -1,0 +1,14 @@
+﻿__pycache__/
+*.py[cod]
+*.log
+
+# Virtual envs
+venv/
+.venv/
+.env
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
