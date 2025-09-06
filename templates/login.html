@@ -5,14 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Sign in</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script>tailwind.config = { darkMode: 'class' };</script>
-  <script>
-    (function () {
-      const saved = localStorage.getItem('theme');
-      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-      if ((saved === 'dark') || (!saved && prefersDark)) document.documentElement.classList.add('dark');
-    })();
-  </script>
+  <script>tailwind.config = { darkMode: 'media' };</script>
 </head>
 <body class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100" style="background-image: url('/static/logo.png'); background-position: center; background-repeat: no-repeat; background-size: 1500px;">
   <div class="min-h-screen flex items-center justify-center p-6">
