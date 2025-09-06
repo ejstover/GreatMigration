@@ -93,7 +93,7 @@ def _html_login(error: Optional[str] = None) -> str:
     <script src="https://cdn.tailwindcss.com"></script>
   </head>
   <body class="bg-slate-50 text-slate-900">
-    <div class="min-h-screen flex items-center justify-center p-6">
+    <div class="min-h-screen flex items-center justify-center p-6" style="background-image: url('/static/logo.png'); background-position: center; background-repeat: no-repeat; background-size: 1500px;">
       <div class="w-full max-w-md bg-white rounded-2xl shadow p-6">
         <h1 class="text-xl font-semibold">Sign in</h1>
         <p class="text-sm text-slate-600">Use your corporate AD credentials</p>
