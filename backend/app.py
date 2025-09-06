@@ -314,12 +314,25 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
         items.sort(key=lambda x: (x.get("name") or "").lower())
         return {"ok": True, "items": items}
     except Exception as e:
+        err_payload: Any
         try:
             err_payload = r.json()  # type: ignore[name-defined]
         except Exception:
-            err_payload = {"error": str(e)}
+            err_payload = {}
+        msg = ""
+        if isinstance(err_payload, dict):
+            msg = (
+                err_payload.get("error")
+                or err_payload.get("detail")
+                or err_payload.get("message")
+                or json.dumps(err_payload)
+            )
+        else:
+            msg = str(err_payload)
+        if not msg:
+            msg = str(e)
         return JSONResponse(
-            {"ok": False, "error": err_payload},
+            {"ok": False, "error": msg},
             status_code=getattr(r, "status_code", 500),
         )  # type: ignore[name-defined]
 

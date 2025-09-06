@@ -197,7 +197,8 @@
           if(!portProfiles.length) profileStatus.textContent='No port profiles found.'; else profileStatus.textContent='';
           renderRules();
         } else {
-          profileStatus.textContent='Error loading port profiles: ' + (d.error?.error || d.error);
+          const errMsg = typeof d.error === 'string' ? d.error : (d.error?.error || JSON.stringify(d.error) || 'Unknown error');
+          profileStatus.textContent='Error loading port profiles: ' + errMsg;
         }
       }).catch(err=>{ profileStatus.textContent='Error loading port profiles: ' + err.message; });
     fetch('/api/rules').then(r=>r.json()).then(d=>{ if(d.ok) { rulesDoc=d.doc; renderRules(); } });
