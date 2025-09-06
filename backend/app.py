@@ -234,6 +234,18 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
 
         template_id = SWITCH_TEMPLATE_ID
         org_id = org_id or DEFAULT_ORG_ID or None
+
+        def _fetch_from_template(oid: str, tid: str) -> List[Dict[str, Any]]:
+            r = requests.get(
+                f"{base_url}/orgs/{oid}/networktemplates/{tid}",
+                headers=headers,
+                timeout=30,
+            )
+            r.raise_for_status()
+            data = r.json() or {}
+            port_usages = data.get("port_usages") or {}
+            return [{"id": name, "name": name, "org_id": oid} for name in port_usages.keys()]
+
         if template_id:
             org_ids: List[str] = []
             if org_id:
@@ -254,14 +266,7 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
                     org_ids.append(who["org_id"])
             for oid in org_ids:
                 try:
-                    r = requests.get(
-                        f"{base_url}/orgs/{oid}/templates/{template_id}/portprofiles",
-                        headers=headers,
-                        timeout=30,
-                    )
-                    r.raise_for_status()
-                    for p in r.json() or []:
-                        items.append({"id": p.get("id"), "name": p.get("name"), "org_id": oid})
+                    items = _fetch_from_template(oid, template_id)
                     if items:
                         break
                 except Exception:
@@ -274,36 +279,45 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
                     },
                     status_code=400,
                 )
-        elif org_id:
-            r = requests.get(
-                f"{base_url}/orgs/{org_id}/portprofiles", headers=headers, timeout=30
-            )
-            r.raise_for_status()
-            for p in r.json() or []:
-                items.append({"id": p.get("id"), "name": p.get("name"), "org_id": org_id})
         else:
-            r = requests.get(f"{base_url}/self", headers=headers, timeout=30)
-            r.raise_for_status()
-            who = r.json() or {}
-            org_ids = set()
-            if isinstance(who.get("orgs"), list):
-                for o in who["orgs"]:
-                    if isinstance(o, dict) and o.get("org_id"):
-                        org_ids.add(o["org_id"])
-                    elif isinstance(o, dict) and o.get("id"):
-                        org_ids.add(o["id"])
-                    elif isinstance(o, str):
-                        org_ids.add(o)
-            if isinstance(who.get("org_id"), str):
-                org_ids.add(who["org_id"])
+            org_ids: List[str] = []
+            if org_id:
+                org_ids = [org_id]
+            else:
+                r = requests.get(f"{base_url}/self", headers=headers, timeout=30)
+                r.raise_for_status()
+                who = r.json() or {}
+                if isinstance(who.get("orgs"), list):
+                    for o in who["orgs"]:
+                        if isinstance(o, dict) and o.get("org_id"):
+                            org_ids.append(o["org_id"])
+                        elif isinstance(o, dict) and o.get("id"):
+                            org_ids.append(o["id"])
+                        elif isinstance(o, str):
+                            org_ids.append(o)
+                if isinstance(who.get("org_id"), str):
+                    org_ids.append(who["org_id"])
+            seen: set[str] = set()
             for oid in org_ids:
                 try:
-                    r2 = requests.get(
-                        f"{base_url}/orgs/{oid}/portprofiles", headers=headers, timeout=30
+                    r = requests.get(
+                        f"{base_url}/orgs/{oid}/networktemplates",
+                        headers=headers,
+                        timeout=30,
                     )
-                    r2.raise_for_status()
-                    for p in r2.json() or []:
-                        items.append({"id": p.get("id"), "name": p.get("name"), "org_id": oid})
+                    r.raise_for_status()
+                    templates = r.json() or []
+                    for t in templates:
+                        tid = t.get("id")
+                        if not tid:
+                            continue
+                        try:
+                            for item in _fetch_from_template(oid, tid):
+                                if item["name"] not in seen:
+                                    seen.add(item["name"])
+                                    items.append(item)
+                        except Exception:
+                            continue
                 except Exception:
                     continue
         items.sort(key=lambda x: (x.get("name") or "").lower())
