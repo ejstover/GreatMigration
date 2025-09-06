@@ -278,6 +278,31 @@ def remap_members(port_config: Dict[str, Any], member_offset: int = 0, normalize
         out[new_name] = cfg
     return out
 
+def remap_ports(port_config: Dict[str, Any], port_offset: int = 0) -> Dict[str, Any]:
+    """Shift the <port> component in interface names by ``port_offset``.
+
+    Example: ``ge-0/0/0`` with ``port_offset=24`` -> ``ge-0/0/24``.  Collisions
+    raise ``SystemExit`` to match ``remap_members`` behaviour.
+    """
+    if int(port_offset or 0) == 0:
+        return port_config
+    out: Dict[str, Any] = {}
+    for ifname, cfg in port_config.items():
+        m = MIST_IF_RE.match(ifname)
+        if not m:
+            out[ifname] = cfg
+            continue
+        itype  = m.group("type")
+        member = int(m.group("member"))
+        pic    = int(m.group("pic"))
+        port   = int(m.group("port"))
+        new_port = port + int(port_offset or 0)
+        new_name = f"{itype}-{member}/{pic}/{new_port}"
+        if new_name in out:
+            raise SystemExit(f"Port remap collision on {new_name}")
+        out[new_name] = cfg
+    return out
+
 def remap_modules(port_config: Dict[str, Any], member_offset: int = 0, normalize: bool = False) -> Dict[str, Any]:
     return remap_members(port_config, member_offset=member_offset, normalize=normalize)
 
@@ -421,7 +446,7 @@ def get_device_model(base_url: str, site_id: str, device_id: str, token: str) ->
 # CLI
 # -------------------------------
 def main():
-    ap = argparse.ArgumentParser(description="Map and push Mist port_config with EX4100 uplink mapping and member offset.")
+    ap = argparse.ArgumentParser(description="Map and push Mist port_config with EX4100 uplink mapping and member/port offsets.")
     ap.add_argument("--site-id", required=True)
     ap.add_argument("--device-id", required=True)
     ap.add_argument("--input", required=True, help="Path to converter JSON ('interfaces') or Mist 'port_config'")
@@ -432,6 +457,7 @@ def main():
     ap.add_argument("--model", default=None, help="Override device model (skip API lookup)")
     ap.add_argument("--exclude-interface", action="append", default=None)
     ap.add_argument("--member-offset", type=int, default=0)
+    ap.add_argument("--port-offset", type=int, default=0)
     ap.add_argument("--normalize-modules", action="store_true")
 
     args = ap.parse_args()
@@ -447,8 +473,9 @@ def main():
     # Build/obtain port_config
     port_config = extract_port_config(inp, model=model)
 
-    # Apply member remap BEFORE excludes
+    # Apply member/port remap BEFORE excludes
     port_config = remap_members(port_config, member_offset=int(args.member_offset or 0), normalize=bool(args.normalize_modules))
+    port_config = remap_ports(port_config, port_offset=int(args.port_offset or 0))
 
     # Apply excludes AFTER remap
     excludes = set(args.exclude_interface or [])
@@ -477,6 +504,7 @@ def main():
     if args.dry_run:
         print(f"Device model: {model or 'unknown'}")
         print(f"Member offset: {args.member_offset} (normalize: {bool(args.normalize_modules)})")
+        print(f"Port offset: {args.port_offset}")
         print("Validation:")
         print(json.dumps(validation, indent=2))
         print(f"PUT {url}")

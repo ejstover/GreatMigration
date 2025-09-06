@@ -140,6 +140,7 @@ def cisco_to_juniper_if_direct(
     derived_vc_members: int,
     uplink_module: int = 1,
     strict_overflow: bool = False,
+    port_offset: int = 0,
 ) -> str:
     """
     Direct mapping (no flatten): fpc = member-1; local_idx = port-1; prefix by the
@@ -163,7 +164,7 @@ def cisco_to_juniper_if_direct(
     # Access/user
     src_member_1b = max(nums[0], 1)
     fpc = src_member_1b - 1
-    local_idx = max(nums[-1] - 1, 0)
+    local_idx = max(nums[-1] - 1, 0) + int(port_offset or 0)
 
     model = member_models.get(src_member_1b, "ex4100-48mp")  # safe default
     dest_ppm = _dest_ports_per_member(model)
@@ -224,6 +225,7 @@ def convert_one_file(
     strict_overflow: bool,
     force_model: Optional[str] = None,
     output_dir: Optional[Path] = None,
+    start_port: int = 0,
 ) -> Path:
     """
     Convert a single Cisco config text file to JSON using the rules above.
@@ -308,6 +310,7 @@ def convert_one_file(
                 derived_vc_members=derived_vc_members,
                 uplink_module=uplink_module,
                 strict_overflow=strict_overflow,
+                port_offset=start_port,
             )
             mapping_overflow = False
         except ValueError:
@@ -317,6 +320,7 @@ def convert_one_file(
                 derived_vc_members=derived_vc_members,
                 uplink_module=uplink_module,
                 strict_overflow=False,
+                port_offset=start_port,
             )
             mapping_overflow = True
             overflow_count += 1
@@ -397,6 +401,7 @@ def main():
         action="store_true",
         help="If set, raise an error when a port exceeds the inferred/forced model capacity."
     )
+    ap.add_argument("--start-port", type=int, default=0, help="Offset final Juniper port numbers by this amount.")
     args = ap.parse_args()
 
     if not args.input_file and not args.bulk_convert:
@@ -412,6 +417,7 @@ def main():
             uplink_module=args.uplink_module,
             strict_overflow=args.strict_overflow,
             force_model=args.force_model,
+            start_port=args.start_port,
         )
         return
 
@@ -438,6 +444,7 @@ def main():
                 strict_overflow=args.strict_overflow,
                 force_model=args.force_model,
                 output_dir=bulk_dir,  # keep outputs alongside sources
+                start_port=args.start_port,
             )
             ok += 1
         except Exception as e:
