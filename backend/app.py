@@ -21,6 +21,7 @@ except Exception:
 
 # User modules
 from convertciscotojson import convert_one_file  # type: ignore
+import push_mist_port_config as pm  # type: ignore
 from push_mist_port_config import (  # type: ignore
     ensure_port_config,
     get_device_model,
@@ -54,6 +55,7 @@ if static_path.exists():
 README_URL = "https://github.com/jacob-hopkins/GreatMigration#readme"
 # Where to send users when they click the help icon
 HELP_URL = os.getenv("HELP_URL", README_URL)
+RULES_PATH = Path(__file__).resolve().parent / "port_rules.json"
 AUTH_METHOD = (os.getenv("AUTH_METHOD") or "").lower()
 if AUTH_METHOD == "ldap":
     try:
@@ -88,11 +90,40 @@ def index():
     return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
 
 
+@app.get("/rules", response_class=HTMLResponse)
+def rules_page():
+    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "rules.html"
+    tpl = tpl_path.read_text(encoding="utf-8")
+    return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
+
+
 def _load_mist_token() -> str:
     tok = (os.getenv("MIST_TOKEN") or "").strip()
     if not tok:
         raise RuntimeError("Missing MIST_TOKEN environment variable on the server.")
     return tok
+
+
+@app.get("/api/rules")
+def api_get_rules():
+    """Return current rule document."""
+    try:
+        data = json.loads(RULES_PATH.read_text(encoding="utf-8"))
+        return {"ok": True, "doc": data}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/rules")
+def api_save_rules(doc: Dict[str, Any]):
+    """Persist rule document and refresh in memory."""
+    require_push_rights(current_user())
+    try:
+        RULES_PATH.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        pm.RULES_DOC = pm.load_rules()
+        return {"ok": True}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 @app.get("/api/sites")
@@ -178,6 +209,52 @@ def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
                 "is_switch": is_switch
             })
         items.sort(key=lambda x: (not x["is_switch"], (x["name"] or "").lower()))
+        return {"ok": True, "items": items}
+    except Exception as e:
+        try:
+            err_payload = r.json()  # type: ignore[name-defined]
+        except Exception:
+            err_payload = {"error": str(e)}
+        return JSONResponse({"ok": False, "error": err_payload}, status_code=getattr(r, "status_code", 500))  # type: ignore[name-defined]
+
+
+@app.get("/api/port_profiles")
+def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
+    """Return port profiles visible to the token."""
+    token = _load_mist_token()
+    base_url = base_url.rstrip("/")
+    headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
+    items: List[Dict[str, Any]] = []
+    try:
+        if org_id:
+            r = requests.get(f"{base_url}/orgs/{org_id}/portprofiles", headers=headers, timeout=30)
+            r.raise_for_status()
+            for p in r.json() or []:
+                items.append({"id": p.get("id"), "name": p.get("name"), "org_id": org_id})
+        else:
+            r = requests.get(f"{base_url}/self", headers=headers, timeout=30)
+            r.raise_for_status()
+            who = r.json() or {}
+            org_ids = set()
+            if isinstance(who.get("orgs"), list):
+                for o in who["orgs"]:
+                    if isinstance(o, dict) and o.get("org_id"):
+                        org_ids.add(o["org_id"])
+                    elif isinstance(o, dict) and o.get("id"):
+                        org_ids.add(o["id"])
+                    elif isinstance(o, str):
+                        org_ids.add(o)
+            if isinstance(who.get("org_id"), str):
+                org_ids.add(who["org_id"])
+            for oid in org_ids:
+                try:
+                    r2 = requests.get(f"{base_url}/orgs/{oid}/portprofiles", headers=headers, timeout=30)
+                    r2.raise_for_status()
+                    for p in r2.json() or []:
+                        items.append({"id": p.get("id"), "name": p.get("name"), "org_id": oid})
+                except Exception:
+                    continue
+        items.sort(key=lambda x: (x.get("name") or "").lower())
         return {"ok": True, "items": items}
     except Exception as e:
         try:

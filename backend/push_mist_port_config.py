@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import re
+from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -44,27 +45,19 @@ TZ        = "America/New_York"
 # -------------------------------
 # Rules (first match wins) — kept compact & readable
 # -------------------------------
-RULES_DOC: Dict[str, Any] = {
-    "defaults": {"no_local_overwrite": False, "critical": False},
-    "rules": [
-        {"name": "ap-trunk-n150-allowed-110-120-130-210", "when": {"mode": "trunk", "native_vlan": 150, "allowed_vlans_equals": [110, 120, 130, 210]}, "set": {"usage": "ap"}},
-        {"name": "ap-trunk-n120", "when": {"mode": "trunk", "native_vlan": 120}, "set": {"usage": "ap"}},
-        {"name": "access-timeclocks-peripherals", "when": {"mode": "access", "description_regex": r"(?i)\b(time[-\s]?clock(s)?|time\s*keeping|timekeeper|kronos|ukg|workforce\s*(ready|central)|(in[\s-]*touch|intouch))\b"}, "set": {"usage": "it_peripherals"}},
-        {"name": "access-printers-peripherals", "when": {"mode": "access", "description_regex": r"(?i)\b((hp\s*(laserjet|officejet|deskjet|pagewide))|lexmark|brother|canon(?:\s*(imageclass|imagerunner))?|epson|ricoh|xerox(?:\s*(workcentre|versalink|altalink|phaser))?|konica\s*minolta|kyocera(?:\s*(ecosys|taskalfa))?|sharp\s*(mx|al)|oki|toshiba|dell\s*(laser|laserjet)?|samsung\s*(xpress|ml|sl-)?|mfp|multi[-\s]?function|multifunction|printer|copier|print(?:er|ing))\b"}, "set": {"usage": "it_peripherals"}},
-        {"name": "access-conf-panels-crestron", "when": {"mode": "access", "description_regex": r"(?i)\b(crestron|(conference\s*room.*(panel|sched))|(room\s*(sched(ul(e|ing))?|panel)))\b"}, "set": {"usage": "it_peripherals"}},
-        {"name": "access-10-voice-15-end_user", "when": {"mode": "access", "data_vlan": 10, "voice_vlan": 15}, "set": {"usage": "end_user"}},
-        {"name": "vlan-100-end_user", "when": {"mode": "access", "data_vlan": 100}, "set": {"usage": "end_user"}},
-        {"name": "vlan-110-voice", "when": {"mode": "access", "data_vlan": 110}, "set": {"usage": "voice"}},
-        {"name": "vlan-170-facility", "when": {"mode": "access", "data_vlan": 170}, "set": {"usage": "facility_mgmt"}},
-        {"name": "vlan-160-it-periph", "when": {"mode": "access", "data_vlan": 160}, "set": {"usage": "it_peripherals"}},
-        {"name": "vlan-3-end_user", "when": {"mode": "access", "data_vlan": 3}, "set": {"usage": "end_user"}},
-        {"name": "doors-vlan-5-end_user", "when": {"mode": "access", "data_vlan": 5}, "set": {"usage": "end_user"}},
-        {"name": "doors-vlan-4-end_user", "when": {"mode": "access", "data_vlan": 4}, "set": {"usage": "end_user"}},
-        {"name": "ap-trunk", "when": {"mode": "trunk", "description_regex": r"(?i)\b(ap|access\s*point)\b"}, "set": {"usage": "ap"}},
-        {"name": "uplink-idf", "when": {"mode": "trunk"}, "set": {"usage": "uplink_idf", "no_local_overwrite": True}},
-        {"name": "catch-all-blackhole", "when": {"any": True}, "set": {"usage": "blackhole"}},
-    ]
-}
+RULES_PATH = Path(__file__).with_name("port_rules.json")
+
+
+def load_rules(path: Path = RULES_PATH) -> Dict[str, Any]:
+    """Load rule document from JSON file."""
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {"defaults": {"no_local_overwrite": False, "critical": False}, "rules": []}
+
+
+RULES_DOC: Dict[str, Any] = load_rules()
 
 BLACKLIST_PATTERNS = [
     r"^\s*$", r"^\s*vla?n?\s*\d+\s*$", r"^\s*(data|voice)\s*(port)?\s*$",
