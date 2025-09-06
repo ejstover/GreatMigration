@@ -81,7 +81,7 @@ def _is_member_of_group(user_dn: str, group_dn: str, search_conn: Connection) ->
     return bool(ok and search_conn.entries)
 
 def _html_login(error: Optional[str] = None) -> str:
-    msg = f'<p class="text-sm text-rose-600 mt-2">{error}</p>' if error else ''
+    msg = f'<p class="text-sm text-rose-600 dark:text-rose-400 mt-2">{error}</p>' if error else ''
     hint = 'user@testdomain.local' if '{username}@' in LDAP_BIND_TEMPLATE else 'TESTDOMAIN\\user'
     return f"""
 <!doctype html>
@@ -91,22 +91,23 @@ def _html_login(error: Optional[str] = None) -> str:
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Sign in</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>tailwind.config = {{ darkMode: 'media' }};</script>
   </head>
-  <body class="bg-slate-50 text-slate-900">
-    <div class="min-h-screen flex items-center justify-center p-6" style="background-image: url('/static/logo.png'); background-position: center; background-repeat: no-repeat; background-size: 1500px;">
-      <div class="w-full max-w-md bg-white rounded-2xl shadow p-6">
+  <body class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100" style="background-image: url('/static/logo.png'); background-position: center; background-repeat: no-repeat; background-size: 1500px;">
+    <div class="min-h-screen flex items-center justify-center p-6">
+      <div class="w-full max-w-md bg-white dark:bg-slate-800 rounded-2xl shadow p-6">
         <h1 class="text-xl font-semibold">Sign in</h1>
-        <p class="text-sm text-slate-600">Use your corporate AD credentials</p>
+        <p class="text-sm text-slate-600 dark:text-slate-300">Use your corporate AD credentials</p>
         {msg}
         <form method="post" action="/login" class="mt-4 space-y-3">
           <div>
             <label class="block text-sm font-medium mb-1">Username</label>
-            <input name="username" autocomplete="username" class="w-full border rounded p-2" required />
-            <p class="text-xs text-slate-500 mt-1">Format: {hint}</p>
+            <input name="username" autocomplete="username" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" required />
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Format: {hint}</p>
           </div>
           <div>
             <label class="block text-sm font-medium mb-1">Password</label>
-            <input name="password" type="password" autocomplete="current-password" class="w-full border rounded p-2" required />
+            <input name="password" type="password" autocomplete="current-password" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" required />
           </div>
           <button class="w-full mt-2 px-3 py-2 rounded text-white bg-emerald-600 hover:bg-emerald-700">Sign in</button>
         </form>
