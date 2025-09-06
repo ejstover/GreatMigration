@@ -26,24 +26,26 @@
     .tooltip:hover .tip { visibility: visible; opacity: 1; }
   </style>
 </head>
-<body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
-  <div class="max-w-7xl mx-auto p-6">
-    <header class="mb-6 flex items-center justify-between">
-      <div class="flex items-center gap-3">
-        <img src="/static/logo.png" alt="Logo" class="h-10 w-10" />
-        <div>
-          <h1 class="text-2xl font-semibold">Switch Port Config Frontend</h1>
-          <p class="text-sm text-slate-600 dark:text-slate-300">Upload Cisco configs → map rows → batch test/push to Mist</p>
+  <body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+    <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+      <div class="max-w-7xl mx-auto flex items-center justify-between p-6">
+        <div class="flex items-center gap-4">
+          <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
+          <div>
+            <h1 class="text-3xl font-bold">Switch Port Config Frontend</h1>
+            <p class="text-slate-100 text-sm md:text-base">Upload Cisco configs → map rows → batch test/push to Mist</p>
+          </div>
         </div>
-      </div>
-      <div class="flex items-center gap-4">
-        <a id="login_link" href="/login" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Log in</a>
-        <button id="logout_btn" class="hidden px-4 py-2 rounded bg-rose-600 text-white hover:bg-rose-700">Log out</button>
+        <div class="flex items-center gap-4">
+          <a id="login_link" href="/login" class="px-4 py-2 rounded bg-white/20 hover:bg-white/30">Log in</a>
+          <button id="logout_btn" class="hidden px-4 py-2 rounded bg-white/20 hover:bg-white/30">Log out</button>
+        </div>
       </div>
     </header>
 
-    <!-- Drag & Drop -->
-    <section class="mb-6">
+    <div class="max-w-7xl mx-auto p-6">
+      <!-- Drag & Drop -->
+      <section class="mb-6">
       <div id="dz" class="dropzone rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 p-8 text-center text-slate-500 dark:text-slate-300">
         <p class="mb-2">Drag & drop Cisco config files here (or click to select)</p>
         <input id="file_input" type="file" multiple class="hidden" accept=".txt,.cfg,.conf,.json" />
