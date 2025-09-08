@@ -119,7 +119,8 @@ def api_get_rules():
 def api_save_rules(request: Request, doc: Dict[str, Any] = Body(...)):
     """Persist rule document and refresh in memory."""
     try:
-        require_push_rights(current_user(request))
+        # Ensure the request is from an authenticated user
+        current_user(request)
         pm.validate_rules_doc(doc)
         RULES_PATH.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         pm.RULES_DOC = pm.load_rules()
