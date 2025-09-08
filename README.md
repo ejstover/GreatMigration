@@ -30,16 +30,16 @@ Key features include:
 
 ```bash
 # Clone the repo, create a .venv, install dependencies, prompt for .env, and start the API
-python3 quickstart.py --repo https://github.com/ejstover/GreatMigration.git --dir ./GreatMigration --branch main --port 8000
+python3 quickstart.py --repo https://github.com/ejstover/GreatMigration.git --dir ./GreatMigration --branch main
 ```
 
-Subsequent runs (after the repo is cloned) only need the directory and port:
+Subsequent runs (after the repo is cloned) only need the directory:
 
 ```bash
-python3 quickstart.py --dir ./GreatMigration --port 8000
+python3 quickstart.py --dir ./GreatMigration
 ```
 
-Use `--no-start` to perform setup without launching the server. The script creates/uses `backend/.env` to store your Mist token and optional defaults.
+On first run the script prompts for your Mist token and desired API port (default 8000). Use `--port` to override the stored value or `--no-start` to perform setup without launching the server. The script creates/uses `backend/.env` to store your Mist token and optional defaults.
 
 ### Manual setup
 
@@ -68,7 +68,7 @@ Use `--no-start` to perform setup without launching the server. The script creat
    ```bash
    uvicorn app:app --app-dir backend --reload
    ```
-   The API and front-end will be available at <http://localhost:8000>.
+   The API and front-end will be available at <http://localhost:8000> (or the port you chose).
 
 ---
 
