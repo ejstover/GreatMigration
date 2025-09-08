@@ -1,6 +1,18 @@
 # GreatMigration
 
-A web application and set of utilities for converting Cisco switch-port configurations and safely pushing them to the Juniper Mist cloud.
+GreatMigration is an open‑source toolkit and web application that streamlines migrating Cisco switch‑port configurations into the Juniper Mist cloud. It parses legacy Cisco configs, translates them to Mist's JSON format, and provides both a browser interface and command‑line utilities to validate or deploy the resulting port settings.
+
+Key features include:
+
+* Guided web workflow for uploading configs, mapping to Mist sites/devices, and pushing updates
+* Command‑line utilities for batch conversion and port configuration pushes
+* Safe test mode for reviewing payloads before any live changes occur
+
+## Screenshots
+
+<!-- TODO: replace these placeholders with real screenshots -->
+![Upload interface placeholder](docs/images/placeholder-upload.png)
+![Rule builder placeholder](docs/images/placeholder-rules.png)
 
 ---
 
@@ -75,9 +87,19 @@ Use `--no-start` to perform setup without launching the server. The script creat
 
 1. Navigate to `http://localhost:8000` (login if authentication is enabled).
 2. Upload Cisco configuration files.
-3. Review converted JSON and map each file to a Mist site and device.
+3. Review converted JSON and map each file to a Mist site and device. Changing the site on the first row cascades to all subsequent rows, but each row can still be adjusted individually.
 4. Choose **Test mode** for a dry run or uncheck it to push live changes.
-5. Log out when finished.
+5. Optionally list interfaces to exclude. Provide each interface individually (e.g., `ge-0/0/1,ge-0/0/2`); range syntax is not supported yet.
+6. Log out when finished.
+
+### Test mode vs. live push
+
+Both the web UI and CLI provide a dry‑run option so you can see exactly what would be sent to Mist before committing changes:
+
+* **Test mode / `--dry-run`** – Builds the full payload, applies remaps and exclusions, and performs capacity validation without contacting the Mist API. The response includes the exact JSON that would be pushed along with any validation warnings.
+* **Live push** – After successful validation, issues an HTTP `PUT` to the Mist device endpoint to apply the configuration. Live pushes are blocked if validation fails.
+
+It is strongly recommended to run in test mode first, review the payload, and then perform a live push once satisfied.
 
 ### Rules interface
 
@@ -112,7 +134,7 @@ Useful options:
 
 **push_mist_port_config.py**
 
-Command-line version of the port-config builder/pusher. It accepts normalized JSON input and can test or apply to Mist switches. Refer to in-file comments for invocation patterns and rule customization.
+Command-line version of the port-config builder/pusher. It accepts normalized JSON input and can test or apply to Mist switches. Use `--dry-run` to preview changes and `--exclude-interface` for each interface you want to skip; ranges such as `ge-0/0/1-3` are not supported. Refer to in-file comments for invocation patterns and rule customization.
 
 ---
 
