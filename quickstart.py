@@ -95,6 +95,12 @@ def pip(venv_python: Path, *args: str):
     return run(cmd)
 
 def ensure_requirements(project_dir: Path, venv_python: Path):
+    # Some environments may have a venv without pip installed.  Attempt to
+    # detect and bootstrap pip in that case so subsequent installs succeed.
+    if run([str(venv_python), "-m", "pip", "--version"], check=False) != 0:
+        print("pip not found; bootstrapping with ensurepip ...")
+        run([str(venv_python), "-m", "ensurepip", "--upgrade"])
+
     print("Upgrading pip ...")
     pip(venv_python, "install", "--upgrade", "pip", "wheel", "setuptools")
 
