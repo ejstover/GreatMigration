@@ -102,6 +102,7 @@ The script creates/uses `backend/.env` to store your Mist token and optional def
    # Optional defaults
    MIST_BASE_URL=https://api.ac2.mist.com         # adjust region if needed
    MIST_ORG_ID=                                   # default org for site picker
+   SWITCH_TEMPLATE_ID=                            # switch template for port profiles
    AUTH_METHOD=local                              # or "ldap"; omit for no auth
    LOCAL_USERS=alice:pass1,bob:pass2              # for AUTH_METHOD=local
    LOCAL_PUSH_USERS=alice                         # who may push live changes

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Port Mapping Rules</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'media' };</script>
+  <style>
+    .drag-handle { cursor: move; }
+    tbody tr.dragging { opacity: .5; }
+    .tooltip { position: relative; display: inline-flex; align-items: center; gap: .35rem; }
+    .tooltip .tip {
+      visibility: hidden; opacity: 0; transition: opacity .15s ease;
+      position: absolute; left: 50%; transform: translateX(-50%);
+      bottom: 130%; min-width: 18rem; max-width: 28rem;
+      background: #0f172a; color: #f8fafc; padding: .5rem .75rem; border-radius: .5rem; font-size: .75rem;
+      box-shadow: 0 10px 25px rgba(2,6,23,0.25); z-index: 50; text-align: left;
+    }
+    .tooltip:hover .tip { visibility: visible; opacity: 1; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+  <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+    <div class="max-w-7xl mx-auto flex items-center justify-between p-6">
+      <div class="flex items-center gap-4">
+        <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
+        <div>
+          <h1 class="text-3xl font-bold">Port Mapping Rules</h1>
+          <p class="text-slate-100 text-sm md:text-base">Create and reorder port mapping rules</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-4">
+        <a href="/" class="p-2 rounded hover:bg-white/30" aria-label="Home">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7A1 1 0 003 10h1v7a1 1 0 001 1h4a1 1 0 001-1v-4h2v4a1 1 0 001 1h4a1 1 0 001-1v-7h1a1 1 0 00.707-1.707l-7-7z"/></svg>
+        </a>
+        <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="p-2 rounded hover:bg-white/30" aria-label="Help">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10A8 8 0 112 10a8 8 0 0116 0zM10 5a3 3 0 00-3 3 .75.75 0 101.5 0A1.5 1.5 0 0110 6.5a1.5 1.5 0 011.5 1.5c0 .401-.08.558-.494.969-.458.451-1.168 1.15-1.168 2.531h1.5c0-.822.447-1.2.903-1.642.571-.56 1.009-1.078 1.009-1.858A3 3 0 0010 5zm0 8a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/></svg>
+        </a>
+        <a id="login_link" href="/login" class="px-4 py-2 rounded bg-white/20 hover:bg-white/30">Log in</a>
+        <button id="logout_btn" class="hidden px-4 py-2 rounded bg-white/20 hover:bg-white/30">Log out</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="max-w-5xl mx-auto p-6">
+    <div class="mb-4 flex items-center justify-between">
+      <h2 class="text-lg font-medium">Rules</h2>
+      <div class="flex items-center gap-2">
+        <button id="add_rule" class="px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+        <button id="save_rules" class="px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="min-w-full divide-y divide-slate-300 dark:divide-slate-700 text-sm">
+        <thead class="bg-slate-100 dark:bg-slate-800">
+          <tr>
+            <th class="p-2 text-left"></th>
+            <th class="p-2 text-left">Name</th>
+            <th class="p-2 text-left">If</th>
+            <th class="p-2 text-left">Then</th>
+            <th class="p-2"></th>
+          </tr>
+        </thead>
+        <tbody id="rules_tbody" class="divide-y divide-slate-200 dark:divide-slate-700"></tbody>
+      </table>
+    </div>
+    <div id="save_status" class="text-sm mt-4"></div>
+    <div id="profile_status" class="text-sm text-red-600 dark:text-red-400 mt-2"></div>
+  </div>
+
+  <script>
+    const loginLink = document.getElementById('login_link');
+    const logoutBtn = document.getElementById('logout_btn');
+    fetch('/me').then(res => {
+      if (!res.ok) throw new Error('not authed');
+      return res.json();
+    }).then(() => {
+      loginLink?.classList.add('hidden');
+      logoutBtn?.classList.remove('hidden');
+      logoutBtn?.addEventListener('click', (e) => { e.preventDefault(); window.location.href = '/logout'; });
+    }).catch(() => { window.location.href = '/login'; });
+
+    const tbody = document.getElementById('rules_tbody');
+    const addRuleBtn = document.getElementById('add_rule');
+    const saveBtn = document.getElementById('save_rules');
+    const saveStatus = document.getElementById('save_status');
+    const profileStatus = document.getElementById('profile_status');
+    let rulesDoc = {rules: []};
+    let portProfiles = [];
+
+    function updateAndLabels(container){
+      [...container.children].forEach((child, idx)=>{
+        let lbl = child.querySelector('.and-label');
+        if(idx===0){ if(lbl) lbl.remove(); }
+        else { if(!lbl){ const span=document.createElement('span'); span.textContent='and'; span.className='and-label text-xs'; child.insertBefore(span, child.firstChild); } }
+      });
+    }
+
+    function createConditionRow(cond){
+      const div = document.createElement('div');
+      div.className = 'flex items-center gap-2 mb-1';
+      const sel = document.createElement('select');
+      sel.className = 'border rounded p-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
+      ['mode','data_vlan','voice_vlan','native_vlan','description_regex'].forEach(f=>{
+        const o=document.createElement('option'); o.value=f; o.textContent=f; if(f===cond.field) o.selected=true; sel.appendChild(o);
+      });
+      const val = document.createElement('input');
+      val.className = 'border rounded p-1 flex-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
+      val.value = cond.value || '';
+      div.appendChild(sel);
+      div.appendChild(val);
+      const regexTip = document.createElement('span');
+      regexTip.className = 'tooltip hidden';
+      regexTip.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 112 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg><span class="tip">Supports regular expressions.</span>';
+      div.appendChild(regexTip);
+      const del = document.createElement('button');
+      del.textContent='✕';
+      del.className='text-red-500 text-sm';
+      del.addEventListener('click',()=>{ const parent=div.parentElement; div.remove(); if(parent) updateAndLabels(parent); });
+      div.appendChild(del);
+      function toggleTip(){ if(sel.value.includes('regex')) regexTip.classList.remove('hidden'); else regexTip.classList.add('hidden'); }
+      sel.addEventListener('change',toggleTip);
+      toggleTip();
+      return div;
+    }
+
+    function renderRules(){
+      tbody.innerHTML='';
+      rulesDoc.rules.forEach((rule, idx)=>{
+        const tr=document.createElement('tr');
+        tr.dataset.idx=idx;
+        tr.innerHTML=`<td class="p-2 drag-handle" draggable="true">☰</td>
+          <td class="p-2"><input class="border rounded p-1 w-full name bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${rule.name||''}"/></td>
+          <td class="p-2"><div class="conds"></div><button class="add-cond text-xs text-sky-600">+ condition</button></td>
+          <td class="p-2">
+            <label class="tooltip">
+              <select class="usage border rounded p-1 mr-2 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700"></select>
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 112 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
+              <span class="tip">Select the Mist port profile to apply when this rule matches.</span>
+            </label>
+          </td>
+          <td class="p-2"><button class="del text-red-500">✕</button></td>`;
+        const condsDiv = tr.querySelector('.conds');
+        const when = rule.when || {};
+        Object.entries(when).forEach(([k,v])=>{
+          const cond = {field:k, value: v};
+          condsDiv.appendChild(createConditionRow(cond));
+        });
+        updateAndLabels(condsDiv);
+        tr.querySelector('.add-cond').addEventListener('click',()=>{const row=createConditionRow({field:'mode', value:''}); condsDiv.appendChild(row); updateAndLabels(condsDiv);});
+        const usageSel = tr.querySelector('.usage');
+        const empty=document.createElement('option'); empty.value=''; empty.textContent='--usage--'; usageSel.appendChild(empty);
+        portProfiles.forEach(p=>{ const o=document.createElement('option'); o.value=p.name; o.textContent=p.name; if(rule.set?.usage===p.name) o.selected=true; usageSel.appendChild(o); });
+        tr.querySelector('.del').addEventListener('click',()=>{ rulesDoc.rules.splice(idx,1); renderRules(); });
+        tbody.appendChild(tr);
+      });
+    }
+
+    // Drag & drop ordering
+    let dragIdx=null;
+    tbody.addEventListener('dragstart',e=>{ const tr=e.target.closest('tr'); if(!tr) return; dragIdx=+tr.dataset.idx; e.dataTransfer.effectAllowed='move'; tr.classList.add('dragging'); });
+    tbody.addEventListener('dragend',e=>{ const tr=e.target.closest('tr'); if(tr) tr.classList.remove('dragging'); });
+    tbody.addEventListener('dragover',e=>{ e.preventDefault(); });
+    tbody.addEventListener('drop',e=>{ e.preventDefault(); const dest=e.target.closest('tr'); if(!dest) return; const destIdx=+dest.dataset.idx; const [m]=rulesDoc.rules.splice(dragIdx,1); rulesDoc.rules.splice(destIdx,0,m); renderRules(); });
+
+    addRuleBtn.addEventListener('click',()=>{ rulesDoc.rules.push({name:'', when:{}, set:{}}); renderRules(); tbody.lastElementChild?.scrollIntoView({behavior:'smooth'}); });
+
+    saveBtn.addEventListener('click',()=>{
+      // collect from DOM
+      rulesDoc.rules = [...tbody.querySelectorAll('tr')].map(tr=>{
+        const name = tr.querySelector('.name').value.trim();
+        const when={};
+        tr.querySelectorAll('.conds > div').forEach(div=>{ const f=div.querySelector('select').value; const v=div.querySelector('input').value; if(v) when[f]=isNaN(Number(v))? v: Number(v); });
+        const usage = tr.querySelector('.usage').value;
+        const set={};
+        if(usage) set.usage=usage;
+        return {name, when, set};
+      });
+      fetch('/api/rules',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(rulesDoc)})
+        .then(async r=>{ const txt=await r.text(); try { return JSON.parse(txt);} catch { throw new Error(txt);} })
+        .then(resp=>{
+          if(resp.ok){
+            window.location.href='/';
+          } else {
+            saveStatus.textContent='Error: ' + (resp.error || 'saving rules');
+          }
+        }).catch(err=>{ saveStatus.textContent='Error: ' + err.message; });
+    });
+
+    // Load existing rules & port profiles
+    fetch('/api/port_profiles')
+      .then(async r=>{ const txt=await r.text(); try { return JSON.parse(txt);} catch { throw new Error(txt);} })
+      .then(d=>{
+        if(d.ok){
+          portProfiles=d.items || [];
+          if(!portProfiles.length) profileStatus.textContent='No port profiles found.'; else profileStatus.textContent='';
+          renderRules();
+        } else {
+          const errMsg = typeof d.error === 'string' ? d.error : (d.error?.error || JSON.stringify(d.error) || 'Unknown error');
+          profileStatus.textContent='Error loading port profiles: ' + errMsg;
+        }
+      }).catch(err=>{ profileStatus.textContent='Error loading port profiles: ' + err.message; });
+    fetch('/api/rules').then(r=>r.json()).then(d=>{ if(d.ok) { rulesDoc=d.doc; renderRules(); } });
+  </script>
+</body>
+</html>
