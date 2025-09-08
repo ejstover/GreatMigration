@@ -4,7 +4,7 @@
   - Clone (or update) repo
   - Create virtualenv
   - Install deps
-  - Ensure backend/.env (MIST_* vars)
+  - Ensure backend/.env (MIST_* vars and API_PORT)
   - Start the FastAPI app with uvicorn
 #>
 
@@ -12,7 +12,7 @@ param(
   [string]$RepoUrl,                # e.g. https://github.com/ejstover/GreatMigration.git
   [string]$TargetDir = "$PWD",     # where to clone/use the project
   [string]$Branch = "main",
-  [int]$Port = 8000
+  [int]$Port = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -87,6 +87,7 @@ function Ensure-Requirements {
 function Ensure-Env {
   param([string]$projectDir)
   $envPath = Join-Path $projectDir "backend\.env"
+  $port = $null
   if (-not (Test-Path $envPath)) {
     Write-Host "Creating backend\.env ..." -ForegroundColor Cyan
     $token = Read-Host "Enter MIST_TOKEN"
@@ -94,14 +95,23 @@ function Ensure-Env {
     if (-not $base) { $base = "https://api.ac2.mist.com" }
     $org   = Read-Host "Enter MIST_ORG_ID (optional; press Enter to skip)"
     $tmpl  = Read-Host "Enter SWITCH_TEMPLATE_ID (optional; press Enter to skip)"
+    $port  = Read-Host "Enter API_PORT (or press Enter for default 8000)"
+    if (-not $port) { $port = 8000 }
 
     @"
 MIST_TOKEN=$token
 MIST_BASE_URL=$base
 MIST_ORG_ID=$org
 SWITCH_TEMPLATE_ID=$tmpl
+API_PORT=$port
 "@ | Out-File -Encoding UTF8 $envPath -Force
+  } else {
+    $content = Get-Content $envPath
+    foreach ($line in $content) {
+      if ($line -match "^API_PORT=(.*)$") { $port = $Matches[1] }
+    }
   }
+  return [int]$port
 }
 
 function Start-App {
@@ -143,6 +153,9 @@ $venvPath = Ensure-Venv -dir $projectDir
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 
 Ensure-Requirements -projectDir $projectDir -venvPython $venvPython
-Ensure-Env -projectDir $projectDir
+$envPort = Ensure-Env -projectDir $projectDir
+
+if (-not $PSBoundParameters.ContainsKey('Port') -and $envPort -ne 0) { $Port = $envPort }
+if (-not $Port) { $Port = 8000 }
 
 Start-App -projectDir $projectDir -venvPath $venvPath -port $Port

@@ -6,16 +6,19 @@ Features
 - Clone (or update) a git repo
 - Create a Python virtual environment at ./.venv
 - Install dependencies (from backend/requirements.txt if present, else sensible defaults)
-- Ensure backend/.env (prompts on first run)
-- Start FastAPI via uvicorn (configurable port)
+- Ensure backend/.env (prompts on first run for Mist token and API port)
+- Start FastAPI via uvicorn
 
 Usage examples
 -------------
 # First time (clone & run)
-python scripts/quickstart.py --repo https://github.com/ejstover/GreatMigration.git --dir "C:/work/GreatMigration" --branch main --port 8000
+python scripts/quickstart.py --repo https://github.com/ejstover/GreatMigration.git --dir "C:/work/GreatMigration" --branch main
 
 # Subsequent runs (already cloned)
-python scripts/quickstart.py --dir "C:/work/GreatMigration" --port 8000
+python scripts/quickstart.py --dir "C:/work/GreatMigration"
+
+# Override port
+python scripts/quickstart.py --dir . --port 9000
 
 # Setup only (no server)
 python scripts/quickstart.py --dir . --no-start
@@ -122,24 +125,34 @@ def ensure_requirements(project_dir: Path, venv_python: Path):
             "python-dotenv",
         )
 
-def ensure_env_file(project_dir: Path):
+def ensure_env_file(project_dir: Path) -> int | None:
     env_file = project_dir / "backend" / ".env"
     if env_file.exists():
         print(f"Found {env_file}")
-        return
+        env = load_env_from_file(env_file)
+        port_val = env.get("API_PORT")
+        return int(port_val) if port_val and port_val.isdigit() else None
 
     print("\nCreating backend/.env (first run). Values are stored locally in this file.")
     token = getpass("MIST_TOKEN (input hidden): ").strip()
     base = input("MIST_BASE_URL [default https://api.ac2.mist.com]: ").strip() or "https://api.ac2.mist.com"
     org  = input("MIST_ORG_ID (optional): ").strip()
     tmpl = input("SWITCH_TEMPLATE_ID (optional): ").strip()
+    port = input("API_PORT [default 8000]: ").strip() or "8000"
 
     env_file.parent.mkdir(parents=True, exist_ok=True)
     env_file.write_text(
-        "MIST_TOKEN={}\nMIST_BASE_URL={}\nMIST_ORG_ID={}\nSWITCH_TEMPLATE_ID={}\n".format(token, base, org, tmpl),
+        "MIST_TOKEN={}\nMIST_BASE_URL={}\nMIST_ORG_ID={}\nSWITCH_TEMPLATE_ID={}\nAPI_PORT={}\n".format(
+            token,
+            base,
+            org,
+            tmpl,
+            port,
+        ),
         encoding="utf-8",
     )
     print(f"Wrote {env_file}")
+    return int(port)
 
 def load_env_from_file(env_path: Path) -> Dict[str, str]:
     """Very small .env loader to pass vars to uvicorn process in case app doesn't load automatically."""
@@ -179,7 +192,12 @@ def main():
     parser.add_argument("--repo", help="Git repo URL (for first-time clone).")
     parser.add_argument("--dir", dest="target_dir", default=".", help="Target project directory (default: current dir).")
     parser.add_argument("--branch", default="main", help="Git branch to use (default: main).")
-    parser.add_argument("--port", type=int, default=8000, help="API port (default: 8000).")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="API port (default: value in backend/.env or 8000).",
+    )
     parser.add_argument("--no-start", action="store_true", help="Setup only; do not start the API.")
     args = parser.parse_args()
 
@@ -192,13 +210,15 @@ def main():
     vpython = venv_python_path(venv_dir)
 
     ensure_requirements(project_dir, vpython)
-    ensure_env_file(project_dir)
+    env_port = ensure_env_file(project_dir)
+
+    port = args.port if args.port is not None else env_port or 8000
 
     if not args.no_start:
-        start_api(project_dir, vpython, args.port)
+        start_api(project_dir, vpython, port)
     else:
         print("\nSetup complete. To start later:")
-        print(f'  "{vpython}" -m uvicorn app:app --host 0.0.0.0 --port {args.port} --app-dir "{project_dir / "backend"}"')
+        print(f'  "{vpython}" -m uvicorn app:app --host 0.0.0.0 --port {port} --app-dir "{project_dir / "backend"}"')
 
 if __name__ == "__main__":
     main()
