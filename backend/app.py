@@ -221,8 +221,6 @@ def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
             err_payload = {"error": str(e)}
         return JSONResponse({"ok": False, "error": err_payload}, status_code=getattr(r, "status_code", 500))  # type: ignore[name-defined]
 
-
-@app.get("/api/port_profiles")
 def _discover_org_ids(base_url: str, headers: Dict[str, str]) -> List[str]:
     """Return list of org IDs visible to the token using /self."""
     r = requests.get(f"{base_url}/self", headers=headers, timeout=30)
