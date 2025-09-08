@@ -89,7 +89,6 @@ Access the rule builder at `http://localhost:8000/rules` to define how converted
 4. Drag the handle to reorder rules; earlier rules take precedence.
 5. Click **Save** to persist your rules.
 
-![Rules interface screenshot](static/rules-ui.webp)
 
 ### Command-line tools
 
