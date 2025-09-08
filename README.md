@@ -21,6 +21,7 @@ Key features include:
 ### Prerequisites
 
 * Python 3.9+
+  * On Debian/Ubuntu systems ensure the `python3-venv` package is installed so virtual environments can be created.
 * pip
 * Git
 * Mist API token with rights to read sites/devices and (optionally) modify switch configuration
@@ -29,13 +30,13 @@ Key features include:
 
 ```bash
 # Clone the repo, create a .venv, install dependencies, prompt for .env, and start the API
-python quickstart.py --repo https://github.com/ejstover/GreatMigration.git --dir ./GreatMigration --branch main --port 8000
+python3 quickstart.py --repo https://github.com/ejstover/GreatMigration.git --dir ./GreatMigration --branch main --port 8000
 ```
 
 Subsequent runs (after the repo is cloned) only need the directory and port:
 
 ```bash
-python quickstart.py --dir ./GreatMigration --port 8000
+python3 quickstart.py --dir ./GreatMigration --port 8000
 ```
 
 Use `--no-start` to perform setup without launching the server. The script creates/uses `backend/.env` to store your Mist token and optional defaults.
@@ -49,9 +50,10 @@ Use `--no-start` to perform setup without launching the server. The script creat
    ```
 2. **Create a virtual environment**
    ```bash
-   python -m venv .venv
+   python3 -m venv .venv
    source .venv/bin/activate      # Windows: .venv\\Scripts\\activate
    ```
+   If you receive an error about `ensurepip` not being available, install the `python3-venv` package and retry.
 3. **Install dependencies**
    ```bash
    pip install -r backend/requirements.txt

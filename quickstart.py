@@ -70,6 +70,18 @@ def ensure_venv(project_dir: Path) -> Path:
     venv_dir = project_dir / ".venv"
     if not venv_dir.exists():
         print("Creating virtual environment (.venv) ...")
+        # On some minimal Linux installs the ensurepip module is missing.
+        # This results in a cryptic failure from `python -m venv`.  Check for
+        # it up front so we can provide a helpful message.
+        try:
+            import ensurepip  # noqa: F401
+        except ModuleNotFoundError:
+            raise SystemExit(
+                "Python's ensurepip module is required to create virtual environments.\n"
+                "Install the 'python3-venv' package and retry.\n"
+                "For example on Debian/Ubuntu: sudo apt install python3-venv"
+            )
+
         # Prefer 'py -3' on Windows if available
         py = shutil.which("py")
         if py and os.name == "nt":
