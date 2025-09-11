@@ -4,7 +4,7 @@
   - Clone (or update) repo
   - Create virtualenv
   - Install deps
-  - Ensure backend/.env (MIST_* vars and API_PORT)
+    - Ensure backend/.env (prompts for Mist token, auth settings, and API port)
   - Start the FastAPI app with uvicorn
 #>
 
@@ -87,30 +87,68 @@ function Ensure-Requirements {
 function Ensure-Env {
   param([string]$projectDir)
   $envPath = Join-Path $projectDir "backend\.env"
-  $port = $null
-  if (-not (Test-Path $envPath)) {
-    Write-Host "Creating backend\.env ..." -ForegroundColor Cyan
-    $token = Read-Host "Enter MIST_TOKEN"
-    $base  = Read-Host "Enter MIST_BASE_URL (or press Enter for default https://api.ac2.mist.com)"
-    if (-not $base) { $base = "https://api.ac2.mist.com" }
-    $org   = Read-Host "Enter MIST_ORG_ID (optional; press Enter to skip)"
-    $tmpl  = Read-Host "Enter SWITCH_TEMPLATE_ID (optional; press Enter to skip)"
-    $port  = Read-Host "Enter API_PORT (or press Enter for default 8000)"
-    if (-not $port) { $port = 8000 }
-
-    @"
-MIST_TOKEN=$token
-MIST_BASE_URL=$base
-MIST_ORG_ID=$org
-SWITCH_TEMPLATE_ID=$tmpl
-API_PORT=$port
-"@ | Out-File -Encoding UTF8 $envPath -Force
-  } else {
-    $content = Get-Content $envPath
-    foreach ($line in $content) {
-      if ($line -match "^API_PORT=(.*)$") { $port = $Matches[1] }
+  if (Test-Path $envPath) {
+    Write-Host "Found $envPath"
+    $port = $null
+    Get-Content $envPath | ForEach-Object {
+      if ($_ -match "^API_PORT=(.*)$") { $port = $Matches[1] }
     }
+    return [int]$port
   }
+
+  $envSample = Join-Path $projectDir ".env.sample"
+  Write-Host "`nCreating backend\.env (first run). Values are stored locally in this file." -ForegroundColor Cyan
+
+  $tokenSecure = Read-Host "MIST_TOKEN (input hidden)" -AsSecureString
+  $token = [System.Net.NetworkCredential]::new("", $tokenSecure).Password
+  $base  = Read-Host "MIST_BASE_URL [default https://api.ac2.mist.com]"
+  if (-not $base) { $base = "https://api.ac2.mist.com" }
+  $org   = Read-Host "MIST_ORG_ID (optional)"
+  $tmpl  = Read-Host "SWITCH_TEMPLATE_ID (optional)"
+  $port  = Read-Host "API_PORT [default 8000]"
+  if (-not $port) { $port = "8000" }
+  $auth  = Read-Host "AUTH_METHOD [default local]"
+  if (-not $auth) { $auth = "local" } else { $auth = $auth.ToLower() }
+
+  $lines = @(
+    "AUTH_METHOD=$auth",
+    "SESSION_SECRET=change_me",
+    "MIST_TOKEN=$token",
+    "MIST_BASE_URL=$base",
+    "MIST_ORG_ID=$org",
+    "SWITCH_TEMPLATE_ID=$tmpl",
+    "HELP_URL=https://github.com/ejstover/GreatMigration/blob/main/README.md"
+  )
+
+  if ($auth -eq "ldap") {
+    Write-Host "LDAP selected. Update backend\.env with correct LDAP settings." -ForegroundColor Yellow
+    if (Test-Path $envSample) {
+      foreach ($ln in Get-Content $envSample) {
+        if ($ln -like '# LDAP_*' -or $ln -like '# PUSH_GROUP_DN*') {
+          $lines += $ln.TrimStart('# ').Trim()
+        }
+      }
+    } else {
+      $lines += "LDAP_SERVER_URL="
+      $lines += "LDAP_SEARCH_BASE="
+      $lines += "LDAP_BIND_TEMPLATE="
+      $lines += "PUSH_GROUP_DN="
+      $lines += "LDAP_SERVICE_DN="
+      $lines += "LDAP_SERVICE_PASSWORD="
+    }
+  } else {
+    $user = Read-Host "Local username"
+    $pwdSecure = Read-Host "Local password (input hidden)" -AsSecureString
+    $pwd = [System.Net.NetworkCredential]::new("", $pwdSecure).Password
+    $lines += "LOCAL_USERS=$user:$pwd"
+    $lines += "LOCAL_PUSH_USERS=$user"
+  }
+
+  $lines += "API_PORT=$port"
+
+  $content = ($lines -join "`n") + "`n"
+  Set-Content -Path $envPath -Value $content -Encoding UTF8
+  Write-Host "Wrote $envPath" -ForegroundColor Green
   return [int]$port
 }
 
