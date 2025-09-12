@@ -233,6 +233,37 @@ def api_device_types(vendor: str):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+@app.post("/api/device_types")
+def api_add_device_type(request: Request, data: Dict[str, str] = Body(...)):
+    """Persist a custom device type to the local overrides file."""
+    try:
+        current_user(request)
+
+        vendor = (data.get("vendor") or "").strip()
+        model = (data.get("model") or "").strip()
+        if not vendor or not model:
+            raise ValueError("vendor and model are required")
+
+        if not NETBOX_LOCAL_DT:
+            raise RuntimeError("NETBOX_LOCAL_DT is not configured on the server")
+
+        path = Path(NETBOX_LOCAL_DT)
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            doc = {}
+
+        models = doc.setdefault(vendor, [])
+        if model not in models:
+            models.append(model)
+            models.sort(key=lambda x: x.lower())
+            path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+
+        return {"ok": True, "items": models}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
 @app.get("/api/sites")
 def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
     """

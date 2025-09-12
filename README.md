@@ -170,7 +170,10 @@ Any models defined here are appended to the community list for the matching
 vendor. Duplicate names are ignored.
 
 A starter file lives at `backend/custom_device_types.sample.json`; copy it to a
-local path and set `NETBOX_LOCAL_DT` accordingly.
+local path and set `NETBOX_LOCAL_DT` accordingly. Once configured, any models
+added through the Hardware Replacement Rules page via the **Add New** option are
+persisted to this file automatically, allowing custom entries to survive page
+reloads.
 
 
 ### Command-line tools

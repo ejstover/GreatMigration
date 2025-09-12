@@ -200,13 +200,17 @@ modalOk.addEventListener('click', () => {
   const val = modalInput.value.trim();
   if(val){
     pendingSelect.value = val;
-    if(pendingVendor==='Cisco'){
-      if(!ciscoTypes.includes(val)){ ciscoTypes.push(val); ciscoTypes.sort((a,b)=>a.localeCompare(b)); }
-    } else {
-      if(!juniperTypes.includes(val)){ juniperTypes.push(val); juniperTypes.sort((a,b)=>a.localeCompare(b)); }
-    }
+    const arr = pendingVendor==='Cisco' ? ciscoTypes : juniperTypes;
+    if(!arr.includes(val)){ arr.push(val); arr.sort((a,b)=>a.localeCompare(b)); }
     syncRulesFromDOM();
     renderRules();
+    fetch('/api/device_types', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({vendor: pendingVendor, model: val})
+    }).then(r=>r.json()).then(resp=>{
+      if(!resp.ok){ console.error(resp.error); }
+    }).catch(err=>console.error(err));
   } else {
     pendingSelect.value='';
   }
