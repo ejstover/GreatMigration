@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "name": "Access port example",
+      "when": {
+        "mode": "access",
+        "data_vlan": 10
+      },
+      "set": {
+        "usage": "user"
+      }
+    },
+    {
+      "name": "Trunk uplink example",
+      "when": {
+        "mode": "trunk",
+        "native_vlan": 1
+      },
+      "set": {
+        "usage": "uplink"
+      }
+    }
+  ]
+}

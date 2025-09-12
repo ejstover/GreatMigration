@@ -184,6 +184,18 @@ def ensure_env_file(project_dir: Path) -> int | None:
     print(f"Wrote {env_file}")
     return int(port)
 
+def ensure_port_rules_file(project_dir: Path):
+    backend = project_dir / "backend"
+    sample = backend / "port_rules.sample.json"
+    dest = backend / "port_rules.json"
+    if dest.exists():
+        print(f"Found {dest}")
+    elif sample.exists():
+        shutil.copy(sample, dest)
+        print(f"Copied {sample} to {dest}")
+    else:
+        print(f"No sample port rules found at {sample}; skipping")
+
 def load_env_from_file(env_path: Path) -> Dict[str, str]:
     """Very small .env loader to pass vars to uvicorn process in case app doesn't load automatically."""
     out: Dict[str, str] = {}
@@ -241,6 +253,7 @@ def main():
 
     ensure_requirements(project_dir, vpython)
     env_port = ensure_env_file(project_dir)
+    ensure_port_rules_file(project_dir)
 
     port = args.port if args.port is not None else env_port or 8000
 
