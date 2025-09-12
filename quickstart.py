@@ -6,7 +6,7 @@ Features
 - Clone (or update) a git repo
 - Create a Python virtual environment at ./.venv
 - Install dependencies (from backend/requirements.txt if present, else sensible defaults)
-- Ensure backend/.env (prompts on first run for Mist token and API port)
+- Ensure backend/.env (prompts on first run for Mist token, auth settings, and API port)
 - Start FastAPI via uvicorn
 
 Usage examples
@@ -133,24 +133,54 @@ def ensure_env_file(project_dir: Path) -> int | None:
         port_val = env.get("API_PORT")
         return int(port_val) if port_val and port_val.isdigit() else None
 
+    env_sample = project_dir / ".env.sample"
     print("\nCreating backend/.env (first run). Values are stored locally in this file.")
     token = getpass("MIST_TOKEN (input hidden): ").strip()
     base = input("MIST_BASE_URL [default https://api.ac2.mist.com]: ").strip() or "https://api.ac2.mist.com"
-    org  = input("MIST_ORG_ID (optional): ").strip()
+    org = input("MIST_ORG_ID (optional): ").strip()
     tmpl = input("SWITCH_TEMPLATE_ID (optional): ").strip()
     port = input("API_PORT [default 8000]: ").strip() or "8000"
+    auth = input("AUTH_METHOD [default local]: ").strip().lower() or "local"
+
+    lines = [
+        f"AUTH_METHOD={auth}",
+        "SESSION_SECRET=change_me",
+        f"MIST_TOKEN={token}",
+        f"MIST_BASE_URL={base}",
+        f"MIST_ORG_ID={org}",
+        f"SWITCH_TEMPLATE_ID={tmpl}",
+        "HELP_URL=https://github.com/ejstover/GreatMigration/blob/main/README.md",
+    ]
+
+    if auth == "ldap":
+        print("LDAP selected. Update backend/.env with correct LDAP settings.")
+        if env_sample.exists():
+            sample_lines = env_sample.read_text().splitlines()
+            ldap_lines = [
+                ln.lstrip("# ").rstrip()
+                for ln in sample_lines
+                if ln.startswith("# LDAP_") or ln.startswith("# PUSH_GROUP_DN")
+            ]
+            lines.extend(ldap_lines)
+        else:
+            lines.extend([
+                "LDAP_SERVER_URL=",
+                "LDAP_SEARCH_BASE=",
+                "LDAP_BIND_TEMPLATE=",
+                "PUSH_GROUP_DN=",
+                "LDAP_SERVICE_DN=",
+                "LDAP_SERVICE_PASSWORD=",
+            ])
+    else:
+        user = input("Local username: ").strip()
+        pwd = getpass("Local password (input hidden): ").strip()
+        lines.append(f"LOCAL_USERS={user}:{pwd}")
+        lines.append(f"LOCAL_PUSH_USERS={user}")
+
+    lines.append(f"API_PORT={port}")
 
     env_file.parent.mkdir(parents=True, exist_ok=True)
-    env_file.write_text(
-        "MIST_TOKEN={}\nMIST_BASE_URL={}\nMIST_ORG_ID={}\nSWITCH_TEMPLATE_ID={}\nAPI_PORT={}\n".format(
-            token,
-            base,
-            org,
-            tmpl,
-            port,
-        ),
-        encoding="utf-8",
-    )
+    env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"Wrote {env_file}")
     return int(port)
 
