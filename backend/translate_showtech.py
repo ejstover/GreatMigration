@@ -119,13 +119,15 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
 
 
 def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
-    """Return TenGigabit interfaces that report ``10GBaseT`` media.
+
+    """Return TenGigabit interfaces that report ``10GBaseT``/``10GBaseTX`` media.
 
     The ``show inventory`` section does not list built-in copper links, so we
     scan the broader ``show tech`` output for interface blocks that mention
-    ``10GBaseT``.  The result is a mapping of switch identifier to interface
-    names using copper media, indicating where an SFP will be required during
-    migration.
+    copper 10G media types such as ``10GBaseT`` or ``10GBaseTX``.  The result is
+    a mapping of switch identifier to interface names using copper media,
+    indicating where an SFP will be required during migration.
+
     """
 
     ports: DefaultDict[str, List[str]] = defaultdict(list)
@@ -147,7 +149,9 @@ def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
             current_intf = m_intf.group("intf")
             continue
 
-        if current_intf and re.search(r"10GBASE-T|10GBaseT", line, re.IGNORECASE):
+
+        if current_intf and re.search(r"10GBase[-]?T(?:X)?", line, re.IGNORECASE):
+
             ports[current_switch].append(current_intf)
             current_intf = None
 
