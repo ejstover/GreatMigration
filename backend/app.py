@@ -102,7 +102,7 @@ def rules_page():
 
 @app.get("/replacements", response_class=HTMLResponse)
 def replacements_page():
-    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "replacements.html"
+    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "hardwarereplacementrules.html"
     tpl = tpl_path.read_text(encoding="utf-8")
     return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
 

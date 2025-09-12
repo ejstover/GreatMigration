@@ -23,25 +23,25 @@
 </head>
 <body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
   <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
-    <div class="max-w-7xl mx-auto flex items-center justify-between p-6">
-      <div class="flex items-center gap-4">
-        <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
-        <div>
-          <h1 class="text-3xl font-bold">Port Mapping Rules</h1>
-          <p class="text-slate-100 text-sm md:text-base">Create and reorder port mapping rules</p>
-        </div>
-      </div>
+    <div class="max-w-7xl mx-auto flex items-center gap-4 p-6">
       <div class="relative">
         <button id="menu_btn" class="p-2 rounded hover:bg-white/30" aria-label="Menu">
           <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
-        <div id="menu" class="hidden absolute right-0 mt-2 w-56 bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100 rounded shadow-lg">
+        <div id="menu" class="hidden absolute left-0 mt-2 w-56 bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100 rounded shadow-lg">
           <a href="/" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Config Conversion</a>
           <a href="/rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Port Profile rules</a>
           <a href="/replacements" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Hardware replacement rules</a>
           <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Help</a>
           <a id="login_link" href="/login" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log in</a>
           <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
+        </div>
+      </div>
+      <div class="flex items-center gap-4">
+        <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
+        <div>
+          <h1 class="text-3xl font-bold">Port Mapping Rules</h1>
+          <p class="text-slate-100 text-sm md:text-base">Create and reorder port mapping rules</p>
         </div>
       </div>
     </div>
