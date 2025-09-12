@@ -48,22 +48,45 @@ def load_mapping() -> Dict[str, str]:
 
 
 def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
-    """Parse ``show tech-support`` text and count PIDs per switch."""
+    """Parse ``show tech-support`` text and count PIDs per switch.
+
+    Only the ``show inventory`` section is inspected.  Other parts of the
+    diagnostic output may contain ``PID`` strings that are unrelated to the
+    hardware inventory so they are intentionally ignored.
+    """
 
     inventory: DefaultDict[str, DefaultDict[str, int]] = defaultdict(
         lambda: defaultdict(int)
     )
     current_switch = "global"
+    in_inventory = False
 
     for line in text.splitlines():
         line = line.strip()
-        # Detect a new switch section (e.g. "Switch 1", "Switch 2")
+
+        # Track whether we are inside the ``show inventory`` section.  The
+        # section boundaries in a ``show tech-support`` file are usually marked
+        # with lines such as ``------------------ show inventory ------------------``.
+        if re.match(r"-+\s*show inventory\s*-+", line, re.IGNORECASE):
+            in_inventory = True
+            current_switch = "global"
+            continue
+        if in_inventory and re.match(r"-+\s*show ", line, re.IGNORECASE):
+            # Encountered the next ``show`` section; stop recording PIDs.
+            in_inventory = False
+            continue
+        if not in_inventory:
+            continue
+
+        # Detect a new switch section (e.g. "Switch 1" or NAME: "1")
         m_switch = re.match(r"^Switch\s+(\d+)", line, re.IGNORECASE)
+        if not m_switch:
+            m_switch = re.match(r"NAME:\s*\"(?:Switch\s*)?(\d+)\"", line, re.IGNORECASE)
         if m_switch:
             current_switch = f"Switch {m_switch.group(1)}"
             continue
 
-        m_pid = re.search(r"PID:\s*([^,\s]+)", line)
+        m_pid = re.search(r"PID:\s*([^,\s]+)", line, re.IGNORECASE)
         if m_pid:
             pid = m_pid.group(1)
             inventory[current_switch][pid] += 1
