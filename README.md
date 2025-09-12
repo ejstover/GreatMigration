@@ -151,6 +151,9 @@ dropdown to enter custom hardware (such as SFPs) that isn't in the library.
 Start from `backend/replacement_rules.sample.json` and customize as needed; the
 real file is git‑ignored so local rules stay private.
 
+These rules are also used by `translate_showtech.py` when converting `show
+tech-support` inventories.
+
 
 ### Device Type Customization
 
@@ -205,7 +208,8 @@ Command-line version of the port-config builder/pusher. It accepts normalized JS
 Parses a Cisco `show tech-support` text file to summarize hardware inventory and
 suggest Juniper replacement models. The script looks for `PID` lines in the
 `show inventory` section and maps them using `backend/device_map.json` (or the
-sample file if local overrides are not present).
+sample file if local overrides are not present).  Any rules defined in
+`backend/replacement_rules.json` are merged on top so they take precedence.
 
 ```bash
 python backend/translate_showtech.py docs/samples/showtech_sample.txt

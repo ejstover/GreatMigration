@@ -11,7 +11,8 @@ repository ships with ``device_map.sample.json`` which provides a starting set
 of common mappings.  Administrators can copy this sample to
 ``device_map.json`` and extend it with their own hardware rules without
 committing sensitive or organization specific information back to the
-repository.
+repository.  Any rules defined in ``replacement_rules.json`` (such as those
+managed through the web UI) are layered on top of this base mapping.
 
 Example:
 
@@ -34,17 +35,36 @@ from typing import Dict, DefaultDict
 def load_mapping() -> Dict[str, str]:
     """Load the Cisco PID -> Juniper model mapping.
 
-    ``device_map.json`` takes precedence if present so users can maintain their
-    own local overrides.  Otherwise ``device_map.sample.json`` is used.
+    ``device_map.json`` provides the baseline mapping.  If present,
+    ``replacement_rules.json`` (or its sample file) is merged on top so that
+    locally defined replacement rules override the defaults.
     """
 
     base = Path(__file__).resolve().parent
-    local = base / "device_map.json"
-    sample = base / "device_map.sample.json"
 
-    path = local if local.exists() else sample
+    # Start with the built-in device map (local file wins over sample).
+    local_map = base / "device_map.json"
+    sample_map = base / "device_map.sample.json"
+    path = local_map if local_map.exists() else sample_map
     with path.open() as fh:
-        return json.load(fh)
+        mapping: Dict[str, str] = json.load(fh)
+
+    # Overlay any replacement rules so they take precedence.
+    repl_local = base / "replacement_rules.json"
+    repl_sample = base / "replacement_rules.sample.json"
+    repl_path = repl_local if repl_local.exists() else repl_sample
+    if repl_path.exists():
+        try:
+            data = json.loads(repl_path.read_text(encoding="utf-8"))
+            for rule in data.get("rules", []):
+                cisco = rule.get("cisco")
+                juniper = rule.get("juniper")
+                if cisco and juniper:
+                    mapping[cisco] = juniper
+        except Exception:
+            pass
+
+    return mapping
 
 
 def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
