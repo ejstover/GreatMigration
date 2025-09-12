@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Port Mapping Rules</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
   <script>tailwind.config = { darkMode: 'media' };</script>
   <style>
-    .drag-handle { cursor: move; }
-    tbody tr.dragging { opacity: .5; }
+    .drag-handle { cursor: grab; }
+    .sortable-ghost { opacity: .5; }
     .tooltip { position: relative; display: inline-flex; align-items: center; gap: .35rem; }
     .tooltip .tip {
       visibility: hidden; opacity: 0; transition: opacity .15s ease;
@@ -157,26 +158,34 @@
       });
     }
 
-    // Drag & drop ordering
-    let dragIdx=null;
-    tbody.addEventListener('dragstart',e=>{ const tr=e.target.closest('tr'); if(!tr) return; dragIdx=+tr.dataset.idx; e.dataTransfer.effectAllowed='move'; tr.classList.add('dragging'); });
-    tbody.addEventListener('dragend',e=>{ const tr=e.target.closest('tr'); if(tr) tr.classList.remove('dragging'); });
-    tbody.addEventListener('dragover',e=>{ e.preventDefault(); });
-    tbody.addEventListener('drop',e=>{ e.preventDefault(); const dest=e.target.closest('tr'); if(!dest) return; const destIdx=+dest.dataset.idx; const [m]=rulesDoc.rules.splice(dragIdx,1); rulesDoc.rules.splice(destIdx,0,m); renderRules(); });
-
-    addRuleBtn.addEventListener('click',()=>{ rulesDoc.rules.push({name:'', when:{}, set:{}}); renderRules(); tbody.lastElementChild?.scrollIntoView({behavior:'smooth'}); });
-
-    saveBtn.addEventListener('click',()=>{
-      // collect from DOM
+    function syncRulesFromDOM(){
       rulesDoc.rules = [...tbody.querySelectorAll('tr')].map(tr=>{
         const name = tr.querySelector('.name').value.trim();
         const when={};
-        tr.querySelectorAll('.conds > div').forEach(div=>{ const f=div.querySelector('select').value; const v=div.querySelector('input').value; if(v) when[f]=isNaN(Number(v))? v: Number(v); });
+        tr.querySelectorAll('.conds > div').forEach(div=>{
+          const f=div.querySelector('select').value;
+          const v=div.querySelector('input').value;
+          if(v) when[f]=isNaN(Number(v))? v: Number(v);
+        });
         const usage = tr.querySelector('.usage').value;
         const set={};
         if(usage) set.usage=usage;
         return {name, when, set};
       });
+    }
+    new Sortable(tbody, {
+      handle: '.drag-handle',
+      animation: 150,
+      onEnd: () => {
+        syncRulesFromDOM();
+        renderRules();
+      }
+    });
+
+    addRuleBtn.addEventListener('click',()=>{ rulesDoc.rules.push({name:'', when:{}, set:{}}); renderRules(); tbody.lastElementChild?.scrollIntoView({behavior:'smooth'}); });
+
+    saveBtn.addEventListener('click',()=>{
+      syncRulesFromDOM();
       fetch('/api/rules',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(rulesDoc)})
         .then(async r=>{ const txt=await r.text(); try { return JSON.parse(txt);} catch { throw new Error(txt);} })
         .then(resp=>{
