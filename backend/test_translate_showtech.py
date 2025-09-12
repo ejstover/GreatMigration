@@ -16,6 +16,7 @@ def test_find_copper_10g_ports():
         "  Media Type is 10GBaseSR\n"
         "Te1/1/3 is up, line protocol is up\n"
         "  Full-duplex, 10Gb/s, media type is 100/1000/2.5G/5G/10GBaseTX\n"
+
         "Switch 2\n"
         "Te2/1/1 is up, line protocol is up\n"
         "  Hardware is Ten Gigabit Ethernet\n"

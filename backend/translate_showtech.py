@@ -121,18 +121,18 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
 def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
 
     """Return TenGigabit interfaces that report ``10GBaseT``/``10GBaseTX`` media.
-
     The ``show inventory`` section does not list built-in copper links, so we
     scan the broader ``show tech`` output for interface blocks that mention
     copper 10G media types such as ``10GBaseT`` or ``10GBaseTX``.  The result is
     a mapping of switch identifier to interface names using copper media,
     indicating where an SFP will be required during migration.
-
     """
 
     ports: DefaultDict[str, List[str]] = defaultdict(list)
     current_switch = "global"
     current_intf: str | None = None
+    current_intf_switch: str | None = None
+
 
     for line in text.splitlines():
         line = line.strip()
@@ -147,13 +147,19 @@ def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
         m_intf = re.match(r"^(?:Interface\s*)?(?P<intf>(?:Te|TenGigabitEthernet)[\d/]+)", line)
         if m_intf:
             current_intf = m_intf.group("intf")
+            # Determine switch number from the interface name if present
+            m_intf_sw = re.match(r"(?:Te|TenGigabitEthernet)(\d+)/", current_intf)
+            if m_intf_sw:
+                current_intf_switch = f"Switch {m_intf_sw.group(1)}"
+            else:
+                current_intf_switch = current_switch
             continue
 
-
         if current_intf and re.search(r"10GBase[-]?T(?:X)?", line, re.IGNORECASE):
-
-            ports[current_switch].append(current_intf)
+            switch = current_intf_switch or current_switch
+            ports[switch].append(current_intf)
             current_intf = None
+            current_intf_switch = None
 
     return ports
 
