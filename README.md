@@ -17,7 +17,6 @@ Key features include:
 ![Port mapping placeholder](docs/images/placeholder-port-mapping.png)
 ![Numbering difference placeholder](docs/images/placeholder-numbering.png)
 ![Rule builder placeholder](docs/images/placeholder-rules.png)
-![CLI output placeholder](docs/images/placeholder-cli.png)
 
 ### Cisco vs. Juniper port numbering
 
