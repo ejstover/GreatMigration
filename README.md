@@ -7,12 +7,21 @@ Key features include:
 * Guided web workflow for uploading configs, mapping to Mist sites/devices, and pushing updates
 * Command‑line utilities for batch conversion and port configuration pushes
 * Safe test mode for reviewing payloads before any live changes occur
+* Adjusts for Cisco (1-based) and Juniper (0-based) port numbering so interface mappings remain accurate
 
 ## Screenshots
 
 <!-- TODO: replace these placeholders with real screenshots -->
+![Dashboard placeholder](docs/images/placeholder-dashboard.png)
 ![Upload interface placeholder](docs/images/placeholder-upload.png)
+![Port mapping placeholder](docs/images/placeholder-port-mapping.png)
+![Numbering difference placeholder](docs/images/placeholder-numbering.png)
 ![Rule builder placeholder](docs/images/placeholder-rules.png)
+![CLI output placeholder](docs/images/placeholder-cli.png)
+
+### Cisco vs. Juniper port numbering
+
+Cisco switch interfaces are typically numbered starting at **1** (e.g., `FastEthernet0/1`), whereas Juniper uses **0** as the first index (e.g., `ge-0/0/0`). GreatMigration normalizes these differences during conversion so that, for example, a Cisco port 1 maps to the correct Juniper port 0. Keep this offset in mind when reviewing translated configurations.
 
 ---
 
@@ -40,6 +49,7 @@ python3 quickstart.py --dir ./GreatMigration
 ```
 
 On first run the script prompts for your Mist token and desired API port (default 8000). Use `--port` to override the stored value or `--no-start` to perform setup without launching the server. The script creates/uses `backend/.env` to store your Mist token and optional defaults.
+It also copies `backend/port_rules.sample.json` to `backend/port_rules.json` so you can customize local rule mappings without committing them.
 
 ### Manual setup
 
@@ -58,13 +68,26 @@ On first run the script prompts for your Mist token and desired API port (defaul
    ```bash
    pip install -r backend/requirements.txt
    ```
-4. **Create `backend/.env`**
-   ```ini
-   MIST_TOKEN=YOUR_MIST_API_TOKEN
-   SESSION_SECRET=long_random_string              # used to sign session cookies
-   # Optional defaults such as MIST_BASE_URL, MIST_ORG_ID, AUTH_METHOD, etc.
+4. **Configure environment variables**
+   Start from the sample file and populate the required fields:
+   ```bash
+   cp .env.sample backend/.env
    ```
-5. **Start the server**
+   Edit `backend/.env` and set at minimum:
+   ```ini
+   MIST_TOKEN=your_mist_api_token
+   SESSION_SECRET=long_random_string              # used to sign session cookies
+   AUTH_METHOD=local                               # or "ldap"
+   # Optional defaults such as MIST_BASE_URL, MIST_ORG_ID, SWITCH_TEMPLATE_ID, etc.
+   ```
+   The sample file contains additional settings for local or LDAP auth. Remove any lines you don't need.
+5. **Initialize port rules (optional)**
+   Start from the sample rules file so custom mappings stay out of version control:
+   ```bash
+   cp backend/port_rules.sample.json backend/port_rules.json
+   ```
+   Edit `backend/port_rules.json` as needed. The real file is listed in `.gitignore` so your rules remain local. Quickstart scripts perform this copy automatically.
+6. **Start the server**
    ```bash
    uvicorn app:app --app-dir backend --reload
    ```

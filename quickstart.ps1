@@ -152,6 +152,20 @@ function Ensure-Env {
   return [int]$port
 }
 
+function Ensure-PortRules {
+  param([string]$projectDir)
+  $sample = Join-Path $projectDir "backend/port_rules.sample.json"
+  $dest = Join-Path $projectDir "backend/port_rules.json"
+  if (Test-Path $dest) {
+    Write-Host "Found $dest"
+  } elseif (Test-Path $sample) {
+    Copy-Item -Path $sample -Destination $dest
+    Write-Host "Copied $sample to $dest" -ForegroundColor Cyan
+  } else {
+    Write-Host "Sample port rules not found at $sample" -ForegroundColor Yellow
+  }
+}
+
 function Start-App {
   param([string]$projectDir, [string]$venvPath, [int]$port)
   $venvPython = Join-Path $venvPath "Scripts\python.exe"
@@ -192,6 +206,7 @@ $venvPython = Join-Path $venvPath "Scripts\python.exe"
 
 Ensure-Requirements -projectDir $projectDir -venvPython $venvPython
 $envPort = Ensure-Env -projectDir $projectDir
+Ensure-PortRules -projectDir $projectDir
 
 if (-not $PSBoundParameters.ContainsKey('Port') -and $envPort -ne 0) { $Port = $envPort }
 if (-not $Port) { $Port = 8000 }
