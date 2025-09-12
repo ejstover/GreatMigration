@@ -7,12 +7,20 @@ Key features include:
 * Guided web workflow for uploading configs, mapping to Mist sites/devices, and pushing updates
 * Command‑line utilities for batch conversion and port configuration pushes
 * Safe test mode for reviewing payloads before any live changes occur
+* Adjusts for Cisco (1-based) and Juniper (0-based) port numbering so interface mappings remain accurate
 
 ## Screenshots
 
 <!-- TODO: replace these placeholders with real screenshots -->
+![Dashboard placeholder](docs/images/placeholder-dashboard.png)
 ![Upload interface placeholder](docs/images/placeholder-upload.png)
+![Port mapping placeholder](docs/images/placeholder-port-mapping.png)
+![Numbering difference placeholder](docs/images/placeholder-numbering.png)
 ![Rule builder placeholder](docs/images/placeholder-rules.png)
+
+### Cisco vs. Juniper port numbering
+
+Cisco switch interfaces are typically numbered starting at **1** (e.g., `FastEthernet0/1`), whereas Juniper uses **0** as the first index (e.g., `ge-0/0/0`). GreatMigration normalizes these differences during conversion so that, for example, a Cisco port 1 maps to the correct Juniper port 0. Keep this offset in mind when reviewing translated configurations.
 
 ---
 
