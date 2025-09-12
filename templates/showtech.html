@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Show Tech Translator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'media' };</script>
+  <style>
+    .dropzone { border: 2px dashed #cbd5e1; }
+    .dropzone.dragover { border-color: #60a5fa; background: #f8fafc; }
+    pre { white-space: pre-wrap; word-wrap: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+  <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+    <div class="max-w-7xl mx-auto flex items-center gap-4 p-6">
+      <div class="relative">
+        <button id="menu_btn" class="p-2 rounded hover:bg-white/30" aria-label="Menu">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
+        </button>
+        <div id="menu" class="hidden absolute left-0 mt-2 w-56 bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100 rounded shadow-lg">
+          <a href="/" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Config Conversion</a>
+          <a href="/showtech" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Show Tech translator</a>
+          <a href="/rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Port Profile rules</a>
+          <a href="/replacements" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Hardware replacement rules</a>
+          <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Help</a>
+          <a id="login_link" href="/login" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log in</a>
+          <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
+        </div>
+      </div>
+      <div class="flex items-center gap-4">
+        <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
+        <div>
+          <h1 class="text-3xl font-bold">Show Tech Translator</h1>
+          <p class="text-slate-100 text-sm md:text-base">Upload Cisco show tech files → map to Juniper replacements</p>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="max-w-5xl mx-auto p-6">
+    <section class="mb-6">
+      <div id="dz" class="dropzone rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 p-8 text-center text-slate-500 dark:text-slate-300">
+        <p class="mb-2">Drag & drop show tech files here (or click to select)</p>
+        <input id="file_input" type="file" multiple class="hidden" accept=".txt" />
+        <button id="choose_files" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Choose files</button>
+      </div>
+      <div class="flex items-center justify-between mt-2">
+        <div id="upload_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
+        <button id="export_btn" class="hidden px-4 py-2 rounded bg-sky-600 text-white hover:bg-sky-700">Export PDF</button>
+      </div>
+    </section>
+
+    <section id="results" class="hidden mb-8">
+      <h2 class="text-lg font-medium mb-2">Results</h2>
+      <div id="results_list" class="space-y-4"></div>
+    </section>
+  </div>
+
+<script>
+  const menuBtn = document.getElementById('menu_btn');
+  const menu = document.getElementById('menu');
+  menuBtn.addEventListener('click', () => menu.classList.toggle('hidden'));
+  document.addEventListener('click', e => { if (!menu.contains(e.target) && !menuBtn.contains(e.target)) menu.classList.add('hidden'); });
+
+  const loginLink = document.getElementById('login_link');
+  const logoutBtn = document.getElementById('logout_btn');
+  fetch('/me').then(res => {
+    if (!res.ok) throw new Error('not authed');
+    return res.json();
+  }).then(() => {
+    loginLink?.classList.add('hidden');
+    logoutBtn?.classList.remove('hidden');
+    logoutBtn?.addEventListener('click', (e) => { e.preventDefault(); window.location.href = '/logout'; });
+  }).catch(() => { window.location.href = '/login'; });
+
+  const dz = document.getElementById('dz');
+  const fileInput = document.getElementById('file_input');
+  const chooseBtn = document.getElementById('choose_files');
+  const uploadStatus = document.getElementById('upload_status');
+  const results = document.getElementById('results');
+  const resultsList = document.getElementById('results_list');
+  const exportBtn = document.getElementById('export_btn');
+  let lastResults = [];
+
+  function show(el){ el.classList.remove('hidden'); }
+  function hide(el){ el.classList.add('hidden'); }
+
+  function renderResults(){
+    resultsList.innerHTML='';
+    lastResults.forEach(item => {
+      const div=document.createElement('div');
+      div.className='bg-white dark:bg-slate-800 rounded shadow p-4';
+      let html=`<h3 class="font-medium mb-2">${item.filename}</h3>`;
+      for(const [sw, entries] of Object.entries(item.switches)){
+        html+=`<h4 class="font-medium mt-2">${sw}</h4><ul class="list-disc ml-5">`;
+        entries.forEach(e=>{ html+=`<li>${e.pid} x${e.count} → ${e.replacement}</li>`; });
+        html+='</ul>';
+      }
+      div.innerHTML=html;
+      resultsList.appendChild(div);
+    });
+  }
+
+  function handleFiles(files){
+    const form=new FormData();
+    files.forEach(f=>form.append('files',f));
+    uploadStatus.textContent='Uploading...';
+    fetch('/api/showtech',{method:'POST',body:form})
+      .then(r=>r.json())
+      .then(data=>{
+        if(data.ok){
+          lastResults=data.results;
+          renderResults();
+          show(results);
+          show(exportBtn);
+          uploadStatus.textContent='Done';
+        } else {
+          uploadStatus.textContent='Error: '+data.error;
+        }
+      }).catch(err=>{ uploadStatus.textContent='Error: '+err; });
+  }
+
+  chooseBtn.addEventListener('click', e=>{ e.preventDefault(); fileInput.click(); });
+  dz.addEventListener('click', e=>{ if(e.target===dz){ fileInput.click(); }});
+  dz.addEventListener('dragover', e=>{ e.preventDefault(); dz.classList.add('dragover'); });
+  dz.addEventListener('dragleave', ()=>dz.classList.remove('dragover'));
+  dz.addEventListener('drop', e=>{ e.preventDefault(); dz.classList.remove('dragover'); handleFiles([...e.dataTransfer.files]); });
+  fileInput.addEventListener('change', ()=>{ handleFiles([...fileInput.files]); fileInput.value=''; });
+
+  exportBtn.addEventListener('click', ()=>{
+    fetch('/api/showtech/export', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({results:lastResults})})
+      .then(r=>r.blob())
+      .then(blob=>{
+        const url=URL.createObjectURL(blob);
+        const a=document.createElement('a');
+        a.href=url;
+        a.download='showtech_report.pdf';
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+  });
+</script>
+</body>
+</html>

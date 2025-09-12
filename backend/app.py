@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 import requests
-from fastapi import FastAPI, UploadFile, File, Form, Request, Body
+from fastapi import FastAPI, UploadFile, File, Form, Request, Body, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +29,12 @@ from push_mist_port_config import (  # type: ignore
     remap_ports,
     validate_port_config_against_model,
 )
+from translate_showtech import parse_showtech  # type: ignore
+
+try:  # Optional PDF export support
+    from fpdf import FPDF  # type: ignore
+except Exception:  # pragma: no cover - dependency optional
+    FPDF = None  # type: ignore[assignment]
 
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
@@ -107,6 +113,13 @@ def replacements_page():
     return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
 
 
+@app.get("/showtech", response_class=HTMLResponse)
+def showtech_page():
+    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "showtech.html"
+    tpl = tpl_path.read_text(encoding="utf-8")
+    return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
+
+
 def _load_mist_token() -> str:
     tok = (os.getenv("MIST_TOKEN") or "").strip()
     if not tok:
@@ -155,6 +168,76 @@ def api_save_replacements(request: Request, doc: Dict[str, Any] = Body(...)):
         current_user(request)
         REPLACEMENTS_PATH.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         return {"ok": True}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+def load_replacement_mapping() -> Dict[str, str]:
+    path = (
+        REPLACEMENTS_PATH
+        if REPLACEMENTS_PATH.exists()
+        else REPLACEMENTS_PATH.with_name("replacement_rules.sample.json")
+    )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    mapping: Dict[str, str] = {}
+    for rule in data.get("rules", []):
+        c = rule.get("cisco")
+        j = rule.get("juniper")
+        if c and j:
+            mapping[c] = j
+    return mapping
+
+
+@app.post("/api/showtech")
+async def api_showtech(files: List[UploadFile] = File(...)):
+    mapping = load_replacement_mapping()
+    results = []
+    for f in files:
+        try:
+            content = await f.read()
+            text = content.decode("utf-8", errors="ignore")
+            inventory = parse_showtech(text)
+            switches: Dict[str, Any] = {}
+            for sw, items in inventory.items():
+                entries = []
+                for pid, count in sorted(items.items()):
+                    replacement = mapping.get(pid, "no replacement model defined")
+                    entries.append({"pid": pid, "count": count, "replacement": replacement})
+                switches[sw] = entries
+            results.append({"filename": f.filename, "switches": switches})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    return {"ok": True, "results": results}
+
+
+@app.post("/api/showtech/export")
+def api_showtech_export(payload: Dict[str, Any] = Body(...)):
+    if FPDF is None:
+        return JSONResponse({"ok": False, "error": "PDF export not available"}, status_code=500)
+    try:
+        results = payload.get("results", [])
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        pdf.set_font("Helvetica", size=12)
+        for item in results:
+            pdf.set_font("Helvetica", style="B", size=14)
+            pdf.cell(0, 10, item.get("filename", ""), ln=True)
+            for sw, entries in item.get("switches", {}).items():
+                pdf.set_font("Helvetica", style="B", size=12)
+                pdf.cell(0, 8, sw, ln=True)
+                pdf.set_font("Helvetica", size=11)
+                for e in entries:
+                    line = f'{e["pid"]} x{e["count"]} -> {e["replacement"]}'
+                    pdf.cell(0, 6, line, ln=True)
+                pdf.ln(4)
+            pdf.ln(2)
+        pdf_bytes = pdf.output(dest="S").encode("latin1")
+        headers = {"Content-Disposition": "attachment; filename=showtech_report.pdf"}
+        return Response(pdf_bytes, media_type="application/pdf", headers=headers)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
