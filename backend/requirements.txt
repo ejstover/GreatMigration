@@ -6,3 +6,4 @@ ciscoconfparse==1.9.52
 requests==2.32.3
 ldap3==2.9.1
 itsdangerous==2.2.0
+fpdf2==2.7.9
