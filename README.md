@@ -146,9 +146,10 @@ Access the rule builder at `http://localhost:8000/rules` to define how converted
 Use the replacement rules editor at `http://localhost:8000/replacements` to map
 Cisco hardware models to their Juniper counterparts. The page pulls available
 models from the NetBox community device‑type library and saves your mappings to
-`backend/replacement_rules.json`. Start from
-`backend/replacement_rules.sample.json` and customize as needed; the real file
-is git‑ignored so local rules stay private.
+`backend/replacement_rules.json`. Use the **Add New** option at the top of each
+dropdown to enter custom hardware (such as SFPs) that isn't in the library.
+Start from `backend/replacement_rules.sample.json` and customize as needed; the
+real file is git‑ignored so local rules stay private.
 
 
 ### Command-line tools
