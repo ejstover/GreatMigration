@@ -199,14 +199,30 @@ Promise.all([
 modalOk.addEventListener('click', () => {
   const val = modalInput.value.trim();
   if(val){
-    pendingSelect.value = val;
-    if(pendingVendor==='Cisco'){
-      if(!ciscoTypes.includes(val)){ ciscoTypes.push(val); ciscoTypes.sort((a,b)=>a.localeCompare(b)); }
-    } else {
-      if(!juniperTypes.includes(val)){ juniperTypes.push(val); juniperTypes.sort((a,b)=>a.localeCompare(b)); }
+    const arr = pendingVendor==='Cisco' ? ciscoTypes : juniperTypes;
+    if(!arr.includes(val)){ arr.push(val); arr.sort((a,b)=>a.localeCompare(b)); }
+
+    const row = pendingSelect.closest('tr');
+    let idx = -1;
+    if(row){
+      idx = Number(row.dataset.idx);
+      if(pendingVendor==='Cisco') rulesDoc.rules[idx].cisco = val;
+      else rulesDoc.rules[idx].juniper = val;
     }
-    syncRulesFromDOM();
+
     renderRules();
+    if(idx > -1){
+      const newSel = tbody.querySelector(`tr[data-idx="${idx}"] .${pendingVendor.toLowerCase()}`);
+      if(newSel) newSel.value = val;
+    }
+
+    fetch('/api/device_types', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({vendor: pendingVendor, model: val})
+    }).then(r=>r.json()).then(resp=>{
+      if(!resp.ok){ console.error(resp.error); }
+    }).catch(err=>console.error(err));
   } else {
     pendingSelect.value='';
   }

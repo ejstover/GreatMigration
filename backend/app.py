@@ -59,6 +59,7 @@ HELP_URL = os.getenv("HELP_URL", README_URL)
 RULES_PATH = Path(__file__).resolve().parent / "port_rules.json"
 REPLACEMENTS_PATH = Path(__file__).resolve().parent / "replacement_rules.json"
 NETBOX_DT_URL = "https://api.github.com/repos/netbox-community/devicetype-library/contents/device-types"
+NETBOX_LOCAL_DT = (os.getenv("NETBOX_LOCAL_DT") or "").strip()
 SWITCH_TEMPLATE_ID = (os.getenv("SWITCH_TEMPLATE_ID") or "").strip()
 DEFAULT_ORG_ID = (os.getenv("MIST_ORG_ID") or "").strip()
 AUTH_METHOD = (os.getenv("AUTH_METHOD") or "").lower()
@@ -76,8 +77,12 @@ elif AUTH_METHOD == "local":
     current_user = _auth.current_user  # type: ignore[attr-defined]
     require_push_rights = _auth.require_push_rights  # type: ignore[attr-defined]
 else:
-    current_user = lambda: {"name": "anon", "can_push": True}  # type: ignore
-    require_push_rights = lambda user=current_user(): user  # type: ignore
+    def current_user(request: Request | None = None):  # type: ignore[override]
+        """Fallback auth stub when AUTH_METHOD is unset."""
+        return {"name": "anon", "can_push": True}
+
+    def require_push_rights(user=current_user()):  # type: ignore[override]
+        return user
 
     @app.middleware("http")
     async def _auth_missing(request: Request, call_next):
@@ -216,8 +221,49 @@ def api_device_types(vendor: str):
         r = requests.get(f"{NETBOX_DT_URL}/{vendor}", timeout=30)
         r.raise_for_status()
         items = [i.get("name", "").rsplit(".", 1)[0] for i in r.json() if i.get("type") == "file"]
+
+        if NETBOX_LOCAL_DT:
+            try:
+                local_data = json.loads(Path(NETBOX_LOCAL_DT).read_text(encoding="utf-8"))
+                for name in local_data.get(vendor, []):
+                    if isinstance(name, str) and name not in items:
+                        items.append(name)
+            except FileNotFoundError:
+                pass
+
         items.sort(key=lambda x: x.lower())
         return {"ok": True, "items": items}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/device_types")
+def api_add_device_type(request: Request, data: Dict[str, str] = Body(...)):
+    """Persist a custom device type to the local overrides file."""
+    try:
+        current_user(request)
+
+        vendor = (data.get("vendor") or "").strip()
+        model = (data.get("model") or "").strip()
+        if not vendor or not model:
+            raise ValueError("vendor and model are required")
+
+        if not NETBOX_LOCAL_DT:
+            raise RuntimeError("NETBOX_LOCAL_DT is not configured on the server")
+
+        path = Path(NETBOX_LOCAL_DT)
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            doc = {}
+
+        models = doc.setdefault(vendor, [])
+        if model not in models:
+            models.append(model)
+            models.sort(key=lambda x: x.lower())
+            path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+
+        return {"ok": True, "items": models}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
