@@ -77,8 +77,12 @@ elif AUTH_METHOD == "local":
     current_user = _auth.current_user  # type: ignore[attr-defined]
     require_push_rights = _auth.require_push_rights  # type: ignore[attr-defined]
 else:
-    current_user = lambda: {"name": "anon", "can_push": True}  # type: ignore
-    require_push_rights = lambda user=current_user(): user  # type: ignore
+    def current_user(request: Request | None = None):  # type: ignore[override]
+        """Fallback auth stub when AUTH_METHOD is unset."""
+        return {"name": "anon", "can_push": True}
+
+    def require_push_rights(user=current_user()):  # type: ignore[override]
+        return user
 
     @app.middleware("http")
     async def _auth_missing(request: Request, call_next):
