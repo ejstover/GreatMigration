@@ -4,7 +4,11 @@
 This utility parses the output of a Cisco ``show tech-support`` command, collects
 all product identifiers (PIDs) reported in the ``show inventory`` section and
 generates a summary per switch member.  Each Cisco PID is looked up in a simple
-mapping table to determine the recommended Juniper replacement hardware.
+mapping table to determine the recommended Juniper replacement hardware.  It
+also scans the broader diagnostic output for TenGigabit Ethernet ports that are
+using copper media (``10GBaseT``).  These copper 10G connections will require
+SFP modules when migrating to an SFP-based core, so they are reported as
+exceptions.
 
 The mapping data is loaded from ``backend/device_map.json`` if present.  The
 repository ships with ``device_map.sample.json`` which provides a starting set
@@ -29,7 +33,7 @@ import json
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, DefaultDict
+from typing import Dict, DefaultDict, List
 
 
 def load_mapping() -> Dict[str, str]:
@@ -72,13 +76,32 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
 
     Only the ``show inventory`` section is inspected.  Other parts of the
     diagnostic output may contain ``PID`` strings that are unrelated to the
-    hardware inventory so they are intentionally ignored.
+    hardware inventory so they are intentionally ignored.  To avoid reporting
+    optics that are present in ``show inventory`` but not actually in service,
+    the routine cross-references interface states from ``show interface`` and
+    skips any pluggables found on ports that are down.
     """
+
+    # Record interfaces that are operationally up so that only active optics
+    # are counted towards the inventory.  This prevents a 1G SFP in a down
+    # port from appearing as a migration requirement.
+    up_intfs: set[str] = set()
+    intf_status_re = re.compile(
+        r"^(?:Interface\s*)?(?P<intf>(?:Te|TenGigabitEthernet)[\d/]+) is up, line protocol is up",
+        re.IGNORECASE,
+    )
+    for line in text.splitlines():
+        line = line.strip()
+        m_status = intf_status_re.match(line)
+        if m_status:
+            up_intfs.add(m_status.group("intf"))
 
     inventory: DefaultDict[str, DefaultDict[str, int]] = defaultdict(
         lambda: defaultdict(int)
     )
     current_switch: str | None = None
+    current_intf: str | None = None
+    current_intf_switch: str | None = None
     in_inventory = False
 
     for line in text.splitlines():
@@ -90,6 +113,8 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
         if re.match(r"-+\s*show inventory\s*-+", line, re.IGNORECASE):
             in_inventory = True
             current_switch = None
+            current_intf = None
+            current_intf_switch = None
             continue
         if in_inventory and re.match(r"-+\s*show ", line, re.IGNORECASE):
             # Encountered the next ``show`` section; stop recording PIDs.
@@ -104,18 +129,84 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
             m_switch = re.match(r"NAME:\s*\"(?:Switch\s*)?(\d+)\"", line, re.IGNORECASE)
         if m_switch:
             current_switch = f"Switch {m_switch.group(1)}"
+            current_intf = None
+            current_intf_switch = None
             continue
 
+        # Track individual interface names from NAME lines so we can skip
+        # their PIDs if the interface is down and so we can derive the switch
+        # number when explicit switch headers are missing.
+        m_name = re.match(r'NAME:\s*"((?:Te|TenGigabitEthernet)[\d/]+)"', line)
+        if m_name:
+            current_intf = m_name.group(1)
+            m_intf_sw = re.match(r"(?:Te|TenGigabitEthernet)(\d+)/", current_intf)
+            if m_intf_sw:
+                current_intf_switch = f"Switch {m_intf_sw.group(1)}"
+            else:
+                current_intf_switch = current_switch
+            continue
+        elif line.startswith("NAME:"):
+            current_intf = None
+            current_intf_switch = None
+
         m_pid = re.search(r"PID:\s*([^,\s]+)", line, re.IGNORECASE)
-        if m_pid and current_switch:
+        if m_pid:
             pid = m_pid.group(1)
-            inventory[current_switch][pid] += 1
+            switch = current_intf_switch or current_switch
+            # If this PID corresponds to an interface that is not up, skip it.
+            if current_intf and current_intf not in up_intfs:
+                continue
+            if switch:
+                inventory[switch][pid] += 1
 
     return inventory
 
 
+def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
+    """Return 10G copper interfaces from ``show interface status`` output.
+
+    Copper 10G links do not appear in the ``show inventory`` section, so this
+    routine scans the ``show interface status`` table for TenGigabit Ethernet
+    ports that are *connected* at 10G speed and report a ``10GBaseT``/``10GBaseTX``
+    media type.  The result maps switch identifiers to interface names where an
+    SFP will be required during migration.
+    """
+
+    ports: DefaultDict[str, List[str]] = defaultdict(list)
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+
+        # Look for interface status table rows such as:
+        # ``Te1/0/43  desc  connected  trunk  a-full  a-10G  100/1000/2.5G/5G/10GBaseTX``
+        m_intf = re.match(r"^(?P<intf>(?:Te|TenGigabitEthernet)\S+)", line)
+        if not m_intf:
+            continue
+        if not re.search(r"\bconnected\b", line):
+            continue
+
+        parts = line.split()
+        if len(parts) < 7:
+            continue
+        speed = parts[-2]
+        media = parts[-1]
+        if not re.search(r"10G", speed, re.IGNORECASE):
+            continue
+        if not re.search(r"10GBaseT(?:X)?", media, re.IGNORECASE):
+            continue
+
+        intf = m_intf.group("intf")
+        m_sw = re.match(r"(?:Te|TenGigabitEthernet)(\d+)/", intf)
+        switch = f"Switch {m_sw.group(1)}" if m_sw else "global"
+        ports[switch].append(intf)
+
+    return ports
+
+
 def build_report(
-    inventory: Dict[str, Dict[str, int]], mapping: Dict[str, str]
+    inventory: Dict[str, Dict[str, int]],
+    mapping: Dict[str, str],
+    copper_ports: Dict[str, List[str]],
 ) -> str:
     """Generate a human friendly report."""
 
@@ -131,6 +222,10 @@ def build_report(
         for pid, count in sorted(items.items()):
             replacement = mapping.get(pid, "UNKNOWN")
             lines.append(f"    {replacement} x{count}")
+        if copper_ports.get(switch):
+            lines.append("  Copper 10G ports requiring SFPs:")
+            for port in sorted(copper_ports[switch]):
+                lines.append(f"    {port}")
         lines.append("")
     return "\n".join(lines)
 
@@ -147,7 +242,8 @@ def main() -> None:
 
     mapping = load_mapping()
     inventory = parse_showtech(text)
-    report = build_report(inventory, mapping)
+    copper_ports = find_copper_10g_ports(text)
+    report = build_report(inventory, mapping, copper_ports)
     print(report)
 
 
