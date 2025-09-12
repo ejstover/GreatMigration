@@ -119,8 +119,8 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
 
 
 def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
-    """Return TenGigabit interfaces that report ``10GBaseT``/``10GBaseTX`` media.
 
+    """Return TenGigabit interfaces that report ``10GBaseT``/``10GBaseTX`` media.
     The ``show inventory`` section does not list built-in copper links, so we
     scan the broader ``show tech`` output for interface blocks that mention
     copper 10G media types such as ``10GBaseT`` or ``10GBaseTX``.  The result is
@@ -132,6 +132,7 @@ def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
     current_switch = "global"
     current_intf: str | None = None
     current_intf_switch: str | None = None
+
 
     for line in text.splitlines():
         line = line.strip()
