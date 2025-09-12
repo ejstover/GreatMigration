@@ -48,19 +48,39 @@ def load_mapping() -> Dict[str, str]:
 
 
 def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
-    """Parse ``show tech-support`` text and count PIDs per switch."""
+    """Parse ``show tech-support`` text and count PIDs per switch.
+
+    Only the ``show inventory`` section is considered. Anything before or
+    after that section is ignored to avoid false matches from other commands.
+    """
 
     inventory: DefaultDict[str, DefaultDict[str, int]] = defaultdict(
         lambda: defaultdict(int)
     )
-    current_switch = "global"
 
+    # Find the show inventory block and ignore everything else
+    in_section = False
+    section: list[str] = []
     for line in text.splitlines():
-        line = line.strip()
-        # Detect a new switch section (e.g. "Switch 1", "Switch 2")
-        m_switch = re.match(r"^Switch\s+(\d+)", line, re.IGNORECASE)
-        if m_switch:
-            current_switch = f"Switch {m_switch.group(1)}"
+        if not in_section:
+            if re.match(r"\s*(?:-+\s*)?show\s+inventory(?:\s*-+)?\s*$", line, re.IGNORECASE):
+                in_section = True
+            continue
+        if re.match(r"\s*(?:-+\s*)?show\s+\S+", line, re.IGNORECASE):
+            break
+        section.append(line)
+
+    current_switch = "global"
+    for raw in section:
+        line = raw.strip()
+
+        # NAME lines indicate the switch member
+        m_name = re.match(r'NAME:\s*"([^"]+)"', line, re.IGNORECASE)
+        if m_name:
+            name = m_name.group(1)
+            m_switch = re.match(r"Switch\s+(\d+)", name, re.IGNORECASE)
+            if m_switch:
+                current_switch = f"Switch {m_switch.group(1)}"
             continue
 
         m_pid = re.search(r"PID:\s*([^,\s]+)", line)
