@@ -6,7 +6,7 @@ from typing import List, Optional, Dict, Any
 
 import requests
 from fastapi import FastAPI, UploadFile, File, Form, Request, Body
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -29,6 +29,8 @@ from push_mist_port_config import (  # type: ignore
     remap_ports,
     validate_port_config_against_model,
 )
+from translate_showtech import parse_showtech, load_mapping  # type: ignore
+from fpdf import FPDF
 
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
@@ -107,6 +109,13 @@ def replacements_page():
     return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
 
 
+@app.get("/showtech", response_class=HTMLResponse)
+def showtech_page():
+    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "showtech.html"
+    tpl = tpl_path.read_text(encoding="utf-8")
+    return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
+
+
 def _load_mist_token() -> str:
     tok = (os.getenv("MIST_TOKEN") or "").strip()
     if not tok:
@@ -157,6 +166,48 @@ def api_save_replacements(request: Request, doc: Dict[str, Any] = Body(...)):
         return {"ok": True}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/showtech")
+async def api_showtech(files: List[UploadFile] = File(...)):
+    try:
+        mapping = load_mapping()
+        results = []
+        for f in files:
+            text = (await f.read()).decode("utf-8", errors="ignore")
+            inventory = parse_showtech(text)
+            switches = []
+            for sw, items in inventory.items():
+                sw_items = []
+                for pid, count in items.items():
+                    replacement = mapping.get(pid, "no replacement model defined")
+                    sw_items.append({"pid": pid, "count": count, "replacement": replacement})
+                switches.append({"switch": sw, "items": sw_items})
+            results.append({"filename": f.filename, "switches": switches})
+        return {"ok": True, "results": results}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/showtech/pdf")
+def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    for file in data.get("results", []):
+        pdf.set_font("Helvetica", "B", 14)
+        pdf.cell(0, 10, file.get("filename", ""), ln=True)
+        pdf.set_font("Helvetica", size=12)
+        for sw in file.get("switches", []):
+            pdf.cell(0, 10, sw.get("switch", ""), ln=True)
+            for item in sw.get("items", []):
+                line = f"  {item.get('pid')} x{item.get('count')} -> {item.get('replacement')}"
+                pdf.cell(0, 10, line, ln=True)
+        pdf.ln(5)
+    pdf_bytes = pdf.output(dest="S").encode("latin1")
+    headers = {"Content-Disposition": "attachment; filename=showtech_report.pdf"}
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 
 @app.get("/api/device_types")
