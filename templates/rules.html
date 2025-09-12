@@ -49,7 +49,8 @@
       <h2 class="text-lg font-medium">Rules</h2>
       <div class="flex items-center gap-2">
         <button id="add_rule" class="px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
-        <button id="save_rules" class="px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+        <button id="save_rules" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+        <button id="cancel_rules" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
       </div>
     </div>
     <div class="overflow-x-auto">
@@ -65,6 +66,10 @@
         </thead>
         <tbody id="rules_tbody" class="divide-y divide-slate-200 dark:divide-slate-700"></tbody>
       </table>
+    </div>
+    <div class="mt-4 flex justify-end gap-2">
+      <button id="save_rules_bottom" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+      <button id="cancel_rules_bottom" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
     </div>
     <div id="save_status" class="text-sm mt-4"></div>
     <div id="profile_status" class="text-sm text-red-600 dark:text-red-400 mt-2"></div>
@@ -84,7 +89,8 @@
 
     const tbody = document.getElementById('rules_tbody');
     const addRuleBtn = document.getElementById('add_rule');
-    const saveBtn = document.getElementById('save_rules');
+    const saveBtns = document.querySelectorAll('.save_rules');
+    const cancelBtns = document.querySelectorAll('.cancel_rules');
     const saveStatus = document.getElementById('save_status');
     const profileStatus = document.getElementById('profile_status');
     let rulesDoc = {rules: []};
@@ -184,7 +190,7 @@
 
     addRuleBtn.addEventListener('click',()=>{ rulesDoc.rules.push({name:'', when:{}, set:{}}); renderRules(); tbody.lastElementChild?.scrollIntoView({behavior:'smooth'}); });
 
-    saveBtn.addEventListener('click',()=>{
+    saveBtns.forEach(btn => btn.addEventListener('click',()=>{
       syncRulesFromDOM();
       fetch('/api/rules',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(rulesDoc)})
         .then(async r=>{ const txt=await r.text(); try { return JSON.parse(txt);} catch { throw new Error(txt);} })
@@ -195,7 +201,9 @@
             saveStatus.textContent='Error: ' + (resp.error || 'saving rules');
           }
         }).catch(err=>{ saveStatus.textContent='Error: ' + err.message; });
-    });
+    }));
+
+    cancelBtns.forEach(btn => btn.addEventListener('click',()=>{ window.location.href='/'; }));
 
     // Load existing rules & port profiles
     fetch('/api/port_profiles')
