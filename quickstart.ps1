@@ -140,7 +140,7 @@ function Ensure-Env {
     $user = Read-Host "Local username"
     $pwdSecure = Read-Host "Local password (input hidden)" -AsSecureString
     $pwd = [System.Net.NetworkCredential]::new("", $pwdSecure).Password
-    $lines += "LOCAL_USERS=$user:$pwd"
+    $lines += "LOCAL_USERS=${user}:${pwd}"
     $lines += "LOCAL_PUSH_USERS=$user"
   }
 
