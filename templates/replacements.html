@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hardware Replacement Rules</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'media' };</script>
+</head>
+<body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+  <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+    <div class="max-w-7xl mx-auto flex items-center justify-between p-6">
+      <div class="flex items-center gap-4">
+        <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
+        <div>
+          <h1 class="text-3xl font-bold">Hardware Replacement Rules</h1>
+          <p class="text-slate-100 text-sm md:text-base">Map Cisco models to Juniper replacements</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-4">
+        <a href="/" class="p-2 rounded hover:bg-white/30" aria-label="Home">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7A1 1 0 003 10h1v7a1 1 0 001 1h4a1 1 0 001-1v-4h2v4a1 1 0 001 1h4a1 1 0 001-1v-7h1a1 1 0 00.707-1.707l-7-7z"/></svg>
+        </a>
+        <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="p-2 rounded hover:bg-white/30" aria-label="Help">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10A8 8 0 112 10a8 8 0 0116 0zM10 5a3 3 0 00-3 3 .75.75 0 101.5 0A1.5 1.5 0 0110 6.5a1.5 1.5 0 011.5 1.5c0 .401-.08.588-.494.969-.458.451-1.168 1.15-1.168 2.531h1.5c0-.822.447-1.2.903-1.642.571-.56 1.009-1.078 1.009-1.858A3 3 0 0010 5zm0 8a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/></svg>
+        </a>
+        <a id="login_link" href="/login" class="px-4 py-2 rounded bg-white/20 hover:bg-white/30">Log in</a>
+        <button id="logout_btn" class="hidden px-4 py-2 rounded bg-white/20 hover:bg-white/30">Log out</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="max-w-5xl mx-auto p-6">
+    <div class="mb-4 flex items-center justify-between">
+      <h2 class="text-lg font-medium">Rules</h2>
+      <div class="flex items-center gap-2">
+        <button id="add_rule" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+        <button id="save_rules" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+        <button id="cancel_rules" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="min-w-full divide-y divide-slate-300 dark:divide-slate-700 text-sm">
+        <thead class="bg-slate-100 dark:bg-slate-800">
+          <tr>
+            <th class="p-2 text-left">Cisco Model</th>
+            <th class="p-2 text-left">Juniper Model</th>
+            <th class="p-2"></th>
+          </tr>
+        </thead>
+        <tbody id="rules_tbody" class="divide-y divide-slate-200 dark:divide-slate-700"></tbody>
+      </table>
+    </div>
+    <div class="mt-4 flex justify-end gap-2">
+      <button id="add_rule_bottom" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+      <button id="save_rules_bottom" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+      <button id="cancel_rules_bottom" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
+    </div>
+    <div id="save_status" class="text-sm mt-4"></div>
+  </div>
+
+<script>
+const loginLink = document.getElementById('login_link');
+const logoutBtn = document.getElementById('logout_btn');
+fetch('/me').then(res => {
+  if (!res.ok) throw new Error('not authed');
+  return res.json();
+}).then(() => {
+  loginLink?.classList.add('hidden');
+  logoutBtn?.classList.remove('hidden');
+  logoutBtn?.addEventListener('click', (e) => { e.preventDefault(); window.location.href = '/logout'; });
+}).catch(() => { window.location.href = '/login'; });
+
+const tbody = document.getElementById('rules_tbody');
+const addRuleBtns = document.querySelectorAll('.add_rule');
+const saveBtns = document.querySelectorAll('.save_rules');
+const cancelBtns = document.querySelectorAll('.cancel_rules');
+const saveStatus = document.getElementById('save_status');
+let rulesDoc = {rules: []};
+let ciscoTypes = [];
+let juniperTypes = [];
+
+function renderRules(){
+  tbody.innerHTML='';
+  rulesDoc.rules.forEach((rule, idx)=>{
+    const tr=document.createElement('tr');
+    tr.dataset.idx=idx;
+    tr.innerHTML=`<td class="p-2"><select class="cisco border rounded p-1 w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700"></select></td>
+      <td class="p-2"><select class="juniper border rounded p-1 w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700"></select></td>
+      <td class="p-2"><button class="del text-red-500">✕</button></td>`;
+    const cSel = tr.querySelector('.cisco');
+    const jSel = tr.querySelector('.juniper');
+    const empty=document.createElement('option'); empty.value=''; empty.textContent='--model--';
+    cSel.appendChild(empty.cloneNode(true));
+    jSel.appendChild(empty.cloneNode(true));
+    ciscoTypes.forEach(m=>{const o=document.createElement('option'); o.value=m; o.textContent=m; if(rule.cisco===m) o.selected=true; cSel.appendChild(o);});
+    juniperTypes.forEach(m=>{const o=document.createElement('option'); o.value=m; o.textContent=m; if(rule.juniper===m) o.selected=true; jSel.appendChild(o);});
+    tr.querySelector('.del').addEventListener('click',()=>{ rulesDoc.rules.splice(idx,1); renderRules(); });
+    tbody.appendChild(tr);
+  });
+}
+
+function syncRulesFromDOM(){
+  rulesDoc.rules=[...tbody.querySelectorAll('tr')].map(tr=>{
+    return {
+      cisco: tr.querySelector('.cisco').value,
+      juniper: tr.querySelector('.juniper').value
+    };
+  }).filter(r=>r.cisco && r.juniper);
+}
+
+addRuleBtns.forEach(btn=>btn.addEventListener('click',()=>{ rulesDoc.rules.push({cisco:'', juniper:''}); renderRules(); tbody.lastElementChild?.scrollIntoView({behavior:'smooth'}); }));
+
+saveBtns.forEach(btn=>btn.addEventListener('click',()=>{
+  syncRulesFromDOM();
+  fetch('/api/replacements',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(rulesDoc)})
+    .then(async r=>{const txt=await r.text(); try{return JSON.parse(txt);}catch{return {ok:false,error:txt};}})
+    .then(resp=>{
+      if(resp.ok){ saveStatus.textContent='Saved!'; setTimeout(()=>saveStatus.textContent='',2000); }
+      else { saveStatus.textContent='Error: '+resp.error; }
+    }).catch(e=>{ saveStatus.textContent='Error: '+e; });
+}));
+
+cancelBtns.forEach(btn=>btn.addEventListener('click',()=>{ window.location.href='/'; }));
+
+Promise.all([
+  fetch('/api/device_types?vendor=Cisco').then(r=>r.json()),
+  fetch('/api/device_types?vendor=Juniper').then(r=>r.json()),
+  fetch('/api/replacements').then(r=>r.json())
+]).then(([cisco,juniper,rules])=>{
+  if(cisco.ok) ciscoTypes=cisco.items; else console.error(cisco.error);
+  if(juniper.ok) juniperTypes=juniper.items; else console.error(juniper.error);
+  if(rules.ok) rulesDoc=rules.doc; renderRules();
+}).catch(err=>{ console.error(err); });
+</script>
+</body>
+</html>

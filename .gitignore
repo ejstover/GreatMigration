@@ -15,3 +15,7 @@ Thumbs.db
 
 # Local port rules
 backend/port_rules.json
+# Local device mapping
+backend/device_map.json
+# Local hardware replacement rules
+backend/replacement_rules.json

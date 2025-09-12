@@ -55,6 +55,8 @@ README_URL = "https://github.com/jacob-hopkins/GreatMigration#readme"
 # Where to send users when they click the help icon
 HELP_URL = os.getenv("HELP_URL", README_URL)
 RULES_PATH = Path(__file__).resolve().parent / "port_rules.json"
+REPLACEMENTS_PATH = Path(__file__).resolve().parent / "replacement_rules.json"
+NETBOX_DT_URL = "https://api.github.com/repos/netbox-community/devicetype-library/contents/device-types"
 SWITCH_TEMPLATE_ID = (os.getenv("SWITCH_TEMPLATE_ID") or "").strip()
 DEFAULT_ORG_ID = (os.getenv("MIST_ORG_ID") or "").strip()
 AUTH_METHOD = (os.getenv("AUTH_METHOD") or "").lower()
@@ -98,6 +100,13 @@ def rules_page():
     return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
 
 
+@app.get("/replacements", response_class=HTMLResponse)
+def replacements_page():
+    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "replacements.html"
+    tpl = tpl_path.read_text(encoding="utf-8")
+    return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
+
+
 def _load_mist_token() -> str:
     tok = (os.getenv("MIST_TOKEN") or "").strip()
     if not tok:
@@ -127,6 +136,37 @@ def api_save_rules(request: Request, doc: Dict[str, Any] = Body(...)):
         return {"ok": True}
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/replacements")
+def api_get_replacements():
+    try:
+        data = json.loads(REPLACEMENTS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        data = {"rules": []}
+    return {"ok": True, "doc": data}
+
+
+@app.post("/api/replacements")
+def api_save_replacements(request: Request, doc: Dict[str, Any] = Body(...)):
+    try:
+        current_user(request)
+        REPLACEMENTS_PATH.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        return {"ok": True}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/device_types")
+def api_device_types(vendor: str):
+    try:
+        r = requests.get(f"{NETBOX_DT_URL}/{vendor}", timeout=30)
+        r.raise_for_status()
+        items = [i.get("name", "").rsplit(".", 1)[0] for i in r.json() if i.get("type") == "file"]
+        items.sort(key=lambda x: x.lower())
+        return {"ok": True, "items": items}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
