@@ -22,6 +22,7 @@
           <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
         <div id="menu" class="hidden absolute right-0 mt-2 w-56 bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100 rounded shadow-lg">
+          <a href="/" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Config Conversion</a>
           <a href="/rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Port Profile rules</a>
           <a href="/replacements" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Hardware replacement rules</a>
           <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Help</a>
@@ -61,6 +62,17 @@
     <div id="save_status" class="text-sm mt-4"></div>
   </div>
 
+  <div id="model_modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center">
+    <div class="bg-white dark:bg-slate-800 p-6 rounded shadow-lg w-80">
+      <h3 id="modal_title" class="text-lg font-medium mb-3"></h3>
+      <input id="modal_input" type="text" class="w-full border rounded p-2 mb-4 dark:bg-slate-900 dark:border-slate-700" />
+      <div class="flex justify-end gap-2">
+        <button id="modal_cancel" class="px-3 py-1 rounded bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600">Cancel</button>
+        <button id="modal_ok" class="px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700">OK</button>
+      </div>
+    </div>
+  </div>
+
 <script>
 const menuBtn = document.getElementById('menu_btn');
 const menu = document.getElementById('menu');
@@ -83,23 +95,32 @@ const addRuleBtns = document.querySelectorAll('.add_rule');
 const saveBtns = document.querySelectorAll('.save_rules');
 const cancelBtns = document.querySelectorAll('.cancel_rules');
 const saveStatus = document.getElementById('save_status');
+const modal = document.getElementById('model_modal');
+const modalTitle = document.getElementById('modal_title');
+const modalInput = document.getElementById('modal_input');
+const modalOk = document.getElementById('modal_ok');
+const modalCancel = document.getElementById('modal_cancel');
+let pendingSelect = null;
+let pendingVendor = '';
 let rulesDoc = {rules: []};
 let ciscoTypes = [];
 let juniperTypes = [];
 
+function openModal(sel, vendor){
+  pendingSelect = sel;
+  pendingVendor = vendor;
+  modalTitle.textContent = `Add ${vendor} model`;
+  modalInput.value='';
+  modal.classList.remove('hidden');
+  modalInput.focus();
+}
+
 function decorateSelect(sel, vendor){
   sel.addEventListener('change', () => {
     if(sel.value === '__add_new__'){
-      const val = prompt(`Enter ${vendor} model`);
-      if(val){
-        sel.value = val;
-        if(vendor==='Cisco'){ if(!ciscoTypes.includes(val)){ ciscoTypes.push(val); ciscoTypes.sort((a,b)=>a.localeCompare(b)); } }
-        else { if(!juniperTypes.includes(val)){ juniperTypes.push(val); juniperTypes.sort((a,b)=>a.localeCompare(b)); } }
-        syncRulesFromDOM();
-        renderRules();
-      } else {
-        sel.value='';
-      }
+      openModal(sel, vendor);
+    } else {
+      syncRulesFromDOM();
     }
   });
 }
@@ -134,19 +155,18 @@ function renderRules(){
 }
 
 function syncRulesFromDOM(){
-  rulesDoc.rules=[...tbody.querySelectorAll('tr')].map(tr=>{
-    return {
-      cisco: tr.querySelector('.cisco').value,
-      juniper: tr.querySelector('.juniper').value
-    };
-  }).filter(r=>r.cisco && r.juniper);
+  rulesDoc.rules=[...tbody.querySelectorAll('tr')].map(tr=>({
+    cisco: tr.querySelector('.cisco').value,
+    juniper: tr.querySelector('.juniper').value
+  }));
 }
 
 addRuleBtns.forEach(btn=>btn.addEventListener('click',()=>{ syncRulesFromDOM(); rulesDoc.rules.push({cisco:'', juniper:''}); renderRules(); tbody.lastElementChild?.scrollIntoView({behavior:'smooth'}); }));
 
 saveBtns.forEach(btn=>btn.addEventListener('click',()=>{
   syncRulesFromDOM();
-  fetch('/api/replacements',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(rulesDoc)})
+  const payload = {rules: rulesDoc.rules.filter(r=>r.cisco && r.juniper)};
+  fetch('/api/replacements',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
     .then(async r=>{const txt=await r.text(); try{return JSON.parse(txt);}catch{return {ok:false,error:txt};}})
     .then(resp=>{
       if(resp.ok){ saveStatus.textContent='Saved!'; setTimeout(()=>saveStatus.textContent='',2000); }
@@ -174,6 +194,30 @@ Promise.all([
   juniperTypes.sort((a,b)=>a.localeCompare(b));
   renderRules();
 }).catch(err=>{ console.error(err); });
+
+modalOk.addEventListener('click', () => {
+  const val = modalInput.value.trim();
+  if(val){
+    pendingSelect.value = val;
+    if(pendingVendor==='Cisco'){
+      if(!ciscoTypes.includes(val)){ ciscoTypes.push(val); ciscoTypes.sort((a,b)=>a.localeCompare(b)); }
+    } else {
+      if(!juniperTypes.includes(val)){ juniperTypes.push(val); juniperTypes.sort((a,b)=>a.localeCompare(b)); }
+    }
+    syncRulesFromDOM();
+    renderRules();
+  } else {
+    pendingSelect.value='';
+  }
+  modal.classList.add('hidden');
+});
+
+modalCancel.addEventListener('click', () => {
+  if(pendingSelect) pendingSelect.value='';
+  modal.classList.add('hidden');
+});
+
+modal.addEventListener('click', e => { if(e.target === modal) { modalCancel.click(); } });
 </script>
 </body>
 </html>
