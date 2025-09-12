@@ -48,7 +48,7 @@
     <div class="mb-4 flex items-center justify-between">
       <h2 class="text-lg font-medium">Rules</h2>
       <div class="flex items-center gap-2">
-        <button id="add_rule" class="px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+        <button id="add_rule" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
         <button id="save_rules" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
         <button id="cancel_rules" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
       </div>
@@ -68,6 +68,7 @@
       </table>
     </div>
     <div class="mt-4 flex justify-end gap-2">
+      <button id="add_rule_bottom" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
       <button id="save_rules_bottom" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
       <button id="cancel_rules_bottom" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
     </div>
@@ -88,7 +89,7 @@
     }).catch(() => { window.location.href = '/login'; });
 
     const tbody = document.getElementById('rules_tbody');
-    const addRuleBtn = document.getElementById('add_rule');
+    const addRuleBtns = document.querySelectorAll('.add_rule');
     const saveBtns = document.querySelectorAll('.save_rules');
     const cancelBtns = document.querySelectorAll('.cancel_rules');
     const saveStatus = document.getElementById('save_status');
@@ -188,7 +189,7 @@
       }
     });
 
-    addRuleBtn.addEventListener('click',()=>{ rulesDoc.rules.push({name:'', when:{}, set:{}}); renderRules(); tbody.lastElementChild?.scrollIntoView({behavior:'smooth'}); });
+    addRuleBtns.forEach(btn => btn.addEventListener('click',()=>{ rulesDoc.rules.push({name:'', when:{}, set:{}}); renderRules(); tbody.lastElementChild?.scrollIntoView({behavior:'smooth'}); }));
 
     saveBtns.forEach(btn => btn.addEventListener('click',()=>{
       syncRulesFromDOM();
