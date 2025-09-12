@@ -78,7 +78,7 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
     inventory: DefaultDict[str, DefaultDict[str, int]] = defaultdict(
         lambda: defaultdict(int)
     )
-    current_switch = "global"
+    current_switch: str | None = None
     in_inventory = False
 
     for line in text.splitlines():
@@ -89,7 +89,7 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
         # with lines such as ``------------------ show inventory ------------------``.
         if re.match(r"-+\s*show inventory\s*-+", line, re.IGNORECASE):
             in_inventory = True
-            current_switch = "global"
+            current_switch = None
             continue
         if in_inventory and re.match(r"-+\s*show ", line, re.IGNORECASE):
             # Encountered the next ``show`` section; stop recording PIDs.
@@ -107,7 +107,7 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
             continue
 
         m_pid = re.search(r"PID:\s*([^,\s]+)", line, re.IGNORECASE)
-        if m_pid:
+        if m_pid and current_switch:
             pid = m_pid.group(1)
             inventory[current_switch][pid] += 1
 
@@ -121,6 +121,8 @@ def build_report(
 
     lines = []
     for switch, items in inventory.items():
+        if switch.lower() == "global":
+            continue
         lines.append(f"{switch}:")
         lines.append("  Cisco inventory:")
         for pid, count in sorted(items.items()):

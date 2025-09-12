@@ -183,6 +183,8 @@ async def api_showtech(files: List[UploadFile] = File(...)):
             inventory = parse_showtech(text)
             switches = []
             for sw, items in inventory.items():
+                if sw.lower() == "global":
+                    continue
                 sw_items = []
                 for pid, count in items.items():
                     replacement = mapping.get(pid, "no replacement model defined")
