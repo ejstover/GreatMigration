@@ -59,6 +59,7 @@ HELP_URL = os.getenv("HELP_URL", README_URL)
 RULES_PATH = Path(__file__).resolve().parent / "port_rules.json"
 REPLACEMENTS_PATH = Path(__file__).resolve().parent / "replacement_rules.json"
 NETBOX_DT_URL = "https://api.github.com/repos/netbox-community/devicetype-library/contents/device-types"
+NETBOX_LOCAL_DT = (os.getenv("NETBOX_LOCAL_DT") or "").strip()
 SWITCH_TEMPLATE_ID = (os.getenv("SWITCH_TEMPLATE_ID") or "").strip()
 DEFAULT_ORG_ID = (os.getenv("MIST_ORG_ID") or "").strip()
 AUTH_METHOD = (os.getenv("AUTH_METHOD") or "").lower()
@@ -216,6 +217,16 @@ def api_device_types(vendor: str):
         r = requests.get(f"{NETBOX_DT_URL}/{vendor}", timeout=30)
         r.raise_for_status()
         items = [i.get("name", "").rsplit(".", 1)[0] for i in r.json() if i.get("type") == "file"]
+
+        if NETBOX_LOCAL_DT:
+            try:
+                local_data = json.loads(Path(NETBOX_LOCAL_DT).read_text(encoding="utf-8"))
+                for name in local_data.get(vendor, []):
+                    if isinstance(name, str) and name not in items:
+                        items.append(name)
+            except FileNotFoundError:
+                pass
+
         items.sort(key=lambda x: x.lower())
         return {"ok": True, "items": items}
     except Exception as e:

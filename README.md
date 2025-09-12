@@ -152,6 +152,27 @@ Start from `backend/replacement_rules.sample.json` and customize as needed; the
 real file is git‑ignored so local rules stay private.
 
 
+### Device Type Customization
+
+By default, the app lists device types from the NetBox community library. You can
+also merge in your own models by pointing the `NETBOX_LOCAL_DT` environment
+variable at a JSON file. The file should map vendor names to a list of device
+type names:
+
+```json
+{
+  "Cisco": ["CustomSwitch-1"],
+  "Juniper": ["ex9999-48p"]
+}
+```
+
+Any models defined here are appended to the community list for the matching
+vendor. Duplicate names are ignored.
+
+A starter file lives at `backend/custom_device_types.sample.json`; copy it to a
+local path and set `NETBOX_LOCAL_DT` accordingly.
+
+
 ### Command-line tools
 
 **convertciscotojson.py**
