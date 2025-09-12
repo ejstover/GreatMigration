@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hardware Replacement Rules</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'media' };</script>
+</head>
+<body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+  <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+    <div class="max-w-7xl mx-auto flex items-center gap-4 p-6">
+      <div class="relative">
+        <button id="menu_btn" class="p-2 rounded hover:bg-white/30" aria-label="Menu">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
+        </button>
+        <div id="menu" class="hidden absolute left-0 mt-2 w-56 bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100 rounded shadow-lg">
+          <a href="/" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Config Conversion</a>
+          <a href="/showtech" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Show Tech Upload</a>
+          <a href="/rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Port Profile rules</a>
+          <a href="/replacements" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Hardware replacement rules</a>
+          <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Help</a>
+          <a id="login_link" href="/login" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log in</a>
+          <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
+        </div>
+      </div>
+      <div class="flex items-center gap-4">
+        <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
+        <div>
+          <h1 class="text-3xl font-bold">Hardware Replacement Rules</h1>
+          <p class="text-slate-100 text-sm md:text-base">Map Cisco models to Juniper replacements</p>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="max-w-5xl mx-auto p-6">
+    <div class="mb-4 flex items-center justify-between">
+      <h2 class="text-lg font-medium">Rules</h2>
+      <div class="flex items-center gap-2">
+        <button id="add_rule" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+        <button id="save_rules" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+        <button id="cancel_rules" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="min-w-full divide-y divide-slate-300 dark:divide-slate-700 text-sm">
+        <thead class="bg-slate-100 dark:bg-slate-800">
+          <tr>
+            <th class="p-2 text-left">Cisco Model</th>
+            <th class="p-2 text-left">Juniper Model</th>
+            <th class="p-2"></th>
+          </tr>
+        </thead>
+        <tbody id="rules_tbody" class="divide-y divide-slate-200 dark:divide-slate-700"></tbody>
+      </table>
+    </div>
+    <div class="mt-4 flex justify-end gap-2">
+      <button id="add_rule_bottom" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+      <button id="save_rules_bottom" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+      <button id="cancel_rules_bottom" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
+    </div>
+    <div id="save_status" class="text-sm mt-4"></div>
+  </div>
+
+  <div id="model_modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center">
+    <div class="bg-white dark:bg-slate-800 p-6 rounded shadow-lg w-80">
+      <h3 id="modal_title" class="text-lg font-medium mb-3"></h3>
+      <input id="modal_input" type="text" class="w-full border rounded p-2 mb-4 dark:bg-slate-900 dark:border-slate-700" />
+      <div class="flex justify-end gap-2">
+        <button id="modal_cancel" class="px-3 py-1 rounded bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600">Cancel</button>
+        <button id="modal_ok" class="px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700">OK</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+const menuBtn = document.getElementById('menu_btn');
+const menu = document.getElementById('menu');
+menuBtn.addEventListener('click', () => menu.classList.toggle('hidden'));
+document.addEventListener('click', e => { if (!menu.contains(e.target) && !menuBtn.contains(e.target)) menu.classList.add('hidden'); });
+
+const loginLink = document.getElementById('login_link');
+const logoutBtn = document.getElementById('logout_btn');
+fetch('/me').then(res => {
+  if (!res.ok) throw new Error('not authed');
+  return res.json();
+}).then(() => {
+  loginLink?.classList.add('hidden');
+  logoutBtn?.classList.remove('hidden');
+  logoutBtn?.addEventListener('click', (e) => { e.preventDefault(); window.location.href = '/logout'; });
+}).catch(() => { window.location.href = '/login'; });
+
+const tbody = document.getElementById('rules_tbody');
+const addRuleBtns = document.querySelectorAll('.add_rule');
+const saveBtns = document.querySelectorAll('.save_rules');
+const cancelBtns = document.querySelectorAll('.cancel_rules');
+const saveStatus = document.getElementById('save_status');
+const modal = document.getElementById('model_modal');
+const modalTitle = document.getElementById('modal_title');
+const modalInput = document.getElementById('modal_input');
+const modalOk = document.getElementById('modal_ok');
+const modalCancel = document.getElementById('modal_cancel');
+let pendingSelect = null;
+let pendingVendor = '';
+let rulesDoc = {rules: []};
+let ciscoTypes = [];
+let juniperTypes = [];
+
+function openModal(sel, vendor){
+  pendingSelect = sel;
+  pendingVendor = vendor;
+  modalTitle.textContent = `Add ${vendor} model`;
+  modalInput.value='';
+  modal.classList.remove('hidden');
+  modalInput.focus();
+}
+
+function decorateSelect(sel, vendor){
+  sel.addEventListener('change', () => {
+    if(sel.value === '__add_new__'){
+      openModal(sel, vendor);
+    } else {
+      syncRulesFromDOM();
+    }
+  });
+}
+
+function renderRules(){
+  tbody.innerHTML='';
+  rulesDoc.rules.forEach((rule, idx)=>{
+    const tr=document.createElement('tr');
+    tr.dataset.idx=idx;
+    tr.innerHTML=`<td class="p-2"><select class="cisco border rounded p-1 w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700"></select></td>
+      <td class="p-2"><select class="juniper border rounded p-1 w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700"></select></td>
+      <td class="p-2"><button class="del text-red-500">✕</button></td>`;
+    const cSel = tr.querySelector('.cisco');
+    const jSel = tr.querySelector('.juniper');
+    const addOpt=document.createElement('option'); addOpt.value='__add_new__'; addOpt.textContent='Add New';
+    const empty=document.createElement('option'); empty.value=''; empty.textContent='--model--'; empty.disabled=true; empty.selected=true;
+    cSel.appendChild(addOpt.cloneNode(true));
+    cSel.appendChild(empty.cloneNode(true));
+    jSel.appendChild(addOpt.cloneNode(true));
+    jSel.appendChild(empty.cloneNode(true));
+    ciscoTypes.forEach(m=>{const o=document.createElement('option'); o.value=m; o.textContent=m; cSel.appendChild(o);});
+    juniperTypes.forEach(m=>{const o=document.createElement('option'); o.value=m; o.textContent=m; jSel.appendChild(o);});
+    if(rule.cisco && !ciscoTypes.includes(rule.cisco)){ const o=document.createElement('option'); o.value=rule.cisco; o.textContent=rule.cisco; cSel.appendChild(o); }
+    if(rule.juniper && !juniperTypes.includes(rule.juniper)){ const o=document.createElement('option'); o.value=rule.juniper; o.textContent=rule.juniper; jSel.appendChild(o); }
+    cSel.value=rule.cisco || '';
+    jSel.value=rule.juniper || '';
+    decorateSelect(cSel, 'Cisco');
+    decorateSelect(jSel, 'Juniper');
+    tr.querySelector('.del').addEventListener('click',()=>{ rulesDoc.rules.splice(idx,1); renderRules(); });
+    tbody.appendChild(tr);
+  });
+}
+
+function syncRulesFromDOM(){
+  rulesDoc.rules=[...tbody.querySelectorAll('tr')].map(tr=>({
+    cisco: tr.querySelector('.cisco').value,
+    juniper: tr.querySelector('.juniper').value
+  }));
+}
+
+addRuleBtns.forEach(btn=>btn.addEventListener('click',()=>{ syncRulesFromDOM(); rulesDoc.rules.push({cisco:'', juniper:''}); renderRules(); tbody.lastElementChild?.scrollIntoView({behavior:'smooth'}); }));
+
+saveBtns.forEach(btn=>btn.addEventListener('click',()=>{
+  syncRulesFromDOM();
+  const payload = {rules: rulesDoc.rules.filter(r=>r.cisco && r.juniper)};
+  fetch('/api/replacements',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
+    .then(async r=>{const txt=await r.text(); try{return JSON.parse(txt);}catch{return {ok:false,error:txt};}})
+    .then(resp=>{
+      if(resp.ok){ saveStatus.textContent='Saved!'; setTimeout(()=>saveStatus.textContent='',2000); }
+      else { saveStatus.textContent='Error: '+resp.error; }
+    }).catch(e=>{ saveStatus.textContent='Error: '+e; });
+}));
+
+cancelBtns.forEach(btn=>btn.addEventListener('click',()=>{ window.location.href='/'; }));
+
+Promise.all([
+  fetch('/api/device_types?vendor=Cisco').then(r=>r.json()),
+  fetch('/api/device_types?vendor=Juniper').then(r=>r.json()),
+  fetch('/api/replacements').then(r=>r.json())
+]).then(([cisco,juniper,rules])=>{
+  if(cisco.ok) ciscoTypes=cisco.items; else console.error(cisco.error);
+  if(juniper.ok) juniperTypes=juniper.items; else console.error(juniper.error);
+  if(rules.ok){
+    rulesDoc=rules.doc;
+    rulesDoc.rules.forEach(r=>{
+      if(r.cisco && !ciscoTypes.includes(r.cisco)) ciscoTypes.push(r.cisco);
+      if(r.juniper && !juniperTypes.includes(r.juniper)) juniperTypes.push(r.juniper);
+    });
+  }
+  ciscoTypes.sort((a,b)=>a.localeCompare(b));
+  juniperTypes.sort((a,b)=>a.localeCompare(b));
+  renderRules();
+}).catch(err=>{ console.error(err); });
+
+modalOk.addEventListener('click', () => {
+  const val = modalInput.value.trim();
+  if(val){
+    pendingSelect.value = val;
+    if(pendingVendor==='Cisco'){
+      if(!ciscoTypes.includes(val)){ ciscoTypes.push(val); ciscoTypes.sort((a,b)=>a.localeCompare(b)); }
+    } else {
+      if(!juniperTypes.includes(val)){ juniperTypes.push(val); juniperTypes.sort((a,b)=>a.localeCompare(b)); }
+    }
+    syncRulesFromDOM();
+    renderRules();
+  } else {
+    pendingSelect.value='';
+  }
+  modal.classList.add('hidden');
+});
+
+modalCancel.addEventListener('click', () => {
+  if(pendingSelect) pendingSelect.value='';
+  modal.classList.add('hidden');
+});
+
+modal.addEventListener('click', e => { if(e.target === modal) { modalCancel.click(); } });
+</script>
+</body>
+</html>

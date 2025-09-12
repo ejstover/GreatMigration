@@ -141,6 +141,17 @@ Access the rule builder at `http://localhost:8000/rules` to define how converted
 5. Click **Save** to persist your rules.
 
 
+### Hardware replacement rules
+
+Use the replacement rules editor at `http://localhost:8000/replacements` to map
+Cisco hardware models to their Juniper counterparts. The page pulls available
+models from the NetBox community device‑type library and saves your mappings to
+`backend/replacement_rules.json`. Use the **Add New** option at the top of each
+dropdown to enter custom hardware (such as SFPs) that isn't in the library.
+Start from `backend/replacement_rules.sample.json` and customize as needed; the
+real file is git‑ignored so local rules stay private.
+
+
 ### Command-line tools
 
 **convertciscotojson.py**
@@ -164,6 +175,17 @@ Useful options:
 **push_mist_port_config.py**
 
 Command-line version of the port-config builder/pusher. It accepts normalized JSON input and can test or apply to Mist switches. Use `--dry-run` to preview changes and `--exclude-interface` for each interface you want to skip; ranges such as `ge-0/0/1-3` are not supported. Refer to in-file comments for invocation patterns and rule customization.
+
+**translate_showtech.py**
+
+Parses a Cisco `show tech-support` text file to summarize hardware inventory and
+suggest Juniper replacement models. The script looks for `PID` lines in the
+`show inventory` section and maps them using `backend/device_map.json` (or the
+sample file if local overrides are not present).
+
+```bash
+python backend/translate_showtech.py docs/samples/showtech_sample.txt
+```
 
 ---
 

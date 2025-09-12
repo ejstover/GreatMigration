@@ -8,10 +8,29 @@
   <script>tailwind.config = { darkMode: 'media' };</script>
 </head>
 <body class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100" style="background-image: url('/static/logo.png'); background-position: center; background-repeat: no-repeat; background-size: 1500px;">
-  <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="fixed top-4 right-4 text-white/80 hover:text-white" aria-label="Help">
-    <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM10 5a3 3 0 00-3 3 .75.75 0 101.5 0A1.5 1.5 0 0110 6.5a1.5 1.5 0 011.5 1.5c0 .401-.08.558-.494.969-.458.451-1.168 1.15-1.168 2.531h1.5c0-.822.447-1.2.903-1.642.571-.56 1.009-1.078 1.009-1.858A3 3 0 0010 5zm0 8a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/></svg>
-  </a>
-  <div class="min-h-screen flex items-center justify-center p-6">
+  <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+    <div class="max-w-7xl mx-auto flex items-center gap-4 p-6">
+      <div class="relative">
+        <button id="menu_btn" class="p-2 rounded hover:bg-white/30" aria-label="Menu">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
+        </button>
+        <div id="menu" class="hidden absolute left-0 mt-2 w-56 bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100 rounded shadow-lg">
+          <a href="/" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Config Conversion</a>
+          <a href="/showtech" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Show Tech Upload</a>
+          <a href="/rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Port Profile rules</a>
+          <a href="/replacements" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Hardware replacement rules</a>
+          <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Help</a>
+          <a id="login_link" href="/login" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log in</a>
+          <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
+        </div>
+      </div>
+      <div class="flex items-center gap-4">
+        <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
+        <h1 class="text-3xl font-bold">Sign in</h1>
+      </div>
+    </div>
+  </header>
+  <div class="flex items-center justify-center p-6">
     <div class="w-full max-w-md bg-white dark:bg-slate-800 rounded-2xl shadow p-6">
       <h1 class="text-xl font-semibold mb-1">Sign in</h1>
       <p class="text-sm text-slate-600 dark:text-slate-300 mb-4">
@@ -44,5 +63,22 @@
       </p>
     </div>
   </div>
+  <script>
+    const menuBtn = document.getElementById('menu_btn');
+    const menu = document.getElementById('menu');
+    menuBtn.addEventListener('click', () => menu.classList.toggle('hidden'));
+    document.addEventListener('click', e => { if (!menu.contains(e.target) && !menuBtn.contains(e.target)) menu.classList.add('hidden'); });
+
+    const loginLink = document.getElementById('login_link');
+    const logoutBtn = document.getElementById('logout_btn');
+    fetch('/me').then(res => {
+      if (!res.ok) throw new Error('not authed');
+      return res.json();
+    }).then(() => {
+      loginLink?.classList.add('hidden');
+      logoutBtn?.classList.remove('hidden');
+      logoutBtn?.addEventListener('click', (e) => { e.preventDefault(); window.location.href = '/logout'; });
+    }).catch(() => { loginLink?.classList.remove('hidden'); });
+  </script>
 </body>
 </html>
