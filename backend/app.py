@@ -215,7 +215,8 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
                 line = f"  {item.get('pid')} x{item.get('count')} -> {item.get('replacement')}"
                 pdf.cell(0, 10, line, ln=True)
         pdf.ln(5)
-    pdf_bytes = pdf.output(dest="S").encode("latin1")
+    # fpdf2 returns a bytearray; convert it to bytes for the response
+    pdf_bytes = bytes(pdf.output())
     headers = {"Content-Disposition": "attachment; filename=showtech_report.pdf"}
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
