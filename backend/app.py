@@ -29,7 +29,11 @@ from push_mist_port_config import (  # type: ignore
     remap_ports,
     validate_port_config_against_model,
 )
-from translate_showtech import parse_showtech, load_mapping  # type: ignore
+from translate_showtech import (
+    parse_showtech,
+    load_mapping,
+    find_copper_10g_ports,
+)  # type: ignore
 from fpdf import FPDF
 
 APP_TITLE = "Switch Port Config Frontend"
@@ -184,6 +188,7 @@ async def api_showtech(files: List[UploadFile] = File(...)):
         for f in files:
             text = (await f.read()).decode("utf-8", errors="ignore")
             inventory = parse_showtech(text)
+            copper_ports = find_copper_10g_ports(text)
             switches = []
             for sw, items in inventory.items():
                 if sw.lower() == "global":
@@ -191,9 +196,18 @@ async def api_showtech(files: List[UploadFile] = File(...)):
                 sw_items = []
                 for pid, count in items.items():
                     replacement = mapping.get(pid, "no replacement model defined")
-                    sw_items.append({"pid": pid, "count": count, "replacement": replacement})
+                    sw_items.append(
+                        {"pid": pid, "count": count, "replacement": replacement}
+                    )
                 switches.append({"switch": sw, "items": sw_items})
-            results.append({"filename": f.filename, "switches": switches})
+            copper_total = sum(len(v) for v in copper_ports.values())
+            results.append(
+                {
+                    "filename": f.filename,
+                    "switches": switches,
+                    "copper_10g_ports": {**copper_ports, "total": copper_total},
+                }
+            )
         return {"ok": True, "results": results}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)

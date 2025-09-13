@@ -142,6 +142,12 @@
           s.appendChild(ul);
           wrap.appendChild(s);
         });
+        if(file.copper_10g_ports?.total){
+          const p = document.createElement('p');
+          p.className = 'mt-2 font-semibold';
+          p.textContent = `10G copper ports requiring SFPs: ${file.copper_10g_ports.total}`;
+          wrap.appendChild(p);
+        }
         results.appendChild(wrap);
       });
     }

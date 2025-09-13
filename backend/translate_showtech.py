@@ -172,8 +172,9 @@ def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
     SFP will be required during migration.
     """
 
-    ports: DefaultDict[str, List[str]] = defaultdict(list)
+    ports: DefaultDict[str, set[str]] = defaultdict(set)
     current_intf: str | None = None
+    current_speed_10g = False
 
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
@@ -193,22 +194,32 @@ def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
                     ):
                         m_sw = re.match(r"(?:Te|TenGigabitEthernet)(\d+)/", intf)
                         switch = f"Switch {m_sw.group(1)}" if m_sw else "global"
-                        ports[switch].append(intf)
-                        continue
+                        ports[switch].add(intf)
+                continue
             # Otherwise remember interface and examine following lines
             current_intf = intf
+            current_speed_10g = False
             continue
 
         if current_intf:
+            if re.search(r"10Gb/s|10000Mb/s", line, re.IGNORECASE):
+                current_speed_10g = True
             if re.search(r"media type is", line, re.IGNORECASE) and re.search(
                 r"10GBaseT(?:X)?", line, re.IGNORECASE
             ):
-                m_sw = re.match(r"(?:Te|TenGigabitEthernet)(\d+)/", current_intf)
-                switch = f"Switch {m_sw.group(1)}" if m_sw else "global"
-                ports[switch].append(current_intf)
+                if current_speed_10g or re.search(
+                    r"10Gb/s|10000Mb/s", line, re.IGNORECASE
+                ):
+                    m_sw = re.match(
+                        r"(?:Te|TenGigabitEthernet)(\d+)/",
+                        current_intf,
+                    )
+                    switch = f"Switch {m_sw.group(1)}" if m_sw else "global"
+                    ports[switch].add(current_intf)
                 current_intf = None
+                current_speed_10g = False
 
-    return ports
+    return {sw: sorted(list(p)) for sw, p in ports.items()}
 
 
 def build_report(
