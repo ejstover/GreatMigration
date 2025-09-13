@@ -228,6 +228,10 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
             for item in sw.get("items", []):
                 line = f"  {item.get('pid')} x{item.get('count')} -> {item.get('replacement')}"
                 pdf.cell(0, 10, line, ln=True)
+        copper_total = file.get("copper_10g_ports", {}).get("total")
+        if copper_total:
+            line = f"10Gb copper ports requiring SFPs (SFPP-10G-T): {copper_total}"
+            pdf.cell(0, 10, line, ln=True)
         pdf.ln(5)
     # fpdf2 returns a bytearray; convert it to bytes for the response
     pdf_bytes = bytes(pdf.output())
