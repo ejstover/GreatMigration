@@ -175,6 +175,7 @@ def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
     ports: DefaultDict[str, set[str]] = defaultdict(set)
     current_intf: str | None = None
     current_speed_10g = False
+    current_intf_up = False
 
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
@@ -199,13 +200,19 @@ def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
             # Otherwise remember interface and examine following lines
             current_intf = intf
             current_speed_10g = False
+            current_intf_up = bool(
+                re.search(r"is up", line, re.IGNORECASE)
+                and re.search(r"line protocol is up", line, re.IGNORECASE)
+            )
             continue
 
         if current_intf:
             if re.search(r"10Gb/s|10000Mb/s", line, re.IGNORECASE):
                 current_speed_10g = True
-            if re.search(r"media type is", line, re.IGNORECASE) and re.search(
-                r"10GBaseT(?:X)?", line, re.IGNORECASE
+            if (
+                current_intf_up
+                and re.search(r"media type is", line, re.IGNORECASE)
+                and re.search(r"10GBaseT(?:X)?", line, re.IGNORECASE)
             ):
                 if current_speed_10g or re.search(
                     r"10Gb/s|10000Mb/s", line, re.IGNORECASE
@@ -218,6 +225,7 @@ def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
                     ports[switch].add(current_intf)
                 current_intf = None
                 current_speed_10g = False
+                current_intf_up = False
 
     return {sw: sorted(list(p)) for sw, p in ports.items()}
 

@@ -26,6 +26,9 @@ def test_find_copper_10g_ports():
         "  Full-duplex, 10Gb/s, media type is 100/1000/2.5G/5G/10GBaseTX\n"
         "Te1/1/4 is up, line protocol is up\n"
         "  Full-duplex, 1000Mb/s, media type is 100/1000/2.5G/5G/10GBaseTX\n"
+        "Te1/1/5 is down, line protocol is down\n"
+        "  Full-duplex, 10Gb/s\n"
+        "  Media Type is 10GBaseT\n"
         "Te1/1/1 connected trunk a-full a-10G 10GBaseT\n"
         "Switch 2\n"
         "Te2/1/1 is up, line protocol is up\n"
@@ -37,6 +40,7 @@ def test_find_copper_10g_ports():
         "Switch 1": ["Te1/1/3", "TenGigabitEthernet1/1/1"],
         "Switch 2": ["Te2/1/1"],
     }
+    assert "Te1/1/5" not in ports.get("Switch 1", [])
 
 
 def test_build_report_totals():
@@ -59,6 +63,9 @@ def test_api_showtech_copper_ports():
         "  Full-duplex, 10Gb/s, media type is 100/1000/2.5G/5G/10GBaseTX\n"
         "Te1/1/4 is up, line protocol is up\n"
         "  Full-duplex, 1000Mb/s, media type is 100/1000/2.5G/5G/10GBaseTX\n"
+        "Te1/1/5 is down, line protocol is down\n"
+        "  Full-duplex, 10Gb/s\n"
+        "  Media Type is 10GBaseT\n"
         "Te1/1/1 connected trunk a-full a-10G 10GBaseT\n"
         "Switch 2\n"
         "Te2/1/1 is up, line protocol is up\n"
@@ -69,3 +76,4 @@ def test_api_showtech_copper_ports():
     data = asyncio.run(api_showtech([upload]))
     assert data["ok"]
     assert data["results"][0]["copper_10g_ports"]["total"] == 3
+    assert "Te1/1/5" not in data["results"][0]["copper_10g_ports"]["Switch 1"]
