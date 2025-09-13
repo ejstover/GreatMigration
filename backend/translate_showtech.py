@@ -219,6 +219,7 @@ def build_report(
     """Generate a human friendly report."""
 
     lines = []
+    total_copper_ports = sum(len(ports) for ports in copper_ports.values())
     for switch, items in inventory.items():
         if switch.lower() == "global":
             continue
@@ -235,6 +236,10 @@ def build_report(
             for port in sorted(copper_ports[switch]):
                 lines.append(f"    {port}")
         lines.append("")
+    if total_copper_ports:
+        lines.append(
+            f"Additional needed 10Gb copper SFP for EX4650: {total_copper_ports}"
+        )
     return "\n".join(lines)
 
 
