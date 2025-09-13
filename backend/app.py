@@ -58,7 +58,10 @@ README_URL = "https://github.com/jacob-hopkins/GreatMigration#readme"
 HELP_URL = os.getenv("HELP_URL", README_URL)
 RULES_PATH = Path(__file__).resolve().parent / "port_rules.json"
 REPLACEMENTS_PATH = Path(__file__).resolve().parent / "replacement_rules.json"
-NETBOX_DT_URL = "https://api.github.com/repos/netbox-community/devicetype-library/contents/device-types"
+NETBOX_DT_URL = os.getenv(
+    "NETBOX_DT_URL",
+    "https://api.github.com/repos/netbox-community/devicetype-library/contents/device-types",
+).strip()
 NETBOX_LOCAL_DT = (os.getenv("NETBOX_LOCAL_DT") or "").strip()
 SWITCH_TEMPLATE_ID = (os.getenv("SWITCH_TEMPLATE_ID") or "").strip()
 DEFAULT_ORG_ID = (os.getenv("MIST_ORG_ID") or "").strip()

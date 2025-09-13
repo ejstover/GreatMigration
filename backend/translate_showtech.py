@@ -173,32 +173,40 @@ def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
     """
 
     ports: DefaultDict[str, List[str]] = defaultdict(list)
+    current_intf: str | None = None
 
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
 
-        # Look for interface status table rows such as:
-        # ``Te1/0/43  desc  connected  trunk  a-full  a-10G  100/1000/2.5G/5G/10GBaseTX``
+        # Match interface identifiers at the start of a line
         m_intf = re.match(r"^(?P<intf>(?:Te|TenGigabitEthernet)\S+)", line)
-        if not m_intf:
-            continue
-        if not re.search(r"\bconnected\b", line):
+        if m_intf:
+            intf = m_intf.group("intf")
+            # Handle compact ``show interface status`` style rows
+            if re.search(r"\bconnected\b", line):
+                parts = line.split()
+                if len(parts) >= 7:
+                    speed = parts[-2]
+                    media = parts[-1]
+                    if re.search(r"10G", speed, re.IGNORECASE) and re.search(
+                        r"10GBaseT(?:X)?", media, re.IGNORECASE
+                    ):
+                        m_sw = re.match(r"(?:Te|TenGigabitEthernet)(\d+)/", intf)
+                        switch = f"Switch {m_sw.group(1)}" if m_sw else "global"
+                        ports[switch].append(intf)
+                        continue
+            # Otherwise remember interface and examine following lines
+            current_intf = intf
             continue
 
-        parts = line.split()
-        if len(parts) < 7:
-            continue
-        speed = parts[-2]
-        media = parts[-1]
-        if not re.search(r"10G", speed, re.IGNORECASE):
-            continue
-        if not re.search(r"10GBaseT(?:X)?", media, re.IGNORECASE):
-            continue
-
-        intf = m_intf.group("intf")
-        m_sw = re.match(r"(?:Te|TenGigabitEthernet)(\d+)/", intf)
-        switch = f"Switch {m_sw.group(1)}" if m_sw else "global"
-        ports[switch].append(intf)
+        if current_intf:
+            if re.search(r"media type is", line, re.IGNORECASE) and re.search(
+                r"10GBaseT(?:X)?", line, re.IGNORECASE
+            ):
+                m_sw = re.match(r"(?:Te|TenGigabitEthernet)(\d+)/", current_intf)
+                switch = f"Switch {m_sw.group(1)}" if m_sw else "global"
+                ports[switch].append(current_intf)
+                current_intf = None
 
     return ports
 
