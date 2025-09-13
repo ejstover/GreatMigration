@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Show Tech Translator</title>
+  <title>Hardware Conversion</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'media' };</script>
   <style>
@@ -20,7 +20,7 @@
         </button>
         <div id="menu" class="hidden absolute left-0 mt-2 w-56 bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100 rounded shadow-lg">
           <a href="/" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Config Conversion</a>
-          <a href="/showtech" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Show Tech Upload</a>
+          <a href="/hardware" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Hardware Conversion</a>
           <a href="/rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Port Profile rules</a>
           <a href="/replacements" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Hardware replacement rules</a>
           <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Help</a>
@@ -31,7 +31,7 @@
       <div class="flex items-center gap-4">
         <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
         <div>
-          <h1 class="text-3xl font-bold">Show Tech Translator</h1>
+          <h1 class="text-3xl font-bold">Hardware Conversion</h1>
           <p class="text-slate-100 text-sm md:text-base">Upload Cisco show tech files and map to Juniper replacements</p>
         </div>
       </div>
@@ -163,7 +163,7 @@
         .then(blob => {
           const url = window.URL.createObjectURL(blob);
           const a = document.createElement('a');
-          a.href = url; a.download = 'showtech_report.pdf';
+          a.href = url; a.download = 'hardware_conversion_report.pdf';
           document.body.appendChild(a); a.click(); a.remove();
           window.URL.revokeObjectURL(url);
         });

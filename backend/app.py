@@ -121,9 +121,9 @@ def replacements_page():
     return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
 
 
-@app.get("/showtech", response_class=HTMLResponse)
-def showtech_page():
-    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "showtech.html"
+@app.get("/hardware", response_class=HTMLResponse)
+def hardware_page():
+    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "hardware.html"
     tpl = tpl_path.read_text(encoding="utf-8")
     return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
 
@@ -235,7 +235,7 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
         pdf.ln(5)
     # fpdf2 returns a bytearray; convert it to bytes for the response
     pdf_bytes = bytes(pdf.output())
-    headers = {"Content-Disposition": "attachment; filename=showtech_report.pdf"}
+    headers = {"Content-Disposition": "attachment; filename=hardware_conversion_report.pdf"}
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 
