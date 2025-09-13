@@ -157,10 +157,11 @@ tech-support` inventories.
 
 ### Device Type Customization
 
-By default, the app lists device types from the NetBox community library. You can
-also merge in your own models by pointing the `NETBOX_LOCAL_DT` environment
-variable at a JSON file. The file should map vendor names to a list of device
-type names:
+By default, the app lists device types from the NetBox community library
+referenced by the `NETBOX_DT_URL` environment variable. You can override this
+URL if you maintain your own device type repository. You can also merge in your
+own models by pointing the `NETBOX_LOCAL_DT` environment variable at a JSON
+file. The file should map vendor names to a list of device type names:
 
 ```json
 {
