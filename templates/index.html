@@ -181,7 +181,7 @@
 
     // --- Data ---
     let convertedItems = []; // [{ source_file, output_file, json }]
-    let rows = []; // [{ idx, site_id, device_id, excludes, member_offset, port_offset, model_override?, userChangedSite? }]
+    let rows = []; // [{ idx, site_id, device_id, excludes, exclude_uplinks, member_offset, port_offset, model_override?, userChangedSite? }]
     let seenFiles = new Set(); // dedupe chooser/dnd
     let sitesCache = []; // list of sites
     const devicesBySite = new Map(); // site_id -> devices[]
@@ -291,6 +291,7 @@
           site_id: defaultSite || '',
           device_id: '',
           excludes: '',
+          exclude_uplinks: true,
           member_offset: 0,
           port_offset: 0,
           model_override: '',
@@ -397,8 +398,12 @@
                 <span class="inline-flex items-center gap-1">Exclude interfaces
                   <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
                 </span>
-                <span class="tip">Skip specific interfaces from being pushed (e.g., uplinks or special ports). Use full Juniper names, comma-separated. Example: <code>ge-0/2/0, ge-0/2/1</code>.</span>
+                <span class="tip">Skip specific interfaces from being pushed (e.g., uplinks or special ports). Use full Juniper names, comma-separated. Ranges like <code>xe-0/2/[0-3]</code> are supported.</span>
               </label>
+              <div class="flex items-center gap-2 mb-1">
+                <input data-rowsel="exclude_uplinks" data-row="${i}" type="checkbox" class="w-4 h-4" ${row.exclude_uplinks ? 'checked' : ''} />
+                <span class="text-sm">Exclude uplinks</span>
+              </div>
               <input data-rowsel="excludes" data-row="${i}" type="text" placeholder="ge-0/2/0, xe-0/2/1" value="${escapeHtml(row.excludes)}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" />
             </div>
 
@@ -459,6 +464,12 @@
         inp.addEventListener('input', () => {
           const i = parseInt(inp.getAttribute('data-row'));
           rows[i].excludes = inp.value || '';
+        });
+      });
+      batchRows.querySelectorAll('input[data-rowsel="exclude_uplinks"]').forEach(inp => {
+        inp.addEventListener('change', () => {
+          const i = parseInt(inp.getAttribute('data-row'));
+          rows[i].exclude_uplinks = inp.checked;
         });
       });
       batchRows.querySelectorAll('button[data-rowremove]').forEach(btn => {
@@ -573,6 +584,7 @@
         device_id: r.device_id,
         input_json: convertedItems[r.idx].json,
         excludes: r.excludes,
+        exclude_uplinks: r.exclude_uplinks,
         member_offset: r.member_offset,
         port_offset: r.port_offset,
         model_override: r.model_override || ''

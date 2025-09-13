@@ -1,6 +1,7 @@
 import os
 import json
 import tempfile
+import re
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
@@ -542,6 +543,7 @@ def _build_payload_for_row(
     payload_in: Dict[str, Any],
     model_override: Optional[str],
     excludes: Optional[str],
+    exclude_uplinks: bool,
     member_offset: int,
     port_offset: int,
     normalize_modules: bool,
@@ -549,7 +551,8 @@ def _build_payload_for_row(
 ) -> Dict[str, Any]:
     """
     Shared logic used by both /api/push and /api/push_batch for a single row.
-    Returns a dict with keys: ok, payload, validation, device_model, (and for live push: status/response)
+    Returns a dict with keys: ok, payload, validation, device_model,
+    (and for live push: status/response)
     """
     # Resolve model
     model = model_override or get_device_model(base_url, site_id, device_id, token)
@@ -562,7 +565,26 @@ def _build_payload_for_row(
     port_config = remap_ports(port_config, port_offset=int(port_offset or 0), model=model)
 
     # Apply excludes AFTER remap
-    exclude_set = set([e.strip() for e in (excludes or "").split(",") if e.strip()])
+
+    def _expand_if_range(val: str) -> List[str]:
+        m = re.search(r"\[(\d+)-(\d+)\]", val)
+        if not m:
+            return [val]
+        start, end = int(m.group(1)), int(m.group(2))
+        prefix = val[: m.start()]
+        suffix = val[m.end():]
+        rng = range(start, end + 1) if start <= end else range(end, start + 1)
+        return [f"{prefix}{i}{suffix}" for i in rng]
+
+    exclude_set: set[str] = set()
+    for tok in [e.strip() for e in (excludes or "").split(",") if e.strip()]:
+        exclude_set.update(_expand_if_range(tok))
+
+    if exclude_uplinks:
+        for mbr in range(10):
+            for p in range(4):
+                exclude_set.add(f"xe-{mbr}/2/{p}")
+
     if exclude_set:
         port_config = {k: v for k, v in port_config.items() if k not in exclude_set}
 
@@ -671,7 +693,7 @@ async def api_push_batch(
 ) -> JSONResponse:
     """
     Batch push. Each row can specify: site_id, device_id, input_json (object),
-    excludes (str), member_offset (int), port_offset (int), model_override (str, optional).
+    excludes (str), exclude_uplinks (bool), member_offset (int), port_offset (int), model_override (str, optional).
     Returns per-row results with payload + validation, and never aborts the whole batch.
 
     NOTE: Duplicate devices ARE allowed as long as (device_id, member_offset, port_offset) triples are unique.
@@ -704,6 +726,7 @@ async def api_push_batch(
             device_id = (r.get("device_id") or "").strip()
             payload_in = r.get("input_json")
             excludes = r.get("excludes") or ""
+            exclude_uplinks = bool(r.get("exclude_uplinks"))
             member_offset = int(r.get("member_offset") or 0)
             port_offset = int(r.get("port_offset") or 0)
             row_model_override = r.get("model_override") or model_override
@@ -731,7 +754,8 @@ async def api_push_batch(
                 base_url=base_url, tz=tz, token=token,
                 site_id=site_id, device_id=device_id,
                 payload_in=payload_in, model_override=row_model_override,
-                excludes=excludes, member_offset=member_offset, port_offset=port_offset, normalize_modules=normalize_modules,
+                excludes=excludes, exclude_uplinks=exclude_uplinks,
+                member_offset=member_offset, port_offset=port_offset, normalize_modules=normalize_modules,
                 dry_run=dry_run,
             )
             row_result["row_index"] = i
