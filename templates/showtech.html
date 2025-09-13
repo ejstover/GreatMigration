@@ -145,7 +145,7 @@
         if(file.copper_10g_ports?.total){
           const p = document.createElement('p');
           p.className = 'mt-2 font-semibold';
-          p.textContent = `10G copper ports requiring SFPs: ${file.copper_10g_ports.total}`;
+          p.textContent = `10Gb copper ports requiring SFPs (SFPP-10G-T): ${file.copper_10g_ports.total}`;
           wrap.appendChild(p);
         }
         results.appendChild(wrap);
