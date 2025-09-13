@@ -6,31 +6,30 @@
   <title>Sign in</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'media' };</script>
-</head>
-<body class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100" style="background-image: url('/static/logo.png'); background-position: center; background-repeat: no-repeat; background-size: 1500px;">
-  <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
-    <div class="max-w-7xl mx-auto flex items-center gap-4 p-6">
-      <div class="relative">
+  </head>
+  <body class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100 overflow-x-hidden" style="background-image: url('/static/logo.png'); background-position: center; background-repeat: no-repeat; background-size: 1500px;">
+    <nav id="menu" class="fixed inset-y-0 left-0 w-64 bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100 transform -translate-x-full transition-transform duration-300 z-50 shadow-lg p-4 space-y-2">
+      <p id="user_greeting" class="hidden px-4 py-2 font-semibold"></p>
+      <a href="/hardware" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Hardware Conversion</a>
+      <a href="/replacements" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Hardware replacement rules</a>
+      <a href="/" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Config Conversion</a>
+      <a href="/rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Port Profile rules</a>
+      <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Help</a>
+      <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
+    </nav>
+    <div id="main" class="transition-all duration-300">
+    <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+      <div class="max-w-7xl mx-auto flex items-center gap-4 p-6">
         <button id="menu_btn" class="p-2 rounded hover:bg-white/30" aria-label="Menu">
           <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
-        <div id="menu" class="hidden absolute left-0 mt-2 w-56 bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100 rounded shadow-lg">
-          <a href="/" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Config Conversion</a>
-          <a href="/hardware" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Hardware Conversion</a>
-          <a href="/rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Port Profile rules</a>
-          <a href="/replacements" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Hardware replacement rules</a>
-          <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Help</a>
-          <a id="login_link" href="/login" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log in</a>
-          <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
+        <div class="flex items-center gap-4">
+          <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
+          <h1 class="text-3xl font-bold">Sign in</h1>
         </div>
       </div>
-      <div class="flex items-center gap-4">
-        <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
-        <h1 class="text-3xl font-bold">Sign in</h1>
-      </div>
-    </div>
-  </header>
-  <div class="flex items-center justify-center p-6">
+    </header>
+    <div class="flex items-center justify-center p-6">
     <div class="w-full max-w-md bg-white dark:bg-slate-800 rounded-2xl shadow p-6">
       <h1 class="text-xl font-semibold mb-1">Sign in</h1>
       <p class="text-sm text-slate-600 dark:text-slate-300 mb-4">
@@ -62,23 +61,34 @@
         Mode: <span class="font-mono">{{ auth_mode }}</span>
       </p>
     </div>
-  </div>
-  <script>
-    const menuBtn = document.getElementById('menu_btn');
-    const menu = document.getElementById('menu');
-    menuBtn.addEventListener('click', () => menu.classList.toggle('hidden'));
-    document.addEventListener('click', e => { if (!menu.contains(e.target) && !menuBtn.contains(e.target)) menu.classList.add('hidden'); });
+    </div>
+    </div>
+    <script>
+      const menuBtn = document.getElementById('menu_btn');
+      const menu = document.getElementById('menu');
+      const main = document.getElementById('main');
+      menuBtn.addEventListener('click', () => {
+        menu.classList.toggle('-translate-x-full');
+        main.classList.toggle('ml-64');
+      });
+      document.addEventListener('click', e => {
+        if (!menu.contains(e.target) && !menuBtn.contains(e.target)) {
+          menu.classList.add('-translate-x-full');
+          main.classList.remove('ml-64');
+        }
+      });
 
-    const loginLink = document.getElementById('login_link');
+    const userGreeting = document.getElementById('user_greeting');
     const logoutBtn = document.getElementById('logout_btn');
     fetch('/me').then(res => {
       if (!res.ok) throw new Error('not authed');
       return res.json();
-    }).then(() => {
-      loginLink?.classList.add('hidden');
+    }).then(data => {
+      userGreeting.textContent = `Hey ${data.user.name}!`;
+      userGreeting.classList.remove('hidden');
       logoutBtn?.classList.remove('hidden');
       logoutBtn?.addEventListener('click', (e) => { e.preventDefault(); window.location.href = '/logout'; });
-    }).catch(() => { loginLink?.classList.remove('hidden'); });
+    }).catch(() => { /* unauthenticated */ });
   </script>
 </body>
 </html>
