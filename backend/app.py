@@ -41,6 +41,65 @@ APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
 DEFAULT_TZ = "America/New_York"
 
+TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+
+PAGE_COPY: dict[str, dict[str, str]] = {
+    "config": {
+        "title": "Config Conversion",
+        "tagline": "Upload Cisco configs → map rows → batch test/push to Mist",
+    },
+    "hardware": {
+        "title": "Hardware Conversion",
+        "tagline": "Upload Cisco show tech files and map to Juniper replacements",
+    },
+    "replacements": {
+        "title": "Hardware Replacement Rules",
+        "tagline": "Map Cisco models to Juniper replacements",
+    },
+    "rules": {
+        "title": "Port Profile Rules",
+        "tagline": "Create and reorder port mapping rules",
+    },
+}
+
+NAV_LINK_KEYS = ("hardware", "replacements", "config", "rules")
+
+
+def _page_label(key: str) -> str:
+    data = PAGE_COPY.get(key, {})
+    return data.get("menu_label") or data.get("title") or ""
+
+
+def _render_page(template_name: str, page_key: str) -> HTMLResponse:
+    tpl_path = TEMPLATES_DIR / template_name
+    html = tpl_path.read_text(encoding="utf-8")
+    page_data = PAGE_COPY.get(page_key, {})
+    doc_title = page_data.get("doc_title")
+    if not doc_title:
+        base_title = page_data.get("title")
+        if base_title and base_title != APP_TITLE:
+            doc_title = f"{base_title} • {APP_TITLE}"
+        else:
+            doc_title = APP_TITLE
+    banner_title = page_data.get("banner_title") or page_data.get("title") or APP_TITLE
+    tagline = page_data.get("tagline", "")
+
+    replacements = {
+        "{{HELP_URL}}": HELP_URL,
+        "{{DOC_TITLE}}": doc_title,
+        "{{BANNER_TITLE}}": banner_title,
+        "{{BANNER_TAGLINE}}": tagline,
+    }
+
+    for key in NAV_LINK_KEYS:
+        replacements[f"{{{{NAV_{key.upper()}}}}}"] = _page_label(key)
+
+    for placeholder, value in replacements.items():
+        html = html.replace(placeholder, value)
+
+    return HTMLResponse(html)
+
+
 app = FastAPI(title=APP_TITLE)
 
 app.add_middleware(
@@ -103,30 +162,22 @@ else:
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "index.html"
-    tpl = tpl_path.read_text(encoding="utf-8")
-    return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
+    return _render_page("index.html", "config")
 
 
 @app.get("/rules", response_class=HTMLResponse)
 def rules_page():
-    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "rules.html"
-    tpl = tpl_path.read_text(encoding="utf-8")
-    return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
+    return _render_page("rules.html", "rules")
 
 
 @app.get("/replacements", response_class=HTMLResponse)
 def replacements_page():
-    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "hardwarereplacementrules.html"
-    tpl = tpl_path.read_text(encoding="utf-8")
-    return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
+    return _render_page("hardwarereplacementrules.html", "replacements")
 
 
 @app.get("/hardware", response_class=HTMLResponse)
 def hardware_page():
-    tpl_path = Path(__file__).resolve().parent.parent / "templates" / "hardware.html"
-    tpl = tpl_path.read_text(encoding="utf-8")
-    return HTMLResponse(tpl.replace("{{HELP_URL}}", HELP_URL))
+    return _render_page("hardware.html", "hardware")
 
 
 def _load_mist_token() -> str:
