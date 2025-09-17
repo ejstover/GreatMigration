@@ -59,7 +59,7 @@ services:
 
 ## Hardware Conversion
 
-This page parses Cisco `show tech-support` files and lists Juniper replacements.
+This page parses Cisco `show tech-support` files and lists user specified Juniper or other OEM replacement models. 
 
 1. **File area** – drag text files into the drop zone or click **Choose files** to open the hidden file selector.
 2. **Clear** – removes all uploaded results.
@@ -102,7 +102,7 @@ Results include per‑row payloads, validation warnings, and (for live pushes) t
 
 ## Port Profile Rules
 
-Define how converted interfaces map to Mist port profiles.
+Define how converted interfaces map to Mist port profiles. First match wins.
 
 * **Add Rule** – appends a new rule.
 * **Name** – text box naming the rule.
@@ -112,5 +112,4 @@ Define how converted interfaces map to Mist port profiles.
 * **Save** – persists the rule set.
 * **Cancel** – returns to the main page without saving.
 
-These sections cover every textbox and checkbox present in the interface so users can quickly understand how to operate each page.
 
