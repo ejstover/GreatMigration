@@ -31,7 +31,7 @@ For later runs after the repository is cloned, simply execute the quick start sc
 python3 quickstart.py
 ```
 
-The script prompts for a Mist token and API port, stores them in `backend/.env`, installs dependencies, and launches the API.  Use `--no-start` to perform setup without starting the server.
+The script prompts for a Mist token, Mist Org ID (Optional), Switch Template ID (Optional), Web interface port (default 8000), authentication type (local or LDAP), Local username/password (if local auth) and stores them in `backend/.env`, installs dependencies, and launches the API.  Use `--no-start` to perform setup without starting the server.
 
 > **Note:** Each run of `quickstart.py` fetches and rebases onto the latest commits from the `main` branch (or the branch provided via `--branch`).  If you need to stay on a pinned revision or have local changes you don't want updated, follow the manual setup steps below and start the server yourself with `uvicorn app:app --app-dir backend --reload` (or your preferred launch command).
 
@@ -43,8 +43,8 @@ The script prompts for a Mist token and API port, stores them in `backend/.env`,
    * `MIST_TOKEN` – Mist API token
    * `SESSION_SECRET` – random string for signing session cookies
    * `AUTH_METHOD` – `local` (default) or `ldap`
-   * For **local** auth: set `LOCAL_USERS` with comma‑separated `user:pass` pairs and optional `LOCAL_PUSH_USERS` for accounts allowed to push to Mist
-   * For **LDAP** auth: uncomment `AUTH_METHOD=ldap` and configure `LDAP_SERVER_URL`, `LDAP_SEARCH_BASE`, `LDAP_BIND_TEMPLATE`, `PUSH_GROUP_DN`, `LDAP_SERVICE_DN`, and `LDAP_SERVICE_PASSWORD`
+   * For **local** auth: set `LOCAL_USERS` with comma‑separated `user:pass` pairs and optional `LOCAL_PUSH_USERS` for accounts allowed to push to Mist [Local Login Screen](screenshots/local.png)
+   * For **LDAP** auth: uncomment `AUTH_METHOD=ldap` and configure `LDAP_SERVER_URL`, `LDAP_SEARCH_BASE`, `LDAP_BIND_TEMPLATE`, `PUSH_GROUP_DN`, `LDAP_SERVICE_DN`, and `LDAP_SERVICE_PASSWORD` [LDAP Login Screen](screenshots/ldap.png)
    * Optional defaults: `MIST_BASE_URL`, `MIST_ORG_ID`, `SWITCH_TEMPLATE_ID`, `HELP_URL`
    * Device type sources: `NETBOX_DT_URL` (community library) and `NETBOX_LOCAL_DT` for additional models
 4. (Optional) copy `backend/port_rules.sample.json` to `backend/port_rules.json` to maintain custom port mappings outside version control
