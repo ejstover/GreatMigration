@@ -4,6 +4,10 @@
 
 GreatMigration is a suite network automation tools to help teams move quickly to Juniper Mist. It was inspired by [Switch Configuration Converter](https://github.com/Mist-Automation-Programmability/mist_switch_converter). The major difference being this project creates a JSON paylod to configure indvidual ports vs. creating a template per switch. It works well for teams that are focused on deploying a single switch template. Currently the suite include hardware conversion and configuration conversion. Both tools are rule based conversion utilites that evaluate inputs and produce outputs that teams can use manually or push via the API. 
 
+![Port Profile Rules](screenshots/rules.png?raw=true "Port Profile Rules")
+![Test Mode](screenshots/test.png?raw=true "Test Mode")
+![API Push](screenshots/push.png?raw=true "API Push")
+
 ## Setup
 
 ### Prerequisites
