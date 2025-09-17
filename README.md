@@ -42,6 +42,21 @@ The script prompts for a Mist token and API port, stores them in `backend/.env`,
 4. (Optional) copy `backend/port_rules.sample.json` to `backend/port_rules.json` to maintain custom port mappings outside version control
 5. Start the server with `uvicorn app:app --app-dir backend --reload`
 
+### Firewall rules
+
+If the host running GreatMigration sits behind a restrictive firewall, allow the
+following flows so the application and its dependencies can reach external
+services:
+
+| Direction | Protocol/Port | Destination | Purpose |
+|-----------|---------------|-------------|---------|
+| Inbound   | TCP `API_PORT` (8000 by default) | Admin workstation network | Reach the FastAPI UI. Adjust the port if you change `API_PORT` in `backend/.env`. |
+| Outbound  | TCP 443 | `api.ac2.mist.com` (or your regional Mist API endpoint) | Interact with the Mist cloud. |
+| Outbound  | TCP 443 | `api.github.com` (or custom NetBox device type source) | Download device type definitions referenced by `NETBOX_DT_URL`. |
+| Outbound† | TCP 389 / 636 | Your LDAP/Active Directory servers | Required only when `AUTH_METHOD=ldap`. |
+
+†Use the secure port specified in `LDAP_SERVER_URL` (e.g., 636 for LDAPS).
+
 ## Hardware Conversion
 
 This page parses Cisco `show tech-support` files and lists Juniper replacements.
