@@ -2,7 +2,7 @@
 
 ## Overview
 
-GreatMigration helps move Cisco switch configurations into the Juniper Mist cloud.  It converts legacy configs, maps hardware and port profiles, and can test or push the resulting payloads.  The interface is split into dedicated pages so each task is focused and easy to repeat.
+GreatMigration is a suite network automation tools to help teams move quickly to Juniper Mist. It was inspired by [Switch Configuration Converter](https://github.com/Mist-Automation-Programmability/mist_switch_converter). The major difference being this project creates a JSON paylod to configure indvidual ports vs. creating a template per switch. It works well for teams that are focused on deploying a single switch template. Currently the suite include hardware conversion and configuration conversion. Both tools are rule based conversion utilites that evaluate inputs and produce outputs that teams can use manually or push via the API. 
 
 ## Setup
 
@@ -11,7 +11,7 @@ GreatMigration helps move Cisco switch configurations into the Juniper Mist clou
 * Python 3.9+
 * `python3-venv` package (Linux) for virtual environments
 * Git and pip
-* Mist API token with rights to read and modify switches
+* Mist API token with rights to read (to populate drop downs) and modify (optional, only necessary if you push changes) switches
 
 ### Quick start
 
