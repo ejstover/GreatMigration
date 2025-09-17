@@ -20,16 +20,20 @@ GreatMigration is a suite network automation tools to help teams move quickly to
 ### Quick start
 
 ```bash
-python3 quickstart.py --repo https://github.com/ejstover/GreatMigration.git --dir ./GreatMigration --branch main
+git clone -b main https://github.com/ejstover/GreatMigration.git ./GreatMigration
+cd ./GreatMigration
+python3 quickstart.py
 ```
 
-Subsequent runs only need the directory:
+For later runs after the repository is cloned, simply execute the quick start script from the project directory:
 
 ```bash
-python3 quickstart.py --dir ./GreatMigration
+python3 quickstart.py
 ```
 
 The script prompts for a Mist token and API port, stores them in `backend/.env`, installs dependencies, and launches the API.  Use `--no-start` to perform setup without starting the server.
+
+> **Note:** Each run of `quickstart.py` fetches and rebases onto the latest commits from the `main` branch (or the branch provided via `--branch`).  If you need to stay on a pinned revision or have local changes you don't want updated, follow the manual setup steps below and start the server yourself with `uvicorn app:app --app-dir backend --reload` (or your preferred launch command).
 
 ### Manual setup
 
