@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import getpass
 import re
+import time
 from typing import Iterable, Optional
 
 try:  # pragma: no cover - import guard for optional dependency
@@ -55,44 +56,258 @@ def run_ssh_command(
             "paramiko is required to run SSH commands. Install paramiko to enable remote collection."
         ) from _PARAMIKO_IMPORT_ERROR
 
+    primary_exc: Optional[Exception] = None
+
+    client = _connect_ssh_client(host, username, password, timeout)
+    try:
+        try:
+            return _run_command_via_exec(client, host, command, timeout)
+        except (paramiko.SSHException, EOFError, OSError) as exc:
+            primary_exc = exc
+    finally:
+        _safe_close(client)
+
+    if primary_exc is None:
+        # Unreachable, but keeps mypy/pyright satisfied.
+        raise SSHCommandError(f"{host}: failed to execute '{command}'")
+
+    client = _connect_ssh_client(host, username, password, timeout)
+    try:
+        return _run_command_via_shell(client, host, command, timeout)
+    except Exception as fallback_exc:
+        raise primary_exc from fallback_exc
+    finally:
+        _safe_close(client)
+
+
+def _connect_ssh_client(
+    host: str, username: str, password: str, timeout: float
+) -> "paramiko.SSHClient":
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(
+        hostname=host,
+        username=username,
+        password=password,
+        look_for_keys=False,
+        allow_agent=False,
+        timeout=timeout,
+        banner_timeout=timeout,
+        auth_timeout=timeout,
+    )
+    return client
+
+
+def _safe_close(client: "paramiko.SSHClient") -> None:
     try:
-        client.connect(
-            hostname=host,
-            username=username,
-            password=password,
-            look_for_keys=False,
-            allow_agent=False,
-            timeout=timeout,
-            banner_timeout=timeout,
-        )
-        try:
-            _, stdout, _ = client.exec_command("terminal length 0", timeout=timeout, get_pty=True)
-            stdout.channel.recv_exit_status()
-        except Exception:
-            pass
-        stdin, stdout, stderr = client.exec_command(command, timeout=timeout, get_pty=True)
+        client.close()
+    except Exception:
+        pass
+
+
+def _run_command_via_exec(
+    client: "paramiko.SSHClient",
+    host: str,
+    command: str,
+    timeout: float,
+) -> str:
+    try:
+        _, stdout, _ = client.exec_command("terminal length 0", timeout=timeout, get_pty=True)
+        stdout.channel.recv_exit_status()
+    except Exception:
+        pass
+
+    stdin, stdout, stderr = client.exec_command(command, timeout=timeout, get_pty=True)
+    try:
         output = stdout.read().decode(errors="ignore")
         error = stderr.read().decode(errors="ignore")
-        exit_status = stdout.channel.recv_exit_status()
-        if exit_status != 0:
-            raise SSHCommandError(
-                f"{host}: command '{command}' failed with exit status {exit_status}: {error.strip() or 'no stderr'}"
-            )
-        output = output.replace("\r\n", "\n")
-        if not output.strip():
-            if error.strip():
-                raise SSHCommandError(
-                    f"{host}: no output received for '{command}': {error.strip()}"
-                )
-            raise SSHCommandError(f"{host}: no output received for '{command}'")
-        return output
     finally:
         try:
-            client.close()
+            stdin.close()
         except Exception:
             pass
+
+    exit_status = stdout.channel.recv_exit_status()
+    if exit_status != 0:
+        raise SSHCommandError(
+            f"{host}: command '{command}' failed with exit status {exit_status}: {error.strip() or 'no stderr'}"
+        )
+
+    output = _normalize_newlines(output)
+    if not output.strip():
+        if error.strip():
+            raise SSHCommandError(f"{host}: no output received for '{command}': {error.strip()}")
+        raise SSHCommandError(f"{host}: no output received for '{command}'")
+
+    return output
+
+
+def _run_command_via_shell(
+    client: "paramiko.SSHClient",
+    host: str,
+    command: str,
+    timeout: float,
+) -> str:
+    channel = client.invoke_shell()
+    channel.settimeout(timeout)
+    try:
+        prompt = _establish_prompt(channel, host, timeout)
+        _send_and_discard(channel, host, "terminal length 0", prompt, timeout)
+        raw_output = _send_and_capture(channel, host, command, prompt, timeout)
+    finally:
+        try:
+            channel.close()
+        except Exception:
+            pass
+
+    output = _extract_command_output(raw_output, host, command, prompt)
+    if not output.strip():
+        raise SSHCommandError(f"{host}: no output received for '{command}'")
+
+    return output
+
+
+def _establish_prompt(
+    channel: "paramiko.Channel", host: str, timeout: float
+) -> str:
+    """Return the detected device prompt for the interactive session."""
+
+    end_time = time.monotonic() + timeout
+    buffer = ""
+    channel.send("\n")
+
+    while time.monotonic() < end_time:
+        if channel.recv_ready():
+            data = channel.recv(65535)
+            if not data:
+                continue
+            buffer += data.decode(errors="ignore")
+            prompt = _detect_prompt(buffer)
+            if prompt:
+                return prompt
+        else:
+            prompt = _detect_prompt(buffer)
+            if prompt:
+                return prompt
+            time.sleep(0.1)
+            channel.send("\n")
+
+    raise SSHCommandError(f"{host}: timed out waiting for device prompt")
+
+
+_PROMPT_SUFFIXES = ("#", ">", "]", "$")
+
+
+def _detect_prompt(buffer: str) -> Optional[str]:
+    normalized = _normalize_newlines(buffer)
+    lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+    if not lines:
+        return None
+
+    for line in reversed(lines):
+        for suffix in _PROMPT_SUFFIXES:
+            if line.endswith(suffix):
+                return line
+
+    return lines[-1]
+
+
+def _send_and_discard(
+    channel: "paramiko.Channel",
+    host: str,
+    command: str,
+    prompt: str,
+    timeout: float,
+) -> None:
+    channel.send(f"{command}\n")
+    _read_until_prompt(channel, host, command, prompt, timeout)
+
+
+def _send_and_capture(
+    channel: "paramiko.Channel",
+    host: str,
+    command: str,
+    prompt: str,
+    timeout: float,
+) -> str:
+    channel.send(f"{command}\n")
+    return _read_until_prompt(channel, host, command, prompt, timeout)
+
+
+def _read_until_prompt(
+    channel: "paramiko.Channel",
+    host: str,
+    command: str,
+    prompt: str,
+    timeout: float,
+) -> str:
+    buffer = ""
+    end_time = time.monotonic() + timeout
+    prompt_clean = prompt.strip()
+
+    while time.monotonic() < end_time:
+        if channel.recv_ready():
+            data = channel.recv(65535)
+            if not data:
+                continue
+            buffer += data.decode(errors="ignore")
+            normalized = _normalize_newlines(buffer)
+            if normalized.rstrip().endswith(prompt_clean):
+                return normalized
+        else:
+            if buffer:
+                normalized = _normalize_newlines(buffer)
+                if normalized.rstrip().endswith(prompt_clean):
+                    return normalized
+            time.sleep(0.1)
+
+    raise SSHCommandError(f"{host}: timed out waiting for '{command}' response")
+
+
+def _extract_command_output(
+    raw_output: str,
+    host: str,
+    command: str,
+    prompt: str,
+) -> str:
+    normalized = _normalize_newlines(raw_output)
+    lines = normalized.split("\n")
+    prompt_clean = prompt.strip()
+    prompt_lower = prompt_clean.lower()
+    command_clean = command.strip()
+    command_lower = command_clean.lower()
+
+    output_lines: list[str] = []
+    command_seen = False
+
+    for line in lines:
+        stripped = line.strip()
+        lowered = stripped.lower()
+
+        if not command_seen:
+            if lowered == command_lower:
+                command_seen = True
+                continue
+            if prompt_clean and lowered.startswith(prompt_lower):
+                remainder = stripped[len(prompt_clean) :].strip()
+                if remainder.lower() == command_lower:
+                    command_seen = True
+                    continue
+            if lowered.endswith(command_lower):
+                command_seen = True
+                continue
+            continue
+
+        if prompt_clean and stripped.startswith(prompt_clean):
+            break
+
+        output_lines.append(line)
+
+    return _normalize_newlines("\n".join(output_lines)).strip("\n")
+
+
+def _normalize_newlines(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def sanitize_label(value: str, fallback: str = "device") -> str:
