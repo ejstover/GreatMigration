@@ -39,7 +39,7 @@ from translate_showtech import (
     find_copper_10g_ports,
 )  # type: ignore
 from fpdf import FPDF
-from ssh_utils import run_ssh_command, SSHCommandError
+from ssh_utils import run_ssh_command, summarize_ssh_error
 
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
@@ -284,9 +284,7 @@ async def _collect_showtech(
                     timeout=ssh_timeout,
                 )
             except Exception as exc:
-                msg = str(exc)
-                if isinstance(exc, SSHCommandError):
-                    msg = exc.args[0]
+                msg = summarize_ssh_error(host, exc, command="show tech-support")
                 errors.append({"host": host, "error": msg})
                 continue
 
@@ -722,9 +720,7 @@ async def _convert_payload(
                         timeout=ssh_timeout,
                     )
                 except Exception as exc:
-                    msg = str(exc)
-                    if isinstance(exc, SSHCommandError):
-                        msg = exc.args[0]
+                    msg = summarize_ssh_error(host, exc, command="show running-config")
                     errors.append({"host": host, "error": msg})
                     continue
 
@@ -740,7 +736,8 @@ async def _convert_payload(
                     )
                     data_json = json.loads(out_path.read_text(encoding="utf-8"))
                 except Exception as exc:
-                    errors.append({"host": host, "error": str(exc)})
+                    msg = summarize_ssh_error(host, exc, command="show running-config")
+                    errors.append({"host": host, "error": msg})
                     continue
 
                 items.append({"source_file": host, "output_file": out_path.name, "json": data_json})

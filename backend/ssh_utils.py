@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import getpass
 import re
-from typing import Optional
+from typing import Iterable, Optional
 
 try:  # pragma: no cover - import guard for optional dependency
     import paramiko  # type: ignore
@@ -100,3 +100,45 @@ def sanitize_label(value: str, fallback: str = "device") -> str:
 
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", value)
     return safe or fallback
+
+
+def _stringify_args(args: Iterable[object]) -> str:
+    """Return a joined/stripped representation of *args*."""
+
+    parts: list[str] = []
+    for value in args:
+        text = str(value).strip()
+        if text:
+            parts.append(text)
+    return "; ".join(parts)
+
+
+def summarize_ssh_error(host: str, exc: Exception, command: Optional[str] = None) -> str:
+    """Return a user-friendly message for an SSH collection exception.
+
+    The returned string intentionally excludes the *host* prefix since the
+    calling code already associates the error with the device. When available,
+    the executed command is appended so operators know what failed.
+    """
+
+    message = ""
+
+    if isinstance(exc, SSHCommandError):
+        raw = exc.args[0] if exc.args else str(exc)
+        message = str(raw).strip()
+        if message.startswith(f"{host}:"):
+            message = message[len(host) + 1 :].lstrip()
+
+    if not message:
+        message = str(exc).strip()
+
+    if not message and getattr(exc, "args", None):
+        message = _stringify_args(exc.args)
+
+    if not message:
+        message = exc.__class__.__name__
+
+    if command and command not in message:
+        message = f"{message} (command: {command})"
+
+    return message
