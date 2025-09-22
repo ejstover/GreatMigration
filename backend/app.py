@@ -20,7 +20,10 @@ except Exception:
     pass
 
 # User modules
-from convertciscotojson import convert_one_file  # type: ignore
+from convertciscotojson import (  # type: ignore
+    convert_one_file,
+    convert_config_text,
+)
 import push_mist_port_config as pm  # type: ignore
 from push_mist_port_config import (  # type: ignore
     ensure_port_config,
@@ -36,6 +39,7 @@ from translate_showtech import (
     find_copper_10g_ports,
 )  # type: ignore
 from fpdf import FPDF
+from ssh_utils import run_ssh_command, SSHCommandError
 
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
@@ -232,12 +236,104 @@ def api_save_replacements(request: Request, doc: Dict[str, Any] = Body(...)):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
-@app.post("/api/showtech")
-async def api_showtech(files: List[UploadFile] = File(...)):
+async def _collect_showtech(
+    *, files: List[UploadFile] | None, request: Request | None
+) -> Dict[str, Any] | JSONResponse:
+    req_obj = request if isinstance(request, Request) else None
+
     try:
         mapping = load_mapping()
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    content_type = req_obj.headers.get("content-type", "") if req_obj else ""
+    if content_type.startswith("application/json"):
+        if req_obj is None:
+            return JSONResponse({"ok": False, "error": "Invalid request."}, status_code=400)
+        data = await req_obj.json()
+        hosts_raw = data.get("hosts", []) if isinstance(data, dict) else []
+        if not isinstance(hosts_raw, list):
+            return JSONResponse({"ok": False, "error": "'hosts' must be a list."}, status_code=400)
+        hosts = [str(h).strip() for h in hosts_raw if str(h).strip()]
+        if not hosts:
+            return JSONResponse({"ok": False, "error": "Provide at least one host to collect."}, status_code=400)
+
+        username = str(data.get("username") or "").strip()
+        password = str(data.get("password") or "")
+        if not username or not password:
+            return JSONResponse(
+                {"ok": False, "error": "Username and password are required for SSH collection."},
+                status_code=400,
+            )
+
+        try:
+            ssh_timeout = float(data.get("ssh_timeout") or 180.0)
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "Invalid ssh_timeout."}, status_code=400)
+
+        results: List[Dict[str, Any]] = []
+        errors: List[Dict[str, str]] = []
+
+        for host in hosts:
+            try:
+                text = run_ssh_command(
+                    host,
+                    username,
+                    password,
+                    "show tech-support",
+                    timeout=ssh_timeout,
+                )
+            except Exception as exc:
+                msg = str(exc)
+                if isinstance(exc, SSHCommandError):
+                    msg = exc.args[0]
+                errors.append({"host": host, "error": msg})
+                continue
+
+            inventory = parse_showtech(text)
+            copper_ports = find_copper_10g_ports(text)
+            switches = []
+            for sw, items in inventory.items():
+                if sw.lower() == "global":
+                    continue
+                sw_items = []
+                for pid, count in items.items():
+                    replacement = mapping.get(pid, "no replacement model defined")
+                    sw_items.append(
+                        {"pid": pid, "count": count, "replacement": replacement}
+                    )
+                switches.append({"switch": sw, "items": sw_items})
+            copper_total = sum(len(v) for v in copper_ports.values())
+            results.append(
+                {
+                    "filename": host,
+                    "switches": switches,
+                    "copper_10g_ports": {**copper_ports, "total": copper_total},
+                }
+            )
+
+        password = None  # type: ignore[assignment]
+
+        if not results and errors:
+            first_error = errors[0]
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"{first_error.get('host')}: {first_error.get('error')}",
+                    "errors": errors,
+                },
+                status_code=400,
+            )
+
+        return {"ok": True, "results": results, "errors": errors}
+
+    files_list = list(files or [])
+    if not files_list:
+        return JSONResponse({"ok": False, "error": "No files provided."}, status_code=400)
+
+    try:
         results = []
-        for f in files:
+        for f in files_list:
             text = (await f.read()).decode("utf-8", errors="ignore")
             inventory = parse_showtech(text)
             copper_ports = find_copper_10g_ports(text)
@@ -260,9 +356,21 @@ async def api_showtech(files: List[UploadFile] = File(...)):
                     "copper_10g_ports": {**copper_ports, "total": copper_total},
                 }
             )
-        return {"ok": True, "results": results}
+        return {"ok": True, "results": results, "errors": []}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/showtech")
+async def api_showtech_route(
+    request: Request,
+    files: List[UploadFile] | None = File(None),
+):
+    return await _collect_showtech(files=files, request=request)
+
+
+async def api_showtech(files: List[UploadFile]):
+    return await _collect_showtech(files=files, request=None)
 
 
 @app.post("/api/showtech/pdf")
@@ -549,20 +657,135 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
         )  # type: ignore[name-defined]
 
 
-@app.post("/api/convert")
-async def api_convert(
-    files: List[UploadFile] = File(...),
-    uplink_module: int = Form(1),
-    force_model: Optional[str] = Form(None),
-    strict_overflow: bool = Form(False),
+async def _convert_payload(
+    *, files: List[UploadFile] | None, request: Request | None
 ) -> JSONResponse:
-    """
-    Converts one or more Cisco configs into the normalized JSON that the push script consumes.
-    """
+    req_obj = request if isinstance(request, Request) else None
+    content_type = req_obj.headers.get("content-type", "") if req_obj else ""
+    if content_type.startswith("application/json"):
+        if req_obj is None:
+            return JSONResponse({"ok": False, "error": "Invalid request."}, status_code=400)
+        data = await req_obj.json()
+        hosts_raw = data.get("hosts", []) if isinstance(data, dict) else []
+        if not isinstance(hosts_raw, list):
+            return JSONResponse({"ok": False, "error": "'hosts' must be a list."}, status_code=400)
+        hosts = [str(h).strip() for h in hosts_raw if str(h).strip()]
+        if not hosts:
+            return JSONResponse({"ok": False, "error": "Provide at least one host to collect."}, status_code=400)
+
+        username = str(data.get("username") or "").strip()
+        password = str(data.get("password") or "")
+        if not username or not password:
+            return JSONResponse(
+                {"ok": False, "error": "Username and password are required for SSH collection."},
+                status_code=400,
+            )
+
+        try:
+            uplink_module = int(data.get("uplink_module") or 1)
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "Invalid uplink_module."}, status_code=400)
+
+        force_model = data.get("force_model")
+        if force_model is not None and not isinstance(force_model, str):
+            return JSONResponse({"ok": False, "error": "force_model must be a string."}, status_code=400)
+        force_model = force_model or None
+
+        strict_overflow_val = data.get("strict_overflow", False)
+        if isinstance(strict_overflow_val, str):
+            strict_overflow = strict_overflow_val.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            strict_overflow = bool(strict_overflow_val)
+
+        try:
+            start_port = int(data.get("start_port") or 0)
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "Invalid start_port."}, status_code=400)
+
+        try:
+            ssh_timeout = float(data.get("ssh_timeout") or 60.0)
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "Invalid ssh_timeout."}, status_code=400)
+
+        items: List[Dict[str, Any]] = []
+        errors: List[Dict[str, str]] = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            for host in hosts:
+                try:
+                    config_text = run_ssh_command(
+                        host,
+                        username,
+                        password,
+                        "show running-config",
+                        timeout=ssh_timeout,
+                    )
+                except Exception as exc:
+                    msg = str(exc)
+                    if isinstance(exc, SSHCommandError):
+                        msg = exc.args[0]
+                    errors.append({"host": host, "error": msg})
+                    continue
+
+                try:
+                    out_path = convert_config_text(
+                        config_text,
+                        host_label=host,
+                        uplink_module=uplink_module,
+                        strict_overflow=strict_overflow,
+                        force_model=force_model,
+                        output_dir=tmpdir_path,
+                        start_port=start_port,
+                    )
+                    data_json = json.loads(out_path.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    errors.append({"host": host, "error": str(exc)})
+                    continue
+
+                items.append({"source_file": host, "output_file": out_path.name, "json": data_json})
+
+        password = None  # type: ignore[assignment]
+
+        if not items and errors:
+            first_error = errors[0]
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"{first_error.get('host')}: {first_error.get('error')}",
+                    "errors": errors,
+                },
+                status_code=400,
+            )
+
+        return JSONResponse({"ok": True, "items": items, "errors": errors})
+
+    files_list = list(files or [])
+    if not files_list:
+        return JSONResponse({"ok": False, "error": "No files provided."}, status_code=400)
+
+    if req_obj is not None:
+        form = await req_obj.form()
+        try:
+            uplink_module = int(form.get("uplink_module", 1))
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "Invalid uplink_module."}, status_code=400)
+
+        force_model = form.get("force_model") or None
+        strict_overflow_raw = form.get("strict_overflow", False)
+        if isinstance(strict_overflow_raw, str):
+            strict_overflow = strict_overflow_raw.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            strict_overflow = bool(strict_overflow_raw)
+    else:
+        uplink_module = 1
+        force_model = None
+        strict_overflow = False
+
     results = []
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
-        for uf in files:
+        for uf in files_list:
             contents = await uf.read()
             in_path = tmpdir_path / uf.filename
             in_path.write_bytes(contents)
@@ -575,13 +798,24 @@ async def api_convert(
                 output_dir=tmpdir_path,
             )
             try:
-                data = json.loads(out_path.read_text(encoding="utf-8"))
+                data_obj = json.loads(out_path.read_text(encoding="utf-8"))
             except Exception as e:
-                return JSONResponse({"ok": False, "error": f"Failed to load JSON for {uf.filename}: {e}"}, status_code=400)
+                return JSONResponse(
+                    {"ok": False, "error": f"Failed to load JSON for {uf.filename}: {e}"},
+                    status_code=400,
+                )
 
-            results.append({"source_file": uf.filename, "output_file": out_path.name, "json": data})
+            results.append({"source_file": uf.filename, "output_file": out_path.name, "json": data_obj})
 
-    return JSONResponse({"ok": True, "items": results})
+    return JSONResponse({"ok": True, "items": results, "errors": []})
+
+
+@app.post("/api/convert")
+async def api_convert(
+    request: Request,
+    files: List[UploadFile] | None = File(None),
+) -> JSONResponse:
+    return await _convert_payload(files=files, request=request)
 
 
 def _build_payload_for_row(

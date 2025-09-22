@@ -33,7 +33,9 @@ import json
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, DefaultDict, List
+from typing import DefaultDict, Dict, List
+
+from ssh_utils import prompt_for_credentials, run_ssh_command
 
 
 def load_mapping() -> Dict[str, str]:
@@ -266,13 +268,68 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Translate Cisco show tech-support inventory to Juniper models"
     )
-    parser.add_argument("file", help="Path to show tech-support text file")
+    parser.add_argument("file", nargs="?", help="Path to show tech-support text file")
+    parser.add_argument(
+        "--hosts",
+        nargs="+",
+        help="One or more hostnames/IPs to pull 'show tech-support' over SSH.",
+    )
+    parser.add_argument(
+        "--ssh-username",
+        help="Default SSH username when connecting with --hosts.",
+    )
+    parser.add_argument(
+        "--ssh-timeout",
+        type=float,
+        default=120.0,
+        help="SSH connect/command timeout in seconds (default 120).",
+    )
     args = parser.parse_args()
+
+    if not (args.file or args.hosts):
+        parser.error("Provide a file or --hosts <device ...>")
+
+    mapping = load_mapping()
+
+    if args.hosts:
+        default_username = args.ssh_username
+        successes = 0
+        total = len(args.hosts)
+        for host in args.hosts:
+            username, password = prompt_for_credentials(host, default_username)
+            default_username = username
+            try:
+                text = run_ssh_command(
+                    host,
+                    username,
+                    password,
+                    "show tech-support",
+                    timeout=args.ssh_timeout,
+                )
+            except KeyboardInterrupt:  # pragma: no cover - CLI convenience
+                raise
+            except Exception as exc:  # pragma: no cover - network interaction
+                print(f"❌ {host}: {exc}")
+                password = None
+                continue
+            finally:
+                password = None
+
+            inventory = parse_showtech(text)
+            copper_ports = find_copper_10g_ports(text)
+            report = build_report(inventory, mapping, copper_ports)
+            print(f"===== Report for {host} =====")
+            print(report)
+            print()
+            successes += 1
+
+        failures = total - successes
+        print(f"✅ Reports generated: {successes} | Failed: {failures}")
+        return
 
     with open(args.file, encoding="utf-8", errors="ignore") as fh:
         text = fh.read()
 
-    mapping = load_mapping()
     inventory = parse_showtech(text)
     copper_ports = find_copper_10g_ports(text)
     report = build_report(inventory, mapping, copper_ports)

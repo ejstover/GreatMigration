@@ -53,18 +53,36 @@
     </header>
 
     <div class="max-w-7xl mx-auto p-6">
-      <!-- Drag & Drop -->
+      <!-- Remote collection -->
       <section class="mb-6">
-      <div id="dz" class="dropzone rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 p-8 text-center text-slate-500 dark:text-slate-300">
-        <p class="mb-2">Drag & drop Cisco config files here (or click to select)</p>
-        <input id="file_input" type="file" multiple class="hidden" accept=".txt,.cfg,.conf,.json" />
-        <button id="choose_files" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Choose files</button>
-      </div>
-      <div class="flex items-center justify-between mt-2">
-        <div id="convert_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
-        <button id="clear_all" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Clear</button>
-      </div>
-    </section>
+        <div class="rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 p-6 shadow space-y-4">
+          <div>
+            <h2 class="text-lg font-medium">Collect running-configs from switches</h2>
+            <p class="text-sm text-slate-600 dark:text-slate-300 mt-1">Enter one hostname or IP address per line. Credentials are used once per request and are not stored.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1" for="host_list">Switch hostnames or IPs</label>
+            <textarea id="host_list" class="w-full border rounded-lg p-3 h-32 resize-y dark:bg-slate-900 dark:border-slate-700" placeholder="switch1.example.com&#10;10.0.0.2"></textarea>
+          </div>
+          <div class="grid md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-medium mb-1" for="ssh_username">SSH username</label>
+              <input id="ssh_username" type="text" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" autocomplete="username" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1" for="ssh_password">SSH password</label>
+              <input id="ssh_password" type="password" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" autocomplete="current-password" />
+            </div>
+          </div>
+          <div class="flex items-center justify-between flex-col md:flex-row gap-3">
+            <div id="convert_status" class="flex-1 text-sm text-slate-600 dark:text-slate-300"></div>
+            <div class="flex items-center gap-2">
+              <button id="collect_hosts" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Collect configs</button>
+              <button id="clear_all" class="px-4 py-2 rounded bg-slate-200 text-slate-900 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">Clear</button>
+            </div>
+          </div>
+        </div>
+      </section>
 
     <!-- Converted JSON -->
     <section id="results" class="hidden mb-8">
@@ -159,9 +177,10 @@
     });
 
     // --- Elements ---
-    const dz = document.getElementById('dz');
-    const fileInput = document.getElementById('file_input');
-    const chooseBtn = document.getElementById('choose_files');
+    const hostInput = document.getElementById('host_list');
+    const usernameInput = document.getElementById('ssh_username');
+    const passwordInput = document.getElementById('ssh_password');
+    const collectBtn = document.getElementById('collect_hosts');
     const convertStatus = document.getElementById('convert_status');
     const clearAll = document.getElementById('clear_all');
     const results = document.getElementById('results');
@@ -182,7 +201,6 @@
     // --- Data ---
     let convertedItems = []; // [{ source_file, output_file, json }]
     let rows = []; // [{ idx, site_id, device_id, excludes, exclude_uplinks, member_offset, port_offset, model_override?, userChangedSite? }]
-    let seenFiles = new Set(); // dedupe chooser/dnd
     let sitesCache = []; // list of sites
     const devicesBySite = new Map(); // site_id -> devices[]
 
@@ -191,25 +209,9 @@
     function hide(el){ el.classList.add('hidden'); }
     function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
 
-    // --- File input UX (Chrome/Edge: single dialog & same-file reselect) ---
-    chooseBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      fileInput.value = '';
-      fileInput.click();
-    });
-    dz.addEventListener('click', (e) => {
-      if (e.target === dz) { fileInput.value = ''; fileInput.click(); }
-    });
-    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
-    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-    dz.addEventListener('drop', (e) => { e.preventDefault(); dz.classList.remove('dragover'); if (e.dataTransfer.files?.length) handleFiles([...e.dataTransfer.files]); });
-    fileInput.addEventListener('change', () => { handleFiles([...fileInput.files]); fileInput.value = ''; });
-
     clearAll.addEventListener('click', () => {
       convertedItems = [];
       rows = [];
-      seenFiles.clear();
       resultsList.innerHTML = '';
       batchRows.innerHTML = '';
       batchOutput.innerHTML = '';
@@ -220,6 +222,9 @@
       batchStatus.textContent = '';
       dryRun.checked = true;
       pushBatchBtn.textContent = 'Test configuration for all';
+      hostInput.value = '';
+      usernameInput.value = '';
+      passwordInput.value = '';
     });
 
     // --- Sites/Devices ---
@@ -253,56 +258,115 @@
     }
 
     // --- Conversion ---
-    function keyForFile(f){ return `${f.name}|${f.size}|${f.lastModified}`; }
+    function parseHosts(raw){
+      if (!raw) return [];
+      const tokens = raw.split(/[\n,]+/).map(h => h.trim()).filter(Boolean);
+      return Array.from(new Set(tokens));
+    }
 
-    async function handleFiles(files){
-      if (!files.length) return;
-
-      // dedupe files
-      const unique = [];
-      for (const f of files){
-        const key = keyForFile(f);
-        if (!seenFiles.has(key)) { seenFiles.add(key); unique.push(f); }
-      }
-      if (!unique.length){ convertStatus.textContent = 'All selected files were duplicates.'; return; }
-
-      convertStatus.textContent = 'Converting...';
-      const form = new FormData();
-      unique.forEach(f => form.append('files', f));
-      form.append('strict_overflow', strictOverflow.checked ? 'true' : 'false');
-
-      const res = await fetch('/api/convert', { method: 'POST', body: form });
-      const data = await res.json();
-      if (!data.ok){
-        convertStatus.textContent = `Error: ${data.error || res.status}`;
+    collectBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const hosts = parseHosts(hostInput.value || '');
+      if (!hosts.length){
+        convertStatus.textContent = 'Enter at least one hostname or IP address.';
         return;
       }
-      (data.items || []).forEach(it => convertedItems.push(it));
-      renderConvertedList();
-      convertStatus.textContent = `Converted ${data.items.length} file(s). Total: ${convertedItems.length}.`;
 
-      if (!sitesCache.length) await fetchSites();
-
-      // New rows: site defaults to first row's site if exists, else first site in list
-      const defaultSite = rows.length ? rows[0].site_id : (sitesCache[0]?.id || '');
-      for (let i = rows.length; i < convertedItems.length; i++){
-        rows.push({
-          idx: i,
-          site_id: defaultSite || '',
-          device_id: '',
-          excludes: '',
-          exclude_uplinks: true,
-          member_offset: 0,
-          port_offset: 0,
-          model_override: '',
-          userChangedSite: false
-        });
-        if (defaultSite) await fetchDevices(defaultSite);
+      const username = (usernameInput.value || '').trim();
+      const password = passwordInput.value || '';
+      if (!username || !password){
+        convertStatus.textContent = 'Enter SSH credentials to collect configurations.';
+        return;
       }
 
-      renderBatchRows();
-      show(batchSection);
-    }
+      collectBtn.disabled = true;
+      collectBtn.textContent = 'Collecting…';
+      convertStatus.textContent = 'Collecting configurations…';
+
+      try {
+        const res = await fetch('/api/convert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            hosts,
+            username,
+            password,
+            strict_overflow: strictOverflow.checked
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok){
+          const baseErr = data.error || `Request failed (${res.status})`;
+          const extraErr = (data.errors && data.errors.length)
+            ? ': ' + data.errors.map(e => `${e.host}: ${e.error}`).join('; ')
+            : '';
+          convertStatus.textContent = `Error: ${baseErr}${extraErr}`;
+          return;
+        }
+
+        const successes = data.items || [];
+        if (!sitesCache.length) await fetchSites();
+
+        const existingIndex = new Map();
+        convertedItems.forEach((item, idx) => {
+          if (item?.source_file) existingIndex.set(item.source_file, idx);
+        });
+
+        const newRowIndices = [];
+        successes.forEach((item, i) => {
+          const label = item?.source_file || item?.host || '';
+          const sourceLabel = label || `device-${convertedItems.length + newRowIndices.length + 1}`;
+          item.source_file = sourceLabel;
+          const existing = existingIndex.get(sourceLabel);
+          if (existing !== undefined){
+            convertedItems[existing] = item;
+          } else {
+            const newIdx = convertedItems.length;
+            convertedItems.push(item);
+            existingIndex.set(sourceLabel, newIdx);
+            newRowIndices.push(newIdx);
+          }
+        });
+
+        const defaultSite = rows.length ? rows[0].site_id : (sitesCache[0]?.id || '');
+        for (const idx of newRowIndices){
+          rows.push({
+            idx,
+            site_id: defaultSite || '',
+            device_id: '',
+            excludes: '',
+            exclude_uplinks: true,
+            member_offset: 0,
+            port_offset: 0,
+            model_override: '',
+            userChangedSite: false
+          });
+        }
+        if (defaultSite && newRowIndices.length) await fetchDevices(defaultSite);
+
+        if (convertedItems.length){
+          renderConvertedList();
+          renderBatchRows();
+          show(batchSection);
+        }
+
+        const parts = [];
+        if (successes.length){
+          parts.push(`Converted ${successes.length} device(s). Total: ${convertedItems.length}.`);
+        }
+        if (data.errors?.length){
+          const summary = data.errors.map(e => `${e.host}: ${e.error}`).join('; ');
+          parts.push(`Failed: ${summary}`);
+        }
+        convertStatus.textContent = parts.join(' ') || 'No configurations collected.';
+      } catch (err){
+        convertStatus.textContent = `Error: ${err?.message || err}`;
+      } finally {
+        collectBtn.disabled = false;
+        collectBtn.textContent = 'Collect configs';
+        passwordInput.value = '';
+      }
+    });
 
     function renderConvertedList(){
       show(results);
