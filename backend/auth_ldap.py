@@ -3,9 +3,11 @@ import os
 from typing import Optional, Dict, Any, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from ldap3 import Server, Connection, ALL, Tls, NTLM, SUBTREE
+
+from logging_utils import get_user_logger
 
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")
 LDAP_SERVER_URL = os.getenv("LDAP_SERVER_URL", "ldaps://dc01.testdomain.local:636")
@@ -21,6 +23,8 @@ README_URL = "https://github.com/jacob-hopkins/GreatMigration#readme"
 HELP_URL = os.getenv("HELP_URL", README_URL)
 
 router = APIRouter()
+
+action_logger = get_user_logger()
 
 def _server() -> Server:
     use_ssl = LDAP_SERVER_URL.lower().startswith("ldaps://")
@@ -133,11 +137,15 @@ def post_login(request: Request, username: str = Form(...), password: str = Form
     try:
         user_conn = _bind_as(username, password)
     except Exception:
+        client_host = request.client.host if request.client else "-"
+        action_logger.warning("ldap_login_failed user=%s client=%s reason=bind_failed", username, client_host)
         return HTMLResponse(_html_login("Invalid username or password."), status_code=401)
 
     # 2) Find user entry (with groups)
     entry = _search_user(user_conn, username)
     if not entry:
+        client_host = request.client.host if request.client else "-"
+        action_logger.warning("ldap_login_failed user=%s client=%s reason=user_not_found", username, client_host)
         return HTMLResponse(_html_login("User not found in directory."), status_code=401)
 
     # 3) If we need recursive group check, bind service (or reuse user bind if permitted)
@@ -158,10 +166,21 @@ def post_login(request: Request, username: str = Form(...), password: str = Form
         "upn": entry.get("upn") or "",
         "can_push": bool(can_push),
     }
+    client_host = request.client.host if request.client else "-"
+    action_logger.info(
+        "ldap_login_success user=%s client=%s can_push=%s",
+        entry.get("displayName") or username,
+        client_host,
+        bool(can_push),
+    )
     return RedirectResponse("/", status_code=302)
 
 @router.get("/logout")
 def logout(request: Request):
+    user = request.session.get("user", {})
+    client_host = request.client.host if request.client else "-"
+    username = user.get("name") or user.get("upn") or "anonymous"
+    action_logger.info("ldap_logout user=%s client=%s", username, client_host)
     request.session.clear()
     resp = RedirectResponse("/", status_code=302)
     return resp

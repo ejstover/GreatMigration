@@ -3,8 +3,10 @@ import os
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
+
+from logging_utils import get_user_logger
 
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")
 # LOCAL_USERS format: "user1:pass1,user2:pass2"
@@ -29,6 +31,8 @@ def _load_push_users() -> set[str]:
 USERS = _load_users()
 _PUSH_USERS = _load_push_users()
 router = APIRouter()
+
+action_logger = get_user_logger()
 
 
 def _html_login(error: Optional[str] = None) -> str:
@@ -78,6 +82,8 @@ def get_login():
 @router.post("/login")
 def post_login(request: Request, username: str = Form(...), password: str = Form(...)):
     if USERS.get(username) != password:
+        client_host = request.client.host if request.client else "-"
+        action_logger.warning("local_login_failed user=%s client=%s", username, client_host)
         return HTMLResponse(_html_login("Invalid username or password."), status_code=401)
 
     request.session["user"] = {
@@ -85,11 +91,17 @@ def post_login(request: Request, username: str = Form(...), password: str = Form
         "email": "",
         "can_push": username in _PUSH_USERS,
     }
+    client_host = request.client.host if request.client else "-"
+    action_logger.info("local_login_success user=%s client=%s", username, client_host)
     return RedirectResponse("/", status_code=302)
 
 
 @router.get("/logout")
 def logout(request: Request):
+    user = request.session.get("user", {})
+    client_host = request.client.host if request.client else "-"
+    username = user.get("name") or "anonymous"
+    action_logger.info("local_logout user=%s client=%s", username, client_host)
     request.session.clear()
     return RedirectResponse("/", status_code=302)
 

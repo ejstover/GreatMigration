@@ -141,6 +141,8 @@ def ensure_env_file(project_dir: Path) -> int | None:
     tmpl = input("SWITCH_TEMPLATE_ID (optional): ").strip()
     port = input("API_PORT [default 8000]: ").strip() or "8000"
     auth = input("AUTH_METHOD [default local]: ").strip().lower() or "local"
+    syslog_host = input("SYSLOG_HOST (optional): ").strip()
+    syslog_port = input("SYSLOG_PORT [default 514]: ").strip() or "514"
 
     lines = [
         f"AUTH_METHOD={auth}",
@@ -178,6 +180,10 @@ def ensure_env_file(project_dir: Path) -> int | None:
         lines.append(f"LOCAL_PUSH_USERS={user}")
 
     lines.append(f"API_PORT={port}")
+    if syslog_host:
+        lines.append(f"SYSLOG_HOST={syslog_host}")
+        if syslog_port:
+            lines.append(f"SYSLOG_PORT={syslog_port}")
 
     env_file.parent.mkdir(parents=True, exist_ok=True)
     env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
