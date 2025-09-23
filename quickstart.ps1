@@ -109,6 +109,9 @@ function Ensure-Env {
   if (-not $port) { $port = "8000" }
   $auth  = Read-Host "AUTH_METHOD [default local]"
   if (-not $auth) { $auth = "local" } else { $auth = $auth.ToLower() }
+  $syslogHost = Read-Host "SYSLOG_HOST (optional)"
+  $syslogPort = Read-Host "SYSLOG_PORT [default 514]"
+  if (-not $syslogPort) { $syslogPort = "514" }
 
   $lines = @(
     "AUTH_METHOD=$auth",
@@ -145,6 +148,10 @@ function Ensure-Env {
   }
 
   $lines += "API_PORT=$port"
+  if ($syslogHost) {
+    $lines += "SYSLOG_HOST=$syslogHost"
+    if ($syslogPort) { $lines += "SYSLOG_PORT=$syslogPort" }
+  }
 
   $content = ($lines -join "`n") + "`n"
   Set-Content -Path $envPath -Value $content -Encoding UTF8

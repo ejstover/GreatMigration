@@ -11,6 +11,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
+from logging_utils import get_user_logger
+
 # Optional .env support
 try:
     from dotenv import load_dotenv  # type: ignore
@@ -153,12 +155,83 @@ else:
 
     @app.middleware("http")
     async def _auth_missing(request: Request, call_next):
+        client_host = request.client.host if request.client else "-"
+        path = request.url.path
+        query = request.url.query
+        query_suffix = f"?{query}" if query else ""
+        # Log using the shared action logger (defined later in the module)
+        try:
+            action_logger.warning(
+                "user=anonymous client=%s method=%s path=%s%s status=500 detail=auth_not_configured",
+                client_host,
+                request.method,
+                path,
+                query_suffix,
+            )
+        except Exception:
+            pass
         return HTMLResponse(
             f"<h1>Authentication not configured</h1>"
             f"<p>Set the AUTH_METHOD environment variable to 'local' or 'ldap'. "
             f"See the <a href='{README_URL}'>README</a> for setup instructions.</p>",
             status_code=500,
         )
+
+
+action_logger = get_user_logger()
+
+
+def _request_user_label(request: Request) -> str:
+    try:
+        info = current_user(request)
+    except Exception:
+        return "anonymous"
+
+    if isinstance(info, dict):
+        for key in ("name", "email", "upn"):
+            val = info.get(key)
+            if val:
+                return str(val)
+    return str(info) if info is not None else "anonymous"
+
+
+@app.middleware("http")
+async def _log_user_actions(request: Request, call_next):
+    user_label = _request_user_label(request)
+    client_host = request.client.host if request.client else "-"
+    path = request.url.path
+    query = request.url.query
+    query_suffix = f"?{query}" if query else ""
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        action_logger.exception(
+            "user=%s client=%s method=%s path=%s%s error=%s",
+            user_label,
+            client_host,
+            request.method,
+            path,
+            query_suffix,
+            exc,
+        )
+        raise
+
+    if user_label == "anonymous":
+        post_label = _request_user_label(request)
+        if post_label != "anonymous":
+            user_label = post_label
+
+    action_logger.info(
+        "user=%s client=%s method=%s path=%s%s status=%s",
+        user_label,
+        client_host,
+        request.method,
+        path,
+        query_suffix,
+        response.status_code,
+    )
+    return response
 
 @app.get("/", response_class=HTMLResponse)
 def index():
