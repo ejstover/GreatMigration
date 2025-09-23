@@ -92,7 +92,7 @@ Convert Cisco configs, map them to Mist switches, and test or push the resulting
 1. **File area** – drop configs or click **Choose files** to start conversion.  Use **Clear** to reset.
 2. **Converted JSON Preview** – shows the normalized output for each file.
 3. **Batch: Map files to switches** – adds a row per file with the following controls:
-   * **Site** – drop-down listing Mist sites.
+   * **Site** – drop-down listing Mist sites. Changing the first site will change all sites below. Changing all subsequent sites allows for multi-site deployments. 
    * **Device** – drop-down listing switches within the selected site.
    * **Start member** – number box offsetting Juniper virtual-chassis member numbers.
    * **Start port** – number box shifting port numbering within a member.
