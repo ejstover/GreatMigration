@@ -10,7 +10,12 @@ import io
 import asyncio
 from fastapi import UploadFile
 
-from backend.translate_showtech import build_report, find_copper_10g_ports
+from backend.translate_showtech import (
+    build_report,
+    find_copper_10g_ports,
+    extract_oper_up_interfaces_from_status,
+    parse_showtech,
+)
 from backend.app import api_showtech
 
 
@@ -77,3 +82,23 @@ def test_api_showtech_copper_ports():
     assert data["ok"]
     assert data["results"][0]["copper_10g_ports"]["total"] == 3
     assert "Te1/1/5" not in data["results"][0]["copper_10g_ports"]["Switch 1"]
+
+
+def test_parse_showtech_direct_inventory_collection():
+    inventory_text = (
+        'NAME: "Switch 1"\n'
+        "PID: WS-C3850-48P-L\n"
+        'NAME: "TenGigabitEthernet1/1/1"\n'
+        "PID: SFP-10GBaseT\n"
+        'NAME: "TenGigabitEthernet1/1/2"\n'
+        "PID: SFP-10GBaseT\n"
+    )
+    status_text = (
+        "Te1/1/1 connected trunk a-full a-10G 10GBaseT\n"
+        "Te1/1/2 notconnect 1 auto auto 10GBaseT\n"
+    )
+    oper_up = extract_oper_up_interfaces_from_status(status_text)
+    inventory = parse_showtech(inventory_text, oper_up_interfaces=oper_up)
+    assert inventory == {"Switch 1": {"WS-C3850-48P-L": 1, "SFP-10GBaseT": 1}}
+    copper_ports = find_copper_10g_ports(status_text)
+    assert copper_ports == {"Switch 1": ["TenGigabitEthernet1/1/1"]}

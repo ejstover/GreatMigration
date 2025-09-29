@@ -4,7 +4,7 @@ from __future__ import annotations
 import getpass
 import re
 import time
-from typing import Iterable, Optional
+from typing import Iterable, Mapping, Optional
 
 try:  # pragma: no cover - import guard for optional dependency
     import paramiko  # type: ignore
@@ -76,6 +76,42 @@ def run_ssh_command(
         return _run_command_via_shell(client, host, command, timeout)
     except Exception as fallback_exc:
         raise primary_exc from fallback_exc
+    finally:
+        _safe_close(client)
+
+
+def run_ssh_commands(
+    host: str,
+    username: str,
+    password: str,
+    commands: Iterable[str],
+    *,
+    timeout: float = 60.0,
+) -> Mapping[str, str]:
+    """Execute multiple *commands* over SSH and return their outputs.
+
+    The commands are executed within a single interactive shell session so the
+    connection overhead is paid only once. Each command is mapped to its output
+    text. If any command fails or produces no output an :class:`SSHCommandError`
+    is raised identifying the offending command.
+    """
+
+    if paramiko is None:  # pragma: no cover - dependency guard
+        raise RuntimeError(
+            "paramiko is required to run SSH commands. Install paramiko to enable remote collection."
+        ) from _PARAMIKO_IMPORT_ERROR
+
+    command_list = [c for c in (cmd.strip() for cmd in commands) if c]
+    if not command_list:
+        raise ValueError("At least one command must be provided for run_ssh_commands().")
+
+    if len(command_list) == 1:
+        single = command_list[0]
+        return {single: run_ssh_command(host, username, password, single, timeout=timeout)}
+
+    client = _connect_ssh_client(host, username, password, timeout)
+    try:
+        return _run_commands_via_shell(client, host, command_list, timeout)
     finally:
         _safe_close(client)
 
@@ -165,6 +201,40 @@ def _run_command_via_shell(
         raise SSHCommandError(f"{host}: no output received for '{command}'")
 
     return output
+
+
+def _run_commands_via_shell(
+    client: "paramiko.SSHClient",
+    host: str,
+    commands: Iterable[str],
+    timeout: float,
+) -> Mapping[str, str]:
+    channel = client.invoke_shell()
+    channel.settimeout(timeout)
+    try:
+        prompt = _establish_prompt(channel, host, timeout)
+        try:
+            _send_and_discard(channel, host, "terminal length 0", prompt, timeout)
+        except Exception:
+            pass
+        try:
+            _send_and_discard(channel, host, "terminal width 0", prompt, timeout)
+        except Exception:
+            pass
+
+        outputs: dict[str, str] = {}
+        for command in commands:
+            raw_output = _send_and_capture(channel, host, command, prompt, timeout)
+            output = _extract_command_output(raw_output, host, command, prompt)
+            if not output.strip():
+                raise SSHCommandError(f"{host}: no output received for '{command}'")
+            outputs[command] = output
+        return outputs
+    finally:
+        try:
+            channel.close()
+        except Exception:
+            pass
 
 
 def _establish_prompt(

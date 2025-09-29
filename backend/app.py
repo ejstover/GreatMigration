@@ -37,9 +37,11 @@ from translate_showtech import (
     parse_showtech,
     load_mapping,
     find_copper_10g_ports,
+    extract_oper_up_interfaces_from_status,
+    SHOWTECH_COMMANDS,
 )  # type: ignore
 from fpdf import FPDF
-from ssh_utils import run_ssh_command, summarize_ssh_error
+from ssh_utils import run_ssh_command, run_ssh_commands, summarize_ssh_error
 
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
@@ -276,20 +278,34 @@ async def _collect_showtech(
 
         for host in hosts:
             try:
-                text = run_ssh_command(
+                outputs = run_ssh_commands(
                     host,
                     username,
                     password,
-                    "show tech-support",
+                    SHOWTECH_COMMANDS,
                     timeout=ssh_timeout,
                 )
+                inventory_text = outputs.get("show inventory", "")
+                status_text = outputs.get("show interface status", "")
             except Exception as exc:
-                msg = summarize_ssh_error(host, exc, command="show tech-support")
+                msg = summarize_ssh_error(
+                    host,
+                    exc,
+                    command="; ".join(SHOWTECH_COMMANDS),
+                )
                 errors.append({"host": host, "error": msg})
                 continue
 
-            inventory = parse_showtech(text)
-            copper_ports = find_copper_10g_ports(text)
+            oper_up = (
+                extract_oper_up_interfaces_from_status(status_text)
+                if status_text.strip()
+                else None
+            )
+            inventory = parse_showtech(
+                inventory_text,
+                oper_up_interfaces=oper_up,
+            )
+            copper_ports = find_copper_10g_ports(status_text)
             switches = []
             for sw, items in inventory.items():
                 if sw.lower() == "global":

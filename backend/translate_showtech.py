@@ -33,9 +33,79 @@ import json
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import DefaultDict, Dict, List
+from typing import DefaultDict, Dict, Iterable, List, Optional, Set
 
-from ssh_utils import prompt_for_credentials, run_ssh_command
+from ssh_utils import prompt_for_credentials, run_ssh_commands
+
+
+SHOWTECH_COMMANDS: List[str] = ["show inventory", "show interface status"]
+
+
+def _expand_tengig_interface(intf: str) -> Set[str]:
+    variations = {intf}
+    lowered = intf.lower()
+    if lowered.startswith("tengigabitethernet"):
+        suffix = intf[len("TenGigabitEthernet") :]
+        variations.add(f"Te{suffix}")
+    elif lowered.startswith("te") and not lowered.startswith("ten"):
+        suffix = intf[2:]
+        variations.add(f"TenGigabitEthernet{suffix}")
+    return variations
+
+
+def extract_oper_up_interfaces_from_status(text: str) -> Set[str]:
+    """Return interfaces that are operationally up from status table output."""
+
+    status_tokens = {
+        "connected",
+        "notconnect",
+        "disabled",
+        "err-disabled",
+        "inactive",
+        "monitor",
+        "sfpnotinserted",
+        "up",
+        "down",
+    }
+    up_tokens = {"connected", "up"}
+
+    up_interfaces: Set[str] = set()
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        m_intf = re.match(r"^(?P<intf>(?:Te|TenGigabitEthernet)\S+)", line)
+        if not m_intf:
+            continue
+        tokens = line.split()
+        if len(tokens) < 2:
+            continue
+        status = None
+        for token in tokens[1:]:
+            token_clean = token.strip().lower().rstrip(",")
+            if token_clean in status_tokens:
+                status = token_clean
+                break
+        if status in up_tokens:
+            for variant in _expand_tengig_interface(m_intf.group("intf")):
+                up_interfaces.add(variant)
+
+    return up_interfaces
+
+
+def _infer_oper_up_interfaces(text: str) -> Set[str]:
+    up_intfs: Set[str] = set()
+    intf_status_re = re.compile(
+        r"^(?:Interface\s*)?(?P<intf>(?:Te|TenGigabitEthernet)[\d/]+) is up, line protocol is up",
+        re.IGNORECASE,
+    )
+    for line in text.splitlines():
+        line = line.strip()
+        m_status = intf_status_re.match(line)
+        if m_status:
+            for variant in _expand_tengig_interface(m_status.group("intf")):
+                up_intfs.add(variant)
+
+    up_intfs.update(extract_oper_up_interfaces_from_status(text))
+    return up_intfs
 
 
 def load_mapping() -> Dict[str, str]:
@@ -73,30 +143,27 @@ def load_mapping() -> Dict[str, str]:
     return mapping
 
 
-def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
+def parse_showtech(
+    text: str, *, oper_up_interfaces: Optional[Iterable[str]] = None
+) -> Dict[str, Dict[str, int]]:
     """Parse ``show tech-support`` text and count PIDs per switch.
 
     Only the ``show inventory`` section is inspected.  Other parts of the
     diagnostic output may contain ``PID`` strings that are unrelated to the
     hardware inventory so they are intentionally ignored.  To avoid reporting
     optics that are present in ``show inventory`` but not actually in service,
-    the routine cross-references interface states from ``show interface`` and
-    skips any pluggables found on ports that are down.
+    the routine cross-references interface states. When *oper_up_interfaces*
+    is provided it is used directly; otherwise interface state is inferred
+    from the diagnostic text itself.
     """
 
     # Record interfaces that are operationally up so that only active optics
     # are counted towards the inventory.  This prevents a 1G SFP in a down
     # port from appearing as a migration requirement.
-    up_intfs: set[str] = set()
-    intf_status_re = re.compile(
-        r"^(?:Interface\s*)?(?P<intf>(?:Te|TenGigabitEthernet)[\d/]+) is up, line protocol is up",
-        re.IGNORECASE,
-    )
-    for line in text.splitlines():
-        line = line.strip()
-        m_status = intf_status_re.match(line)
-        if m_status:
-            up_intfs.add(m_status.group("intf"))
+    if oper_up_interfaces is None:
+        up_intfs: Set[str] = _infer_oper_up_interfaces(text)
+    else:
+        up_intfs = {intf for intf in oper_up_interfaces}
 
     inventory: DefaultDict[str, DefaultDict[str, int]] = defaultdict(
         lambda: defaultdict(int)
@@ -104,7 +171,10 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
     current_switch: str | None = None
     current_intf: str | None = None
     current_intf_switch: str | None = None
-    in_inventory = False
+    header_present = bool(
+        re.search(r"-+\s*show inventory\s*-+", text, re.IGNORECASE)
+    )
+    in_inventory = not header_present
 
     for line in text.splitlines():
         line = line.strip()
@@ -156,7 +226,7 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
             pid = m_pid.group(1)
             switch = current_intf_switch or current_switch
             # If this PID corresponds to an interface that is not up, skip it.
-            if current_intf and current_intf not in up_intfs:
+            if current_intf and up_intfs and current_intf not in up_intfs:
                 continue
             if switch:
                 inventory[switch][pid] += 1
@@ -189,7 +259,7 @@ def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
             # Handle compact ``show interface status`` style rows
             if re.search(r"\bconnected\b", line):
                 parts = line.split()
-                if len(parts) >= 7:
+                if len(parts) >= 6:
                     speed = parts[-2]
                     media = parts[-1]
                     if re.search(r"10G", speed, re.IGNORECASE) and re.search(
@@ -197,7 +267,16 @@ def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
                     ):
                         m_sw = re.match(r"(?:Te|TenGigabitEthernet)(\d+)/", intf)
                         switch = f"Switch {m_sw.group(1)}" if m_sw else "global"
-                        ports[switch].add(intf)
+                        variants = _expand_tengig_interface(intf)
+                        preferred = next(
+                            (
+                                variant
+                                for variant in variants
+                                if variant.lower().startswith("tengigabitethernet")
+                            ),
+                            intf,
+                        )
+                        ports[switch].add(preferred)
                 continue
             # Otherwise remember interface and examine following lines
             current_intf = intf
@@ -299,13 +378,15 @@ def main() -> None:
             username, password = prompt_for_credentials(host, default_username)
             default_username = username
             try:
-                text = run_ssh_command(
+                outputs = run_ssh_commands(
                     host,
                     username,
                     password,
-                    "show tech-support",
+                    SHOWTECH_COMMANDS,
                     timeout=args.ssh_timeout,
                 )
+                inventory_text = outputs.get("show inventory", "")
+                status_text = outputs.get("show interface status", "")
             except KeyboardInterrupt:  # pragma: no cover - CLI convenience
                 raise
             except Exception as exc:  # pragma: no cover - network interaction
@@ -315,8 +396,13 @@ def main() -> None:
             finally:
                 password = None
 
-            inventory = parse_showtech(text)
-            copper_ports = find_copper_10g_ports(text)
+            oper_up = (
+                extract_oper_up_interfaces_from_status(status_text)
+                if status_text.strip()
+                else None
+            )
+            inventory = parse_showtech(inventory_text, oper_up_interfaces=oper_up)
+            copper_ports = find_copper_10g_ports(status_text)
             report = build_report(inventory, mapping, copper_ports)
             print(f"===== Report for {host} =====")
             print(report)
