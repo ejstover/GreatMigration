@@ -28,8 +28,11 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
 from ciscoconfparse import CiscoConfParse
+
+from ssh_utils import prompt_for_credentials, run_ssh_command, sanitize_label
 
 TARGET_MODELS = {"ex4100-48mp", "ex4100-24mp"}
 
@@ -217,31 +220,22 @@ def infer_member_models(conf: CiscoConfParse, uplink_module: int) -> Dict[int, s
     return member_models
 
 # ----------------------------
-# Convert ONE file
+# Conversion helpers
 # ----------------------------
-def convert_one_file(
-    input_path: Path,
+def convert_conf_to_json(
+    conf: CiscoConfParse,
+    base_name: str,
+    output_dir: Path,
     uplink_module: int,
     strict_overflow: bool,
-    force_model: Optional[str] = None,
-    output_dir: Optional[Path] = None,
-    start_port: int = 0,
+    force_model: Optional[str],
+    start_port: int,
 ) -> Path:
-    """
-    Convert a single Cisco config text file to JSON using the rules above.
-    Returns the output JSON Path.
-    """
-    if output_dir is None:
-        out_dir = input_path.parent
-    else:
-        out_dir = output_dir
-    base_name = os.path.splitext(os.path.basename(str(input_path)))[0]
-    output_file = out_dir / f"{base_name}_converted.json"
+    """Serialize a parsed configuration to JSON."""
 
-    # Parse config
-    conf = CiscoConfParse(str(input_path), factory=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / f"{base_name}_converted.json"
 
-    # Infer VC size from source (max member number) and per-member models
     member_numbers = []
     for intf in conf.find_objects(r"^interface\s+\S+"):
         ifname = intf.text.split(None, 1)[1]
@@ -256,14 +250,17 @@ def convert_one_file(
     if derived_vc_members < 1:
         derived_vc_members = 1
 
-    if force_model and force_model.lower() not in TARGET_MODELS:
-        raise ValueError(f"--force-model must be one of {sorted(TARGET_MODELS)}")
+    normalized_force = None
     if force_model:
-        member_models = {m: force_model.lower() for m in range(1, derived_vc_members + 1)}
+        normalized_force = force_model.lower()
+        if normalized_force not in TARGET_MODELS:
+            raise ValueError(f"--force-model must be one of {sorted(TARGET_MODELS)}")
+
+    if normalized_force:
+        member_models = {m: normalized_force for m in range(1, derived_vc_members + 1)}
     else:
         member_models = infer_member_models(conf, uplink_module=uplink_module)
 
-    # VLANs (optional)
     vlans: List[Dict[str, Any]] = []
     for vlan_obj in conf.find_objects(r"^vlan\s+\d+"):
         m = re.search(r"^vlan\s+(\d+)", vlan_obj.text)
@@ -278,7 +275,6 @@ def convert_one_file(
                 break
         vlans.append({"id": vid, "name": vname})
 
-    # Interfaces
     interfaces: List[Dict[str, Any]] = []
     overflow_count = 0
     for intf in conf.find_objects(r"^interface\s+\S+"):
@@ -288,21 +284,20 @@ def convert_one_file(
 
         nums = _extract_numbers(ifname)
         if _is_mgmt_gi0_0(ifname, nums):
-            continue  # skip Cisco mgmt Gi0/0 entirely
+            continue
 
         children = [c.text.strip() for c in intf.all_children]
 
-        is_trunk  = flag(children, r"^switchport\s+mode\s+trunk\b")
+        is_trunk = flag(children, r"^switchport\s+mode\s+trunk\b")
         is_access = flag(children, r"^switchport\s+mode\s+access\b")
         mode = "trunk" if is_trunk else ("access" if is_access else "routed")
 
-        access_vlan  = first(children, r"^switchport\s+access\s+vlan\s+(\d+)$")
-        voice_vlan   = first(children, r"^switchport\s+voice\s+vlan\s+(\d+)$")
-        native_vlan  = first(children, r"^switchport\s+trunk\s+native\s+vlan\s+(\d+)$")
-        allowed_raw  = first(children, r"^switchport\s+trunk\s+allowed\s+vlan\s+(.+)$")
+        access_vlan = first(children, r"^switchport\s+access\s+vlan\s+(\d+)$")
+        voice_vlan = first(children, r"^switchport\s+voice\s+vlan\s+(\d+)$")
+        native_vlan = first(children, r"^switchport\s+trunk\s+native\s+vlan\s+(\d+)$")
+        allowed_raw = first(children, r"^switchport\s+trunk\s+allowed\s+vlan\s+(.+)$")
         allowed_list = parse_allowed_list(allowed_raw)
 
-        # Build Juniper target interface
         try:
             j_if = cisco_to_juniper_if_direct(
                 ifname,
@@ -327,8 +322,8 @@ def convert_one_file(
 
         src_member = nums[0] if nums else None
         src_module = nums[1] if len(nums) >= 2 else None
-        src_port   = nums[-1] if nums else None
-        is_uplink  = (len(nums) >= 3 and nums[1] == uplink_module)
+        src_port = nums[-1] if nums else None
+        is_uplink = len(nums) >= 3 and nums[1] == uplink_module
 
         iface: Dict[str, Any] = {
             "name": ifname,
@@ -360,8 +355,8 @@ def convert_one_file(
             "derived_vc_members": derived_vc_members,
             "uplink_module": uplink_module,
             "strict_overflow": strict_overflow,
-            "member_models": member_models,  # {1: "ex4100-24mp", 2: "ex4100-48mp", ...}
-            "force_model": force_model.lower() if force_model else None,
+            "member_models": member_models,
+            "force_model": normalized_force,
         },
         "vlans": vlans,
         "interfaces": interfaces,
@@ -370,44 +365,180 @@ def convert_one_file(
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
 
-    print(f"✅ VC members: {derived_vc_members} | Models: {member_models} | Interfaces: {len(interfaces)} | ↳ {output_file}")
+    print(
+        f"✅ VC members: {derived_vc_members} | Models: {member_models} | Interfaces: {len(interfaces)} | ↳ {output_file}"
+    )
     if overflow_count:
-        print(f"  ⚠️  Access-port overflows vs inferred model: {overflow_count} (see 'mapping_overflow': true)")
+        print(
+            "  ⚠️  Access-port overflows vs inferred model: "
+            f"{overflow_count} (see 'mapping_overflow': true)"
+        )
     return output_file
+
+
+def convert_config_text(
+    config_text: str,
+    host_label: str,
+    uplink_module: int,
+    strict_overflow: bool,
+    force_model: Optional[str] = None,
+    output_dir: Optional[Path] = None,
+    start_port: int = 0,
+) -> Path:
+    """Convert in-memory configuration text fetched over SSH."""
+
+    out_dir = output_dir if output_dir is not None else Path.cwd()
+    conf = CiscoConfParse(config_text.splitlines(), factory=True)
+    return convert_conf_to_json(
+        conf,
+        sanitize_label(host_label, fallback="device"),
+        out_dir,
+        uplink_module,
+        strict_overflow,
+        force_model,
+        start_port,
+    )
+
+
+# ----------------------------
+# Convert ONE file
+# ----------------------------
+def convert_one_file(
+    input_path: Path,
+    uplink_module: int,
+    strict_overflow: bool,
+    force_model: Optional[str] = None,
+    output_dir: Optional[Path] = None,
+    start_port: int = 0,
+) -> Path:
+    """
+    Convert a single Cisco config text file to JSON using the rules above.
+    Returns the output JSON Path.
+    """
+
+    out_dir = output_dir if output_dir is not None else input_path.parent
+    base_name = os.path.splitext(os.path.basename(str(input_path)))[0]
+    conf = CiscoConfParse(str(input_path), factory=True)
+    return convert_conf_to_json(
+        conf,
+        base_name,
+        out_dir,
+        uplink_module,
+        strict_overflow,
+        force_model,
+        start_port,
+    )
 
 # ----------------------------
 # Main (single-file or bulk directory)
 # ----------------------------
 def main():
-    ap = argparse.ArgumentParser(description="CiscoConfParse → JSON (number-driven; per-member model inference).")
+    ap = argparse.ArgumentParser(
+        description="CiscoConfParse → JSON (number-driven; per-member model inference)."
+    )
     ap.add_argument("input_file", nargs="?", help="Path to a Cisco config text file")
     ap.add_argument(
         "--bulk-convert",
         help="Directory containing Cisco config files (.txt/.cfg/.conf). Outputs JSONs into the same directory.",
     )
     ap.add_argument(
+        "--hosts",
+        nargs="+",
+        help="One or more hostnames/IPs to fetch 'show running-config' over SSH.",
+    )
+    ap.add_argument(
+        "--ssh-username",
+        help="Default SSH username when connecting with --hosts.",
+    )
+    ap.add_argument(
+        "--ssh-timeout",
+        type=float,
+        default=60.0,
+        help="SSH connect/command timeout in seconds (default 60).",
+    )
+    ap.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Directory to place converted JSON files fetched via --hosts.",
+    )
+    ap.add_argument(
         "--uplink-module",
         type=int,
         default=1,
-        help="Cisco module number that represents uplinks (default 1)."
+        help="Cisco module number that represents uplinks (default 1).",
     )
     ap.add_argument(
         "--force-model",
         choices=sorted(TARGET_MODELS),
-        help="Force ALL members to this model, bypassing inference (ex4100-24mp or ex4100-48mp)."
+        help="Force ALL members to this model, bypassing inference (ex4100-24mp or ex4100-48mp).",
     )
     ap.add_argument(
         "--strict-overflow",
         action="store_true",
-        help="If set, raise an error when a port exceeds the inferred/forced model capacity."
+        help="If set, raise an error when a port exceeds the inferred/forced model capacity.",
     )
-    ap.add_argument("--start-port", type=int, default=0, help="Offset final Juniper port numbers by this amount.")
+    ap.add_argument(
+        "--start-port",
+        type=int,
+        default=0,
+        help="Offset final Juniper port numbers by this amount.",
+    )
     args = ap.parse_args()
 
-    if not args.input_file and not args.bulk_convert:
-        ap.error("Provide either a single input_file or --bulk-convert <directory>")
+    if not (args.input_file or args.bulk_convert or args.hosts):
+        ap.error(
+            "Provide a single input_file, --bulk-convert <directory>, or --hosts <device ...>"
+        )
 
-    # Single-file mode
+    if args.hosts and (args.input_file or args.bulk_convert):
+        ap.error("--hosts cannot be combined with input_file or --bulk-convert")
+
+    if args.hosts:
+        out_dir = args.output_dir if args.output_dir is not None else Path.cwd()
+        successes = 0
+        default_username = args.ssh_username
+        total = len(args.hosts)
+        for host in args.hosts:
+            username, password = prompt_for_credentials(host, default_username)
+            default_username = username
+            try:
+                config_text = run_ssh_command(
+                    host,
+                    username,
+                    password,
+                    "show running-config",
+                    timeout=args.ssh_timeout,
+                )
+            except KeyboardInterrupt:  # pragma: no cover - CLI convenience
+                raise
+            except Exception as exc:  # pragma: no cover - network interaction
+                print(f"❌ {host}: {exc}")
+                password = None
+                continue
+            finally:
+                password = None
+
+            try:
+                convert_config_text(
+                    config_text,
+                    host_label=host,
+                    uplink_module=args.uplink_module,
+                    strict_overflow=args.strict_overflow,
+                    force_model=args.force_model,
+                    output_dir=out_dir,
+                    start_port=args.start_port,
+                )
+                successes += 1
+            except Exception as exc:
+                print(f"❌ Failed to convert configuration from {host}: {exc}")
+
+        failures = total - successes
+        summary = f"✅ Remote conversions succeeded: {successes} | Failed: {failures}"
+        if successes:
+            summary += f" | Output directory: {out_dir.resolve()}"
+        print(summary)
+        return
+
     if args.input_file:
         in_path = Path(args.input_file)
         if not in_path.exists():
@@ -421,7 +552,6 @@ def main():
         )
         return
 
-    # Bulk mode
     bulk_dir = Path(args.bulk_convert)
     if not bulk_dir.exists() or not bulk_dir.is_dir():
         ap.error(f"--bulk-convert path must be an existing directory: {bulk_dir}")
@@ -443,7 +573,7 @@ def main():
                 uplink_module=args.uplink_module,
                 strict_overflow=args.strict_overflow,
                 force_model=args.force_model,
-                output_dir=bulk_dir,  # keep outputs alongside sources
+                output_dir=bulk_dir,
                 start_port=args.start_port,
             )
             ok += 1
@@ -452,6 +582,5 @@ def main():
             print(f"❌ {p.name}: {e}")
 
     print(f"✅ Done. Converted: {ok} | Failed: {failed}")
-
 if __name__ == "__main__":
     main()

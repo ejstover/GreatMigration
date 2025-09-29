@@ -67,13 +67,13 @@ services:
 
 ## Hardware Conversion
 
-This page parses Cisco `show tech-support` files and lists user specified Juniper or other OEM replacement models. 
+This page connects to Cisco switches, runs `show inventory` and `show interface status` (avoiding the heavier `show tech-support`), and lists the recommended Juniper or other OEM replacement models.
 
-1. **File area** – drag text files into the drop zone or click **Choose files** to open the hidden file selector.
-2. **Clear** – removes all uploaded results.
+1. **Host list** – enter one hostname or IP address per line and click **Collect show tech**. Credentials are requested for each collection and are not stored.
+2. **Clear** – removes all collected results and clears the host/credential fields.
 3. **Download PDF** – appears after processing and exports a report of detected hardware.
 
-Each processed file shows the detected Cisco items and their suggested replacements.
+Each processed device shows the detected Cisco items and their suggested replacements.
 
 ## Hardware Replacement Rules
 
@@ -87,11 +87,11 @@ Create permanent mappings between Cisco and Juniper model names.
 
 ## Config Conversion
 
-Convert Cisco configs, map them to Mist switches, and test or push the resulting port settings.
+Collect Cisco running-configs over SSH, map them to Mist switches, and test or push the resulting port settings.
 
-1. **File area** – drop configs or click **Choose files** to start conversion.  Use **Clear** to reset.
-2. **Converted JSON Preview** – shows the normalized output for each file.
-3. **Batch: Map files to switches** – adds a row per file with the following controls:
+1. **Host list** – enter one or more hostnames/IPs and click **Collect configs**. SSH credentials are prompted on every collection and discarded after use.
+2. **Converted JSON Preview** – shows the normalized output for each collected device.
+3. **Batch: Map files to switches** – adds a row per device with the following controls:
    * **Site** – drop-down listing Mist sites.
    * **Device** – drop-down listing switches within the selected site.
    * **Start member** – number box offsetting Juniper virtual-chassis member numbers.

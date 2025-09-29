@@ -39,16 +39,32 @@
 
     <div class="max-w-5xl mx-auto p-6">
     <section class="mb-6">
-      <div id="dz" class="dropzone rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 p-8 text-center text-slate-500 dark:text-slate-300">
-        <p class="mb-2">Drag & drop show tech files here (or click to select)</p>
-        <input id="file_input" type="file" multiple class="hidden" accept=".txt" />
-        <button id="choose_files" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Choose files</button>
-      </div>
-      <div class="flex items-center justify-between mt-2">
-        <div id="upload_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
-        <div class="space-x-2">
-          <button id="clear_all" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Clear</button>
-          <button id="export_pdf" class="hidden px-4 py-2 rounded bg-sky-600 text-white hover:bg-sky-700">Download PDF</button>
+      <div class="rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 p-6 shadow space-y-4">
+        <div>
+          <h2 class="text-lg font-medium">Collect show tech-support from switches</h2>
+          <p class="text-sm text-slate-600 dark:text-slate-300 mt-1">Provide one hostname or IP per line. Credentials are requested for each collection and are not stored.</p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium mb-1" for="host_list">Switch hostnames or IPs</label>
+          <textarea id="host_list" class="w-full border rounded-lg p-3 h-32 resize-y dark:bg-slate-900 dark:border-slate-700" placeholder="switch1.example.com&#10;10.0.0.2"></textarea>
+        </div>
+        <div class="grid md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-medium mb-1" for="ssh_username">SSH username</label>
+            <input id="ssh_username" type="text" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" autocomplete="username" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1" for="ssh_password">SSH password</label>
+            <input id="ssh_password" type="password" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" autocomplete="current-password" />
+          </div>
+        </div>
+        <div class="flex items-center justify-between flex-col md:flex-row gap-3">
+          <div id="upload_status" class="flex-1 text-sm text-slate-600 dark:text-slate-300"></div>
+          <div class="flex items-center gap-2">
+            <button id="collect_hosts" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Collect show tech</button>
+            <button id="clear_all" class="px-4 py-2 rounded bg-slate-200 text-slate-900 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">Clear</button>
+            <button id="export_pdf" class="hidden px-4 py-2 rounded bg-sky-600 text-white hover:bg-sky-700">Download PDF</button>
+          </div>
         </div>
       </div>
     </section>
@@ -81,9 +97,10 @@
       logoutBtn?.addEventListener('click', (e) => { e.preventDefault(); window.location.href = '/logout'; });
     }).catch(() => { window.location.href = '/login'; });
 
-    const dz = document.getElementById('dz');
-    const fileInput = document.getElementById('file_input');
-    const chooseBtn = document.getElementById('choose_files');
+    const hostInput = document.getElementById('host_list');
+    const usernameInput = document.getElementById('ssh_username');
+    const passwordInput = document.getElementById('ssh_password');
+    const collectBtn = document.getElementById('collect_hosts');
     const uploadStatus = document.getElementById('upload_status');
     const results = document.getElementById('results');
     const exportBtn = document.getElementById('export_pdf');
@@ -91,39 +108,95 @@
 
     let lastResults = null;
 
-    chooseBtn.addEventListener('click', (e) => { e.preventDefault(); fileInput.value=''; fileInput.click(); });
-    dz.addEventListener('click', (e) => { if (e.target === dz) { fileInput.value=''; fileInput.click(); }});
-    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
-    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-    dz.addEventListener('drop', (e) => { e.preventDefault(); dz.classList.remove('dragover'); handleFiles([...e.dataTransfer.files]); });
-    fileInput.addEventListener('change', () => { handleFiles([...fileInput.files]); fileInput.value=''; });
-
     clearBtn.addEventListener('click', () => {
       results.innerHTML = '';
       results.classList.add('hidden');
       uploadStatus.textContent = '';
       exportBtn.classList.add('hidden');
       lastResults = null;
+      hostInput.value = '';
+      usernameInput.value = '';
+      passwordInput.value = '';
     });
 
-    function handleFiles(files){
-      if(!files.length) return;
-      const fd = new FormData();
-      files.forEach(f => fd.append('files', f));
-      uploadStatus.textContent = 'Processing...';
-      fetch('/api/showtech', { method:'POST', body: fd })
-        .then(r => r.json())
-        .then(data => {
-          if(!data.ok) throw new Error(data.error || 'error');
-          lastResults = data.results;
-          renderResults(data.results);
-          uploadStatus.textContent = `Processed ${data.results.length} file(s)`;
-          exportBtn.classList.remove('hidden');
-        })
-        .catch(err => {
-          uploadStatus.textContent = 'Error: ' + err.message;
-        });
+    function parseHosts(raw){
+      if (!raw) return [];
+      const tokens = raw.split(/[\n,]+/).map(h => h.trim()).filter(Boolean);
+      return Array.from(new Set(tokens));
     }
+
+    collectBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const hosts = parseHosts(hostInput.value || '');
+      if (!hosts.length){
+        uploadStatus.textContent = 'Enter at least one hostname or IP address.';
+        return;
+      }
+
+      const username = (usernameInput.value || '').trim();
+      const password = passwordInput.value || '';
+      if (!username || !password){
+        uploadStatus.textContent = 'Enter SSH credentials to collect diagnostics.';
+        return;
+      }
+
+      collectBtn.disabled = true;
+      collectBtn.textContent = 'Collecting…';
+      uploadStatus.textContent = 'Collecting diagnostics…';
+
+      try {
+        const res = await fetch('/api/showtech', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hosts, username, password })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok){
+          const baseErr = data.error || `Request failed (${res.status})`;
+          const extraErr = (data.errors && data.errors.length)
+            ? ': ' + data.errors.map(e => `${e.host}: ${e.error}`).join('; ')
+            : '';
+          uploadStatus.textContent = `Error: ${baseErr}${extraErr}`;
+          results.innerHTML = '';
+          results.classList.add('hidden');
+          exportBtn.classList.add('hidden');
+          lastResults = null;
+          return;
+        }
+
+        const successes = data.results || [];
+        lastResults = successes;
+        if (successes.length){
+          renderResults(successes);
+          exportBtn.classList.remove('hidden');
+        } else {
+          results.innerHTML = '';
+          results.classList.add('hidden');
+          exportBtn.classList.add('hidden');
+        }
+
+        if (successes.length){
+          uploadStatus.textContent = `Processed ${successes.length} device(s).`;
+          results.classList.remove('hidden');
+        } else {
+          uploadStatus.textContent = 'No diagnostics collected.';
+        }
+        if (data.errors?.length){
+          const summary = data.errors.map(e => `${e.host}: ${e.error}`).join('; ');
+          uploadStatus.textContent += ` Failed: ${summary}`;
+        }
+      } catch (err){
+        uploadStatus.textContent = 'Error: ' + (err?.message || err);
+        results.innerHTML = '';
+        results.classList.add('hidden');
+        exportBtn.classList.add('hidden');
+        lastResults = null;
+      } finally {
+        collectBtn.disabled = false;
+        collectBtn.textContent = 'Collect show tech';
+        passwordInput.value = '';
+      }
+    });
 
     function renderResults(items){
       results.innerHTML='';
