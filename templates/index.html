@@ -71,14 +71,22 @@
             </div>
             <div>
               <label class="block text-sm font-medium mb-1" for="ssh_password">SSH password</label>
-              <input id="ssh_password" type="password" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" autocomplete="current-password" />
+              <div class="relative">
+                <input id="ssh_password" type="password" class="w-full border rounded p-2 pr-10 dark:bg-slate-900 dark:border-slate-700" autocomplete="current-password" />
+                <button type="button" id="toggle_password" class="absolute inset-y-0 right-0 px-3 flex items-center text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200" aria-label="Toggle password visibility">
+                  <svg id="toggle_password_icon" xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12c1.5-4 5.25-6.75 9.75-6.75S20.25 8 21.75 12c-1.5 4-5.25 6.75-9.75 6.75S3.75 16 2.25 12z" />
+                    <circle cx="12" cy="12" r="2.25" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
           <div class="flex items-center justify-between flex-col md:flex-row gap-3">
             <div id="convert_status" class="flex-1 text-sm text-slate-600 dark:text-slate-300"></div>
             <div class="flex items-center gap-2">
               <button id="collect_hosts" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Collect configs</button>
-              <button id="clear_all" class="px-4 py-2 rounded bg-slate-200 text-slate-900 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">Clear</button>
+              <button id="clear_all" class="px-4 py-2 rounded bg-rose-600 text-white hover:bg-rose-700">Clear</button>
             </div>
           </div>
         </div>
@@ -180,6 +188,8 @@
     const hostInput = document.getElementById('host_list');
     const usernameInput = document.getElementById('ssh_username');
     const passwordInput = document.getElementById('ssh_password');
+    const togglePassword = document.getElementById('toggle_password');
+    const togglePasswordIcon = document.getElementById('toggle_password_icon');
     const collectBtn = document.getElementById('collect_hosts');
     const convertStatus = document.getElementById('convert_status');
     const clearAll = document.getElementById('clear_all');
@@ -209,6 +219,23 @@
     function hide(el){ el.classList.add('hidden'); }
     function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
 
+    const eyeOpen = '<path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12c1.5-4 5.25-6.75 9.75-6.75S20.25 8 21.75 12c-1.5 4-5.25 6.75-9.75 6.75S3.75 16 2.25 12z"></path><circle cx="12" cy="12" r="2.25"></circle>';
+    const eyeClosed = '<path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.75 12c1.5 4 5.25 6.75 9.75 6.75 1.603 0 3.115-.332 4.48-.927M6.228 6.228A10.46 10.46 0 0112 5.25c4.5 0 8.25 2.75 9.75 6.75a10.523 10.523 0 01-2.03 3.173M6.228 6.228L3 3m3.228 3.228l11.544 11.544"></path><path stroke-linecap="round" stroke-linejoin="round" d="M9.88 9.88a2.25 2.25 0 003.182 3.182"></path>';
+
+    function setPasswordIcon(isVisible){
+      if (!togglePasswordIcon) return;
+      togglePasswordIcon.innerHTML = isVisible ? eyeClosed : eyeOpen;
+    }
+
+    togglePassword?.addEventListener('click', () => {
+      if (!passwordInput) return;
+      const showing = passwordInput.type === 'text';
+      passwordInput.type = showing ? 'password' : 'text';
+      setPasswordIcon(!showing);
+    });
+
+    setPasswordIcon(false);
+
     clearAll.addEventListener('click', () => {
       convertedItems = [];
       rows = [];
@@ -225,6 +252,8 @@
       hostInput.value = '';
       usernameInput.value = '';
       passwordInput.value = '';
+      passwordInput.type = 'password';
+      setPasswordIcon(false);
     });
 
     // --- Sites/Devices ---

@@ -69,7 +69,7 @@ services:
 
 This page connects to Cisco switches, runs `show inventory` and `show interface status` (avoiding the heavier `show tech-support`), and lists the recommended Juniper or other OEM replacement models.
 
-1. **Host list** – enter one hostname or IP address per line and click **Collect show tech**. Credentials are requested for each collection and are not stored.
+1. **Host list** – enter one hostname or IP address per line and click **Collect Inventory**. Credentials are requested for each collection and are not stored.
 2. **Clear** – removes all collected results and clears the host/credential fields.
 3. **Download PDF** – appears after processing and exports a report of detected hardware.
 
