@@ -1,10 +1,13 @@
 """Utility helpers for securely retrieving command output over SSH."""
 from __future__ import annotations
 
+import importlib
 import getpass
 import logging
 import re
+
 from typing import Iterable, Mapping, Optional, Sequence
+
 
 try:  # pragma: no cover - import guard for optional dependency
     from netmiko import ConnectHandler
@@ -13,6 +16,7 @@ try:  # pragma: no cover - import guard for optional dependency
         NetmikoAuthenticationException,
         NetmikoTimeoutException,
     )
+
 except Exception as exc:  # pragma: no cover - handled at runtime
     ConnectHandler = None  # type: ignore[assignment]
     NetmikoAuthenticationException = NetmikoTimeoutException = None  # type: ignore[assignment]
@@ -29,11 +33,13 @@ class SSHCommandError(RuntimeError):
     """Raised when a remote SSH command fails."""
 
 
+
 def _require_netmiko() -> None:
     if ConnectHandler is None:  # pragma: no cover - dependency guard
         raise RuntimeError(
             "netmiko is required to run SSH commands. Install netmiko to enable remote collection."
         ) from _NETMIKO_IMPORT_ERROR
+
 
 
 def prompt_for_credentials(host: str, default_username: Optional[str] = None) -> tuple[str, str]:
@@ -143,7 +149,6 @@ def run_ssh_commands(
     finally:
         _safe_disconnect(connection)
 
-
 def _open_connection(
     host: str,
     username: str,
@@ -162,15 +167,13 @@ def _open_connection(
         banner_timeout=timeout,
         fast_cli=False,
     )
-
+    
     try:
         if global_delay_factor > 0:
             connection.global_delay_factor = max(1.0, global_delay_factor)
     except Exception:  # pragma: no cover - defensive
-        logger.debug("Failed to adjust global delay factor for %s", host, exc_info=True)
-
+        logger.debug("Failed to adjust global delay factor for %s", host, exc_info=True
     return connection
-
 
 def _send_setup_commands(
     connection: NetmikoBaseConnection,
@@ -181,7 +184,6 @@ def _send_setup_commands(
 ) -> None:
     if not commands:
         return
-
     for setup_command in commands:
         try:
             connection.send_command(
@@ -197,7 +199,6 @@ def _send_setup_commands(
             logger.debug(
                 "Setup command '%s' failed on %s", setup_command, host, exc_info=True
             )
-
 
 def _send_command(
     connection: NetmikoBaseConnection,
@@ -247,10 +248,15 @@ def _safe_disconnect(connection: NetmikoBaseConnection) -> None:
         connection.disconnect()
     except Exception:
         logger.debug("Failed to close SSH session cleanly", exc_info=True)
-
-
-def _normalize_newlines(value: str) -> str:
-    return value.replace("\r\n", "\n").replace("\r", "\n")
+def _connection_closed_error(host: str, context: str, command: Optional[str]) -> SSHCommandError:
+    if command:
+        command_text = f" while handling '{command}'"
+    else:
+        command_text = ""
+    return SSHCommandError(
+        f"{host}: the SSH session closed unexpectedly{command_text} — the remote device either terminated the interactive shell"
+        " or the network latency exceeded the server's limits. Try increasing the SSH timeout or rerunning the collection on a less busy link."
+    )
 
 
 def _connection_closed_error(host: str, command: Optional[str]) -> SSHCommandError:
