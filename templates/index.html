@@ -219,6 +219,146 @@
     function hide(el){ el.classList.add('hidden'); }
     function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
 
+    function createStatusTracker(container, hosts, options = {}){
+      if (!container) return null;
+      const stageLabels = options.stageLabels || ['Queued', 'Logging in…', 'Collecting config…', 'Processing config…'];
+      const successLabel = options.successLabel || 'Complete';
+      const entries = hosts.map(h => ({
+        host: h,
+        key: (h || '').toString().trim().toLowerCase(),
+        stageIndex: 0,
+        status: stageLabels[0],
+        done: false,
+        error: null,
+      }));
+      let summary = options.summary || '';
+      let timer = null;
+      let pointer = 0;
+
+      function findEntry(identifier){
+        const key = (identifier || '').toString().trim().toLowerCase();
+        return entries.find(e => e.key === key)
+          || entries.find(e => e.host.toLowerCase() === key)
+          || (key ? entries.find(e => key.includes(e.key)) : undefined)
+          || entries.find(e => !e.done);
+      }
+
+      function render(){
+        if (!entries.length){
+          container.textContent = summary || '';
+          return;
+        }
+        const completed = entries.filter(e => e.done && !e.error).length;
+        const failed = entries.filter(e => e.error).length;
+        const total = entries.length;
+        const progressed = completed + failed;
+        const percent = total ? Math.round((progressed / total) * 100) : 0;
+        const variant = failed ? 'error' : progressed === total ? 'success' : 'info';
+        const color = variant === 'error' ? 'bg-rose-500' : variant === 'success' ? 'bg-emerald-500' : 'bg-sky-500';
+        const labelColor = variant === 'error'
+          ? 'text-rose-700 dark:text-rose-300'
+          : variant === 'success'
+            ? 'text-emerald-700 dark:text-emerald-300'
+            : 'text-slate-600 dark:text-slate-300';
+        const fillPercent = progressed ? Math.min(Math.max(percent, 8), 100) : 0;
+        const items = entries.map(entry => {
+          const state = entry.error ? `Error: ${entry.error}` : entry.status;
+          const stateColor = entry.error
+            ? 'text-rose-600 dark:text-rose-300'
+            : entry.done
+              ? 'text-emerald-600 dark:text-emerald-300'
+              : 'text-slate-500 dark:text-slate-300';
+          return `
+            <li class="flex items-center justify-between gap-4 text-xs sm:text-sm">
+              <span class="font-medium truncate" title="${escapeHtml(entry.host)}">${escapeHtml(entry.host)}</span>
+              <span class="${stateColor} whitespace-nowrap">${escapeHtml(state)}</span>
+            </li>
+          `;
+        }).join('');
+        container.innerHTML = `
+          <div class="space-y-2">
+            <div class="flex items-center justify-between text-xs uppercase tracking-wide ${labelColor}">
+              <span>${escapeHtml(summary || '')}</span>
+              <span>${progressed}/${total}</span>
+            </div>
+            <div class="w-full bg-slate-200 dark:bg-slate-700/70 rounded-full h-2 overflow-hidden">
+              <div class="${color} h-2 transition-all duration-300" style="width:${fillPercent}%"></div>
+            </div>
+            <ul class="space-y-1">${items}</ul>
+          </div>
+        `;
+      }
+
+      function advance(){
+        const pending = entries.filter(e => !e.done && !e.error);
+        if (!pending.length){
+          api.stop();
+          render();
+          return;
+        }
+        const entry = pending[pointer % pending.length];
+        pointer = (pointer + 1) % Math.max(pending.length, 1);
+        if (entry.stageIndex < stageLabels.length - 1){
+          entry.stageIndex += 1;
+          entry.status = stageLabels[entry.stageIndex];
+          render();
+        }
+      }
+
+      timer = setInterval(advance, options.intervalMs || 1200);
+      render();
+
+      const api = {
+        updateSummary(text){ summary = text; render(); },
+        markSuccess(identifier, message){
+          const entry = findEntry(identifier);
+          if (!entry) return;
+          entry.done = true;
+          entry.error = null;
+          entry.stageIndex = stageLabels.length;
+          entry.status = message || successLabel;
+          render();
+        },
+        markError(identifier, errorMessage){
+          const entry = findEntry(identifier);
+          if (!entry) return;
+          entry.done = true;
+          entry.error = errorMessage || 'Failed';
+          entry.stageIndex = stageLabels.length;
+          entry.status = 'Failed';
+          render();
+        },
+        markAllError(errorMessage){
+          const msg = errorMessage || 'Failed';
+          entries.forEach(entry => {
+            if (!entry.done){
+              entry.done = true;
+              entry.error = msg;
+              entry.status = 'Failed';
+              entry.stageIndex = stageLabels.length;
+            }
+          });
+          summary = errorMessage || summary;
+          render();
+          api.stop();
+        },
+        stop(){
+          if (timer){
+            clearInterval(timer);
+            timer = null;
+          }
+        },
+        finalize(text){
+          summary = text;
+          api.stop();
+          render();
+        },
+        hasEntries(){ return entries.length > 0; },
+      };
+
+      return api;
+    }
+
     const eyeOpen = '<path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12c1.5-4 5.25-6.75 9.75-6.75S20.25 8 21.75 12c-1.5 4-5.25 6.75-9.75 6.75S3.75 16 2.25 12z"></path><circle cx="12" cy="12" r="2.25"></circle>';
     const eyeClosed = '<path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.75 12c1.5 4 5.25 6.75 9.75 6.75 1.603 0 3.115-.332 4.48-.927M6.228 6.228A10.46 10.46 0 0112 5.25c4.5 0 8.25 2.75 9.75 6.75a10.523 10.523 0 01-2.03 3.173M6.228 6.228L3 3m3.228 3.228l11.544 11.544"></path><path stroke-linecap="round" stroke-linejoin="round" d="M9.88 9.88a2.25 2.25 0 003.182 3.182"></path>';
 
@@ -236,13 +376,17 @@
 
     setPasswordIcon(false);
 
+    let convertProgress = null;
+
     clearAll.addEventListener('click', () => {
+      convertProgress?.stop();
+      convertProgress = null;
       convertedItems = [];
       rows = [];
       resultsList.innerHTML = '';
       batchRows.innerHTML = '';
       batchOutput.innerHTML = '';
-      convertStatus.textContent = '';
+      convertStatus.innerHTML = '';
       hide(results);
       hide(batchSection);
       hide(rowsWarning);
@@ -310,7 +454,12 @@
 
       collectBtn.disabled = true;
       collectBtn.textContent = 'Collecting…';
-      convertStatus.textContent = 'Collecting configurations…';
+      convertStatus.innerHTML = '';
+      convertProgress?.stop();
+      convertProgress = createStatusTracker(convertStatus, hosts, {
+        summary: 'Collecting configurations…',
+        stageLabels: ['Queued', 'Logging in…', 'Collecting config…', 'Processing config…'],
+      });
 
       try {
         const res = await fetch('/api/convert', {
@@ -329,7 +478,18 @@
           const extraErr = (data.errors && data.errors.length)
             ? ': ' + data.errors.map(e => `${e.host}: ${e.error}`).join('; ')
             : '';
-          convertStatus.textContent = `Error: ${baseErr}${extraErr}`;
+          const message = `Error: ${baseErr}${extraErr}`;
+          if (convertProgress?.hasEntries()){
+            if (data.errors?.length){
+              data.errors.forEach(e => convertProgress.markError(e.host || '', e.error || baseErr));
+            } else {
+              convertProgress.markAllError(message);
+            }
+            convertProgress.finalize(message);
+            convertProgress = null;
+          } else {
+            convertStatus.textContent = message;
+          }
           return;
         }
 
@@ -379,6 +539,15 @@
           show(batchSection);
         }
 
+        if (convertProgress?.hasEntries()){
+          successes.forEach(item => {
+            convertProgress.markSuccess(item?.host || item?.source_file || '', 'Complete');
+          });
+          data.errors?.forEach(e => {
+            convertProgress.markError(e.host || '', e.error || 'Failed');
+          });
+        }
+
         const parts = [];
         if (successes.length){
           parts.push(`Converted ${successes.length} device(s). Total: ${convertedItems.length}.`);
@@ -387,13 +556,26 @@
           const summary = data.errors.map(e => `${e.host}: ${e.error}`).join('; ');
           parts.push(`Failed: ${summary}`);
         }
-        convertStatus.textContent = parts.join(' ') || 'No configurations collected.';
+        const summaryText = parts.join(' ') || 'No configurations collected.';
+        if (convertProgress?.hasEntries()){
+          convertProgress.finalize(summaryText);
+          convertProgress = null;
+        } else {
+          convertStatus.textContent = summaryText;
+        }
       } catch (err){
-        convertStatus.textContent = `Error: ${err?.message || err}`;
+        const message = `Error: ${err?.message || err}`;
+        if (convertProgress?.hasEntries()){
+          convertProgress.markAllError(message);
+          convertProgress = null;
+        } else {
+          convertStatus.textContent = message;
+        }
       } finally {
         collectBtn.disabled = false;
         collectBtn.textContent = 'Collect configs';
         passwordInput.value = '';
+        convertProgress?.stop();
       }
     });
 
