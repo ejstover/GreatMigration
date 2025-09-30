@@ -22,5 +22,9 @@ class _UnsupportedTelnet:
         )
 
 
+
+IAC = bytes([255])
+
 Telnet = _UnsupportedTelnet
-__all__ = ["Telnet"]
+__all__ = ["Telnet", "IAC"]
+

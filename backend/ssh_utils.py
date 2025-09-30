@@ -228,7 +228,7 @@ def _send_setup_commands(
             logger.debug(
                 "Setup command '%s' failed on %s", setup_command, host, exc_info=True
             )
-            
+
 def _execute_command(
     connection: NetmikoBaseConnection,
     host: str,
@@ -277,6 +277,7 @@ def _safe_disconnect(connection: NetmikoBaseConnection) -> None:
         connection.disconnect()
     except Exception:
         logger.debug("Failed to close SSH session cleanly", exc_info=True)
+
 
 def _connection_closed_error(host: str, context: str, command: Optional[str]) -> SSHCommandError:
     if command:
