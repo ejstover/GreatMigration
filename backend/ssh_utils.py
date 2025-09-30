@@ -9,11 +9,14 @@ from typing import Iterable, Mapping, Optional, Sequence, TYPE_CHECKING
 
 try:  # pragma: no cover - import guard for optional dependency
     from netmiko import ConnectHandler
+
     from netmiko.base_connection import BaseConnection as NetmikoBaseConnection
+
     from netmiko.ssh_exception import (
         NetmikoAuthenticationException,
         NetmikoTimeoutException,
     )
+
 except Exception:  # pragma: no cover - handled at runtime
     ConnectHandler = None  # type: ignore[assignment]
     NetmikoAuthenticationException = NetmikoTimeoutException = None  # type: ignore[assignment]
@@ -21,6 +24,7 @@ except Exception:  # pragma: no cover - handled at runtime
 
 if TYPE_CHECKING:  # pragma: no cover - imported only for typing
     from netmiko.base_connection import BaseConnection as NetmikoBaseConnection
+
 
 
 logger = logging.getLogger(__name__)
@@ -128,7 +132,6 @@ def run_ssh_commands(
     global_delay_factor: float = 1.0,
 ) -> Mapping[str, str]:
     """Execute multiple *commands* over SSH and return their outputs."""
-
     _ensure_netmiko()
     command_list = [c for c in (cmd.strip() for cmd in commands) if c]
     if not command_list:
@@ -282,8 +285,15 @@ def _safe_disconnect(connection: NetmikoBaseConnection) -> None:
         logger.debug("Failed to close SSH session cleanly", exc_info=True)
 
 
-def _normalize_newlines(value: str) -> str:
-    return value.replace("\r\n", "\n").replace("\r", "\n")
+def _connection_closed_error(host: str, context: str, command: Optional[str]) -> SSHCommandError:
+    if command:
+        command_text = f" while handling '{command}'"
+    else:
+        command_text = ""
+    return SSHCommandError(
+        f"{host}: the SSH session closed unexpectedly{command_text} — the remote device either terminated the interactive shell"
+        " or the network latency exceeded the server's limits. Try increasing the SSH timeout or rerunning the collection on a less busy link."
+    )
 
 
 def _connection_closed_error(host: str, context: str, command: Optional[str]) -> SSHCommandError:
