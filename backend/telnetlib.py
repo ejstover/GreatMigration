@@ -105,3 +105,4 @@ globals().update(_CONSTANTS)
 
 Telnet = _UnsupportedTelnet
 __all__ = ["Telnet", *_CONSTANTS.keys()]
+
