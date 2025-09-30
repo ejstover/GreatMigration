@@ -253,9 +253,9 @@ def _safe_disconnect(connection: NetmikoBaseConnection) -> None:
     except Exception:
         logger.debug("Failed to close SSH session cleanly", exc_info=True)
 
-
 def _normalize_newlines(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n")
+
 
 
 def _connection_closed_error(host: str, context: str, command: Optional[str]) -> SSHCommandError:
