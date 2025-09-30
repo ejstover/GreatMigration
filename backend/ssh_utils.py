@@ -248,9 +248,12 @@ def _establish_prompt(
 
     while time.monotonic() < end_time:
         if channel.recv_ready():
-            data = channel.recv(65535)
-            if not data:
-                continue
+            data = _recv_with_eof_handling(
+                channel,
+                host,
+                "the interactive shell prompt",
+                command=None,
+            )
             buffer += data.decode(errors="ignore")
             prompt = _detect_prompt(buffer)
             if prompt:
@@ -317,14 +320,12 @@ def _read_until_prompt(
 
     while time.monotonic() < end_time:
         if channel.recv_ready():
-            try:
-                data = channel.recv(65535)
-            except EOFError as exc:
-                raise SSHCommandError(
-                    f"{host}: connection closed while waiting for '{command}' response; this often happens when the remote device drops idle SSH sessions or the connection is hit by high latency. Try increasing the SSH timeout and rerunning the collection."
-                ) from exc
-            if not data:
-                continue
+            data = _recv_with_eof_handling(
+                channel,
+                host,
+                f"the '{command}' response",
+                command=command,
+            )
             buffer += data.decode(errors="ignore")
             normalized = _normalize_newlines(buffer)
             if normalized.rstrip().endswith(prompt_clean):
@@ -383,6 +384,41 @@ def _extract_command_output(
 
 def _normalize_newlines(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _recv_with_eof_handling(
+    channel: "paramiko.Channel",
+    host: str,
+    context: str,
+    *,
+    command: Optional[str],
+) -> bytes:
+    try:
+        data = channel.recv(65535)
+    except EOFError as exc:
+        raise _connection_closed_error(host, context, command) from exc
+
+    if not data:
+        if getattr(channel, "exit_status_ready", None) and channel.exit_status_ready():
+            raise _connection_closed_error(host, context, command)
+        if getattr(channel, "closed", None) and channel.closed:
+            raise _connection_closed_error(host, context, command)
+        # Some network devices briefly report no data before the prompt
+        # arrives. Yield control to avoid a tight loop and try again.
+        time.sleep(0.05)
+        return b""
+
+    return data
+
+
+def _connection_closed_error(host: str, context: str, command: Optional[str]) -> SSHCommandError:
+    if command:
+        command_text = f" while handling '{command}'"
+    else:
+        command_text = ""
+    return SSHCommandError(
+        f"{host}: the SSH session closed unexpectedly{command_text} — the remote device either terminated the interactive shell or the network latency exceeded the server's limits. Try increasing the SSH timeout or rerunning the collection on a less busy link."
+    )
 
 
 def sanitize_label(value: str, fallback: str = "device") -> str:
