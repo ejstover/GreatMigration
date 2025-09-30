@@ -2,17 +2,30 @@
 from __future__ import annotations
 
 import getpass
+import logging
 import re
-import time
-from typing import Iterable, Mapping, Optional
+from typing import Iterable, Mapping, Optional, Sequence, TYPE_CHECKING
 
 try:  # pragma: no cover - import guard for optional dependency
-    import paramiko  # type: ignore
+    from netmiko import ConnectHandler
+    from netmiko.ssh_exception import (
+        NetmikoAuthenticationException,
+        NetmikoTimeoutException,
+    )
 except ImportError as exc:  # pragma: no cover - handled at runtime
-    paramiko = None  # type: ignore
-    _PARAMIKO_IMPORT_ERROR = exc
+    ConnectHandler = None  # type: ignore[assignment]
+    NetmikoAuthenticationException = NetmikoTimeoutException = None  # type: ignore[assignment]
+    _NETMIKO_IMPORT_ERROR = exc
 else:  # pragma: no cover - simple import path
-    _PARAMIKO_IMPORT_ERROR = None
+    _NETMIKO_IMPORT_ERROR = None
+
+if TYPE_CHECKING:  # pragma: no cover - imported only for typing
+    from netmiko.base_connection import BaseConnection as NetmikoBaseConnection
+else:  # pragma: no cover - runtime fallback when netmiko is unavailable
+    NetmikoBaseConnection = object
+
+
+logger = logging.getLogger(__name__)
 
 
 class SSHCommandError(RuntimeError):
@@ -48,36 +61,28 @@ def run_ssh_command(
     command: str,
     *,
     timeout: float = 60.0,
+    device_type: str = "cisco_ios",
+    global_delay_factor: float = 1.0,
 ) -> str:
     """Execute *command* over SSH and return the textual output."""
 
-    if paramiko is None:  # pragma: no cover - dependency guard
+    if ConnectHandler is None:  # pragma: no cover - dependency guard
         raise RuntimeError(
-            "paramiko is required to run SSH commands. Install paramiko to enable remote collection."
-        ) from _PARAMIKO_IMPORT_ERROR
+            "netmiko is required to run SSH commands. Install netmiko to enable remote collection."
+        ) from _NETMIKO_IMPORT_ERROR
 
-    primary_exc: Optional[Exception] = None
-
-    client = _connect_ssh_client(host, username, password, timeout)
+    connection = _connect_ssh_client(host, username, password, timeout, device_type)
     try:
-        try:
-            return _run_command_via_exec(client, host, command, timeout)
-        except (paramiko.SSHException, EOFError, OSError) as exc:
-            primary_exc = exc
+        _prepare_session(connection, host, timeout, global_delay_factor)
+        return _execute_command(
+            connection,
+            host,
+            command,
+            timeout,
+            global_delay_factor,
+        )
     finally:
-        _safe_close(client)
-
-    if primary_exc is None:
-        # Unreachable, but keeps mypy/pyright satisfied.
-        raise SSHCommandError(f"{host}: failed to execute '{command}'")
-
-    client = _connect_ssh_client(host, username, password, timeout)
-    try:
-        return _run_command_via_shell(client, host, command, timeout)
-    except Exception as fallback_exc:
-        raise primary_exc from fallback_exc
-    finally:
-        _safe_close(client)
+        _safe_disconnect(connection)
 
 
 def run_ssh_commands(
@@ -87,19 +92,15 @@ def run_ssh_commands(
     commands: Iterable[str],
     *,
     timeout: float = 60.0,
+    device_type: str = "cisco_ios",
+    global_delay_factor: float = 1.0,
 ) -> Mapping[str, str]:
-    """Execute multiple *commands* over SSH and return their outputs.
+    """Execute multiple *commands* over SSH and return their outputs."""
 
-    The commands are executed within a single interactive shell session so the
-    connection overhead is paid only once. Each command is mapped to its output
-    text. If any command fails or produces no output an :class:`SSHCommandError`
-    is raised identifying the offending command.
-    """
-
-    if paramiko is None:  # pragma: no cover - dependency guard
+    if ConnectHandler is None:  # pragma: no cover - dependency guard
         raise RuntimeError(
-            "paramiko is required to run SSH commands. Install paramiko to enable remote collection."
-        ) from _PARAMIKO_IMPORT_ERROR
+            "netmiko is required to run SSH commands. Install netmiko to enable remote collection."
+        ) from _NETMIKO_IMPORT_ERROR
 
     command_list = [c for c in (cmd.strip() for cmd in commands) if c]
     if not command_list:
@@ -107,277 +108,165 @@ def run_ssh_commands(
 
     if len(command_list) == 1:
         single = command_list[0]
-        return {single: run_ssh_command(host, username, password, single, timeout=timeout)}
+        return {
+            single: run_ssh_command(
+                host,
+                username,
+                password,
+                single,
+                timeout=timeout,
+                device_type=device_type,
+                global_delay_factor=global_delay_factor,
+            )
+        }
 
-    client = _connect_ssh_client(host, username, password, timeout)
+    connection = _connect_ssh_client(host, username, password, timeout, device_type)
     try:
-        return _run_commands_via_shell(client, host, command_list, timeout)
+        _prepare_session(connection, host, timeout, global_delay_factor)
+        outputs: dict[str, str] = {}
+        for command in command_list:
+            outputs[command] = _execute_command(
+                connection,
+                host,
+                command,
+                timeout,
+                global_delay_factor,
+            )
+        return outputs
     finally:
-        _safe_close(client)
+        _safe_disconnect(connection)
 
 
 def _connect_ssh_client(
-    host: str, username: str, password: str, timeout: float
-) -> "paramiko.SSHClient":
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(
-        hostname=host,
+    host: str,
+    username: str,
+    password: str,
+    timeout: float,
+    device_type: str,
+) -> NetmikoBaseConnection:
+    return ConnectHandler(
+        device_type=device_type,
+        host=host,
         username=username,
         password=password,
-        look_for_keys=False,
-        allow_agent=False,
-        timeout=timeout,
-        banner_timeout=timeout,
+        conn_timeout=timeout,
         auth_timeout=timeout,
+        banner_timeout=timeout,
+        fast_cli=False,
     )
-    return client
 
 
-def _safe_close(client: "paramiko.SSHClient") -> None:
-    try:
-        client.close()
-    except Exception:
-        pass
-
-
-def _run_command_via_exec(
-    client: "paramiko.SSHClient",
+def _prepare_session(
+    connection: NetmikoBaseConnection,
     host: str,
-    command: str,
     timeout: float,
-) -> str:
-    try:
-        _, stdout, _ = client.exec_command("terminal length 0", timeout=timeout, get_pty=True)
-        stdout.channel.recv_exit_status()
-    except Exception:
-        pass
-
-    stdin, stdout, stderr = client.exec_command(command, timeout=timeout, get_pty=True)
-    try:
-        output = stdout.read().decode(errors="ignore")
-        error = stderr.read().decode(errors="ignore")
-    finally:
-        try:
-            stdin.close()
-        except Exception:
-            pass
-
-    exit_status = stdout.channel.recv_exit_status()
-    if exit_status != 0:
-        raise SSHCommandError(
-            f"{host}: command '{command}' failed with exit status {exit_status}: {error.strip() or 'no stderr'}"
-        )
-
-    output = _normalize_newlines(output)
-    if not output.strip():
-        if error.strip():
-            raise SSHCommandError(f"{host}: no output received for '{command}': {error.strip()}")
-        raise SSHCommandError(f"{host}: no output received for '{command}'")
-
-    return output
-
-
-def _run_command_via_shell(
-    client: "paramiko.SSHClient",
-    host: str,
-    command: str,
-    timeout: float,
-) -> str:
-    channel = client.invoke_shell()
-    channel.settimeout(timeout)
-    try:
-        prompt = _establish_prompt(channel, host, timeout)
-        _send_and_discard(channel, host, "terminal length 0", prompt, timeout)
-        raw_output = _send_and_capture(channel, host, command, prompt, timeout)
-    finally:
-        try:
-            channel.close()
-        except Exception:
-            pass
-
-    output = _extract_command_output(raw_output, host, command, prompt)
-    if not output.strip():
-        raise SSHCommandError(f"{host}: no output received for '{command}'")
-
-    return output
-
-
-def _run_commands_via_shell(
-    client: "paramiko.SSHClient",
-    host: str,
-    commands: Iterable[str],
-    timeout: float,
-) -> Mapping[str, str]:
-    channel = client.invoke_shell()
-    channel.settimeout(timeout)
-    try:
-        prompt = _establish_prompt(channel, host, timeout)
-        try:
-            _send_and_discard(channel, host, "terminal length 0", prompt, timeout)
-        except Exception:
-            pass
-        try:
-            _send_and_discard(channel, host, "terminal width 0", prompt, timeout)
-        except Exception:
-            pass
-
-        outputs: dict[str, str] = {}
-        for command in commands:
-            raw_output = _send_and_capture(channel, host, command, prompt, timeout)
-            output = _extract_command_output(raw_output, host, command, prompt)
-            if not output.strip():
-                raise SSHCommandError(f"{host}: no output received for '{command}'")
-            outputs[command] = output
-        return outputs
-    finally:
-        try:
-            channel.close()
-        except Exception:
-            pass
-
-
-def _establish_prompt(
-    channel: "paramiko.Channel", host: str, timeout: float
-) -> str:
-    """Return the detected device prompt for the interactive session."""
-
-    end_time = time.monotonic() + timeout
-    buffer = ""
-    channel.send("\n")
-
-    while time.monotonic() < end_time:
-        if channel.recv_ready():
-            data = channel.recv(65535)
-            if not data:
-                continue
-            buffer += data.decode(errors="ignore")
-            prompt = _detect_prompt(buffer)
-            if prompt:
-                return prompt
-        else:
-            prompt = _detect_prompt(buffer)
-            if prompt:
-                return prompt
-            time.sleep(0.1)
-            channel.send("\n")
-
-    raise SSHCommandError(f"{host}: timed out waiting for device prompt")
-
-
-_PROMPT_SUFFIXES = ("#", ">", "]", "$")
-
-
-def _detect_prompt(buffer: str) -> Optional[str]:
-    normalized = _normalize_newlines(buffer)
-    lines = [line.strip() for line in normalized.split("\n") if line.strip()]
-    if not lines:
-        return None
-
-    for line in reversed(lines):
-        for suffix in _PROMPT_SUFFIXES:
-            if line.endswith(suffix):
-                return line
-
-    return lines[-1]
-
-
-def _send_and_discard(
-    channel: "paramiko.Channel",
-    host: str,
-    command: str,
-    prompt: str,
-    timeout: float,
+    global_delay_factor: float,
 ) -> None:
-    channel.send(f"{command}\n")
-    _read_until_prompt(channel, host, command, prompt, timeout)
+    try:
+        if global_delay_factor > 0:
+            connection.global_delay_factor = max(
+                getattr(connection, "global_delay_factor", 1.0),
+                global_delay_factor,
+            )
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("Failed to adjust global delay factor for %s", host, exc_info=True)
+
+    _send_setup_commands(
+        connection,
+        host,
+        ("terminal length 0", "terminal width 0"),
+        timeout,
+        global_delay_factor,
+    )
 
 
-def _send_and_capture(
-    channel: "paramiko.Channel",
+def _send_setup_commands(
+    connection: NetmikoBaseConnection,
     host: str,
-    command: str,
-    prompt: str,
+    commands: Sequence[str],
     timeout: float,
-) -> str:
-    channel.send(f"{command}\n")
-    return _read_until_prompt(channel, host, command, prompt, timeout)
+    global_delay_factor: float,
+) -> None:
+    for setup_command in commands:
+        try:
+            connection.send_command(
+                setup_command,
+                expect_string=None,
+                read_timeout=timeout,
+                delay_factor=max(global_delay_factor, 1.0),
+                strip_command=True,
+                strip_prompt=True,
+                normalize=True,
+            )
+        except Exception:
+            logger.debug(
+                "Setup command '%s' failed on %s", setup_command, host, exc_info=True
+            )
 
 
-def _read_until_prompt(
-    channel: "paramiko.Channel",
+def _execute_command(
+    connection: NetmikoBaseConnection,
     host: str,
     command: str,
-    prompt: str,
     timeout: float,
+    global_delay_factor: float,
 ) -> str:
-    buffer = ""
-    end_time = time.monotonic() + timeout
-    prompt_clean = prompt.strip()
+    try:
+        output = connection.send_command(
+            command,
+            expect_string=None,
+            read_timeout=timeout,
+            delay_factor=max(global_delay_factor, 1.0),
+            strip_command=True,
+            strip_prompt=True,
+            normalize=True,
+        )
+    except EOFError as exc:
+        logger.error(
+            "SSH session closed while executing '%s' on %s", command, host, exc_info=True
+        )
+        raise _connection_closed_error(host, f"the '{command}' response", command) from exc
+    except NetmikoTimeoutException as exc:  # type: ignore[arg-type]
+        logger.error(
+            "Timed out waiting for '%s' response on %s", command, host, exc_info=True
+        )
+        raise SSHCommandError(f"{host}: timed out waiting for '{command}' response") from exc
+    except NetmikoAuthenticationException as exc:  # type: ignore[arg-type]
+        logger.error("Authentication failed for %s", host, exc_info=True)
+        raise SSHCommandError(f"{host}: authentication failed: {exc}") from exc
+    except Exception as exc:
+        logger.error(
+            "SSH command '%s' failed on %s", command, host, exc_info=True
+        )
+        raise SSHCommandError(f"{host}: failed to execute '{command}': {exc}") from exc
 
-    while time.monotonic() < end_time:
-        if channel.recv_ready():
-            data = channel.recv(65535)
-            if not data:
-                continue
-            buffer += data.decode(errors="ignore")
-            normalized = _normalize_newlines(buffer)
-            if normalized.rstrip().endswith(prompt_clean):
-                return normalized
-        else:
-            if buffer:
-                normalized = _normalize_newlines(buffer)
-                if normalized.rstrip().endswith(prompt_clean):
-                    return normalized
-            time.sleep(0.1)
+    normalized = _normalize_newlines(output)
+    if not normalized.strip():
+        raise SSHCommandError(f"{host}: no output received for '{command}'")
 
-    raise SSHCommandError(f"{host}: timed out waiting for '{command}' response")
+    return normalized
 
 
-def _extract_command_output(
-    raw_output: str,
-    host: str,
-    command: str,
-    prompt: str,
-) -> str:
-    normalized = _normalize_newlines(raw_output)
-    lines = normalized.split("\n")
-    prompt_clean = prompt.strip()
-    prompt_lower = prompt_clean.lower()
-    command_clean = command.strip()
-    command_lower = command_clean.lower()
-
-    output_lines: list[str] = []
-    command_seen = False
-
-    for line in lines:
-        stripped = line.strip()
-        lowered = stripped.lower()
-
-        if not command_seen:
-            if lowered == command_lower:
-                command_seen = True
-                continue
-            if prompt_clean and lowered.startswith(prompt_lower):
-                remainder = stripped[len(prompt_clean) :].strip()
-                if remainder.lower() == command_lower:
-                    command_seen = True
-                    continue
-            if lowered.endswith(command_lower):
-                command_seen = True
-                continue
-            continue
-
-        if prompt_clean and stripped.startswith(prompt_clean):
-            break
-
-        output_lines.append(line)
-
-    return _normalize_newlines("\n".join(output_lines)).strip("\n")
+def _safe_disconnect(connection: NetmikoBaseConnection) -> None:
+    try:
+        connection.disconnect()
+    except Exception:
+        logger.debug("Failed to close SSH session cleanly", exc_info=True)
 
 
 def _normalize_newlines(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _connection_closed_error(host: str, context: str, command: Optional[str]) -> SSHCommandError:
+    if command:
+        command_text = f" while handling '{command}'"
+    else:
+        command_text = ""
+    return SSHCommandError(
+        f"{host}: the SSH session closed unexpectedly{command_text} — the remote device either terminated the interactive shell"
+        " or the network latency exceeded the server's limits. Try increasing the SSH timeout or rerunning the collection on a less busy link."
+    )
 
 
 def sanitize_label(value: str, fallback: str = "device") -> str:
@@ -399,12 +288,7 @@ def _stringify_args(args: Iterable[object]) -> str:
 
 
 def summarize_ssh_error(host: str, exc: Exception, command: Optional[str] = None) -> str:
-    """Return a user-friendly message for an SSH collection exception.
-
-    The returned string intentionally excludes the *host* prefix since the
-    calling code already associates the error with the device. When available,
-    the executed command is appended so operators know what failed.
-    """
+    """Return a user-friendly message for an SSH collection exception."""
 
     message = ""
 
