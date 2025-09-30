@@ -9,14 +9,11 @@ from typing import Iterable, Mapping, Optional, Sequence, TYPE_CHECKING
 
 try:  # pragma: no cover - import guard for optional dependency
     from netmiko import ConnectHandler
-
     from netmiko.base_connection import BaseConnection as NetmikoBaseConnection
-
     from netmiko.ssh_exception import (
         NetmikoAuthenticationException,
         NetmikoTimeoutException,
     )
-
 except Exception:  # pragma: no cover - handled at runtime
     ConnectHandler = None  # type: ignore[assignment]
     NetmikoAuthenticationException = NetmikoTimeoutException = None  # type: ignore[assignment]
@@ -24,8 +21,6 @@ except Exception:  # pragma: no cover - handled at runtime
 
 if TYPE_CHECKING:  # pragma: no cover - imported only for typing
     from netmiko.base_connection import BaseConnection as NetmikoBaseConnection
-
-
 
 logger = logging.getLogger(__name__)
 
@@ -233,8 +228,7 @@ def _send_setup_commands(
             logger.debug(
                 "Setup command '%s' failed on %s", setup_command, host, exc_info=True
             )
-
-
+            
 def _execute_command(
     connection: NetmikoBaseConnection,
     host: str,
@@ -283,7 +277,6 @@ def _safe_disconnect(connection: NetmikoBaseConnection) -> None:
         connection.disconnect()
     except Exception:
         logger.debug("Failed to close SSH session cleanly", exc_info=True)
-
 
 def _connection_closed_error(host: str, context: str, command: Optional[str]) -> SSHCommandError:
     if command:
