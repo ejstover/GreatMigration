@@ -1,6 +1,7 @@
 """Utility helpers for securely retrieving command output over SSH."""
 from __future__ import annotations
 
+import importlib
 import getpass
 import logging
 import re
@@ -8,21 +9,22 @@ from typing import Iterable, Mapping, Optional, Sequence, TYPE_CHECKING
 
 try:  # pragma: no cover - import guard for optional dependency
     from netmiko import ConnectHandler
+
+    from netmiko.base_connection import BaseConnection as NetmikoBaseConnection
+
     from netmiko.ssh_exception import (
         NetmikoAuthenticationException,
         NetmikoTimeoutException,
     )
-except ImportError as exc:  # pragma: no cover - handled at runtime
+
+except Exception:  # pragma: no cover - handled at runtime
     ConnectHandler = None  # type: ignore[assignment]
     NetmikoAuthenticationException = NetmikoTimeoutException = None  # type: ignore[assignment]
-    _NETMIKO_IMPORT_ERROR = exc
-else:  # pragma: no cover - simple import path
-    _NETMIKO_IMPORT_ERROR = None
+    NetmikoBaseConnection = object  # type: ignore[assignment]
 
 if TYPE_CHECKING:  # pragma: no cover - imported only for typing
     from netmiko.base_connection import BaseConnection as NetmikoBaseConnection
-else:  # pragma: no cover - runtime fallback when netmiko is unavailable
-    NetmikoBaseConnection = object
+
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +32,44 @@ logger = logging.getLogger(__name__)
 
 class SSHCommandError(RuntimeError):
     """Raised when a remote SSH command fails."""
+
+
+def _ensure_netmiko() -> None:
+    """Ensure Netmiko is importable before attempting any SSH operations."""
+
+    global ConnectHandler
+    global NetmikoAuthenticationException
+    global NetmikoTimeoutException
+    global NetmikoBaseConnection
+    if ConnectHandler is not None:
+        return
+
+    try:
+        netmiko_module = importlib.import_module("netmiko")
+        ssh_exc_module = importlib.import_module("netmiko.ssh_exception")
+        base_module = importlib.import_module("netmiko.base_connection")
+    except Exception as exc:  # pragma: no cover - pass through real error for operators
+        logger.error("Unable to import netmiko for SSH support", exc_info=True)
+        raise RuntimeError(
+            "netmiko is required to run SSH commands. The Python interpreter "
+            f"could not import netmiko ({exc!s}). Ensure the package is installed "
+            "and restart the application if it was installed while the service "
+            "was running."
+        ) from exc
+
+    ConnectHandler = getattr(netmiko_module, "ConnectHandler")  # type: ignore[assignment]
+    NetmikoAuthenticationException = getattr(  # type: ignore[assignment]
+        ssh_exc_module,
+        "NetmikoAuthenticationException",
+    )
+    NetmikoTimeoutException = getattr(  # type: ignore[assignment]
+        ssh_exc_module,
+        "NetmikoTimeoutException",
+    )
+    NetmikoBaseConnection = getattr(  # type: ignore[assignment]
+        base_module,
+        "BaseConnection",
+    )
 
 
 def prompt_for_credentials(host: str, default_username: Optional[str] = None) -> tuple[str, str]:
@@ -66,11 +106,7 @@ def run_ssh_command(
 ) -> str:
     """Execute *command* over SSH and return the textual output."""
 
-    if ConnectHandler is None:  # pragma: no cover - dependency guard
-        raise RuntimeError(
-            "netmiko is required to run SSH commands. Install netmiko to enable remote collection."
-        ) from _NETMIKO_IMPORT_ERROR
-
+    _ensure_netmiko()
     connection = _connect_ssh_client(host, username, password, timeout, device_type)
     try:
         _prepare_session(connection, host, timeout, global_delay_factor)
@@ -96,12 +132,7 @@ def run_ssh_commands(
     global_delay_factor: float = 1.0,
 ) -> Mapping[str, str]:
     """Execute multiple *commands* over SSH and return their outputs."""
-
-    if ConnectHandler is None:  # pragma: no cover - dependency guard
-        raise RuntimeError(
-            "netmiko is required to run SSH commands. Install netmiko to enable remote collection."
-        ) from _NETMIKO_IMPORT_ERROR
-
+    _ensure_netmiko()
     command_list = [c for c in (cmd.strip() for cmd in commands) if c]
     if not command_list:
         raise ValueError("At least one command must be provided for run_ssh_commands().")
@@ -253,9 +284,16 @@ def _safe_disconnect(connection: NetmikoBaseConnection) -> None:
     except Exception:
         logger.debug("Failed to close SSH session cleanly", exc_info=True)
 
-def _normalize_newlines(value: str) -> str:
-    return value.replace("\r\n", "\n").replace("\r", "\n")
 
+def _connection_closed_error(host: str, context: str, command: Optional[str]) -> SSHCommandError:
+    if command:
+        command_text = f" while handling '{command}'"
+    else:
+        command_text = ""
+    return SSHCommandError(
+        f"{host}: the SSH session closed unexpectedly{command_text} — the remote device either terminated the interactive shell"
+        " or the network latency exceeded the server's limits. Try increasing the SSH timeout or rerunning the collection on a less busy link."
+    )
 
 
 def _connection_closed_error(host: str, context: str, command: Optional[str]) -> SSHCommandError:
