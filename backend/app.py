@@ -2,16 +2,23 @@ import os
 import json
 import tempfile
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 import requests
-from fastapi import FastAPI, UploadFile, File, Form, Request, Body
+from fastapi import FastAPI, Form, Request, Body
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from logging_utils import get_user_logger
+from netmiko import ConnectHandler  # type: ignore
+from netmiko.ssh_exception import (  # type: ignore
+    NetmikoAuthenticationException,
+    NetmikoTimeoutException,
+)
+from pydantic import BaseModel, Field, validator
 
 # Optional .env support
 try:
@@ -48,11 +55,11 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 PAGE_COPY: dict[str, dict[str, str]] = {
     "config": {
         "title": "Config Conversion",
-        "tagline": "Upload Cisco configs → map rows → batch test/push to Mist",
+        "tagline": "Collect Cisco configs over SSH → map rows → batch test/push to Mist",
     },
     "hardware": {
         "title": "Hardware Conversion",
-        "tagline": "Upload Cisco show tech files and map to Juniper replacements",
+        "tagline": "Collect Cisco hardware details over SSH and map to Juniper replacements",
     },
     "replacements": {
         "title": "Hardware Replacement Rules",
@@ -233,6 +240,223 @@ async def _log_user_actions(request: Request, call_next):
     )
     return response
 
+
+MAX_SSH_WORKERS = 8
+
+
+class SSHCommandRequest(BaseModel):
+    hosts: List[str] = Field(..., min_items=1)
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+    command: str = Field(default="show running-config", min_length=1)
+    device_type: str = Field(default="cisco_ios", min_length=1)
+    read_timeout: int = Field(default=90, ge=10, le=600)
+
+    @validator("hosts", pre=True)
+    def _normalize_hosts(cls, value):
+        if isinstance(value, str):
+            value = [line for line in value.splitlines()]
+        if not isinstance(value, list):
+            raise ValueError("hosts must be provided as a list or newline-delimited string")
+        cleaned: List[str] = []
+        for item in value:
+            if item is None:
+                continue
+            host = str(item).strip()
+            if host:
+                cleaned.append(host)
+        unique: List[str] = []
+        seen = set()
+        for host in cleaned:
+            if host not in seen:
+                seen.add(host)
+                unique.append(host)
+        if not unique:
+            raise ValueError("at least one host is required")
+        return unique
+
+    @validator("username", "command", "device_type", pre=True)
+    def _strip_values(cls, value):
+        if value is None:
+            raise ValueError("field is required")
+        return str(value).strip()
+
+    @validator("password", pre=True)
+    def _ensure_password(cls, value):
+        if value is None:
+            raise ValueError("password is required")
+        password = str(value)
+        if not password:
+            raise ValueError("password is required")
+        return password
+
+
+class ConvertSSHRequest(SSHCommandRequest):
+    strict_overflow: bool = False
+    uplink_module: int = Field(default=1, ge=0, le=10)
+    force_model: Optional[str] = None
+
+    @validator("force_model", pre=True, always=True)
+    def _normalize_force_model(cls, value):
+        if value is None:
+            return None
+        value_str = str(value).strip()
+        return value_str or None
+
+
+class HardwareSSHRequest(SSHCommandRequest):
+    command: str = Field(default="show tech-support", min_length=1)
+    read_timeout: int = Field(default=300, ge=30, le=900)
+
+
+def _safe_label(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", value)
+    return safe or "device"
+
+
+def _execute_ssh_command(
+    *,
+    host: str,
+    username: str,
+    password: str,
+    command: str,
+    device_type: str,
+    read_timeout: int,
+    delay_factor: float = 1.0,
+) -> Dict[str, Any]:
+    params = {
+        "device_type": device_type,
+        "host": host,
+        "username": username,
+        "password": password,
+        "fast_cli": False,
+    }
+    try:
+        with ConnectHandler(**params) as conn:  # type: ignore[arg-type]
+            output = conn.send_command(
+                command,
+                read_timeout=read_timeout,
+                delay_factor=delay_factor,
+                strip_prompt=True,
+                strip_command=True,
+            )
+        return {"host": host, "ok": True, "output": output}
+    except (NetmikoAuthenticationException, NetmikoTimeoutException) as exc:
+        return {"host": host, "ok": False, "error": str(exc)}
+    except Exception as exc:
+        return {"host": host, "ok": False, "error": str(exc)}
+
+
+def _convert_host_via_ssh(
+    *,
+    host: str,
+    index: int,
+    username: str,
+    password: str,
+    command: str,
+    device_type: str,
+    read_timeout: int,
+    strict_overflow: bool,
+    uplink_module: int,
+    force_model: Optional[str],
+) -> Dict[str, Any]:
+    result = _execute_ssh_command(
+        host=host,
+        username=username,
+        password=password,
+        command=command,
+        device_type=device_type,
+        read_timeout=read_timeout,
+    )
+    if not result.get("ok"):
+        return {"host": host, "ok": False, "error": result.get("error", "unknown error"), "index": index}
+
+    output = result.get("output", "")
+    safe_label = _safe_label(host)
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            input_path = tmpdir_path / f"{safe_label}_show_run.txt"
+            input_path.write_text(str(output), encoding="utf-8")
+            out_path = convert_one_file(
+                input_path=input_path,
+                uplink_module=uplink_module,
+                strict_overflow=strict_overflow,
+                force_model=force_model,
+                output_dir=tmpdir_path,
+            )
+            data = json.loads(out_path.read_text(encoding="utf-8"))
+            output_name = out_path.name
+    except Exception as exc:
+        return {"host": host, "ok": False, "error": str(exc), "index": index}
+
+    return {
+        "host": host,
+        "ok": True,
+        "index": index,
+        "source_file": host,
+        "output_file": output_name,
+        "json": data,
+        "message": "Converted successfully",
+    }
+
+
+def _hardware_host_via_ssh(
+    *,
+    host: str,
+    index: int,
+    username: str,
+    password: str,
+    command: str,
+    device_type: str,
+    read_timeout: int,
+    mapping: Dict[str, str],
+) -> Dict[str, Any]:
+    result = _execute_ssh_command(
+        host=host,
+        username=username,
+        password=password,
+        command=command,
+        device_type=device_type,
+        read_timeout=read_timeout,
+        delay_factor=2.0,
+    )
+    if not result.get("ok"):
+        return {"host": host, "ok": False, "error": result.get("error", "unknown error"), "index": index}
+
+    output = result.get("output", "")
+    safe_label = _safe_label(host)
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            raw_path = tmpdir_path / f"{safe_label}_showtech.txt"
+            raw_path.write_text(str(output), encoding="utf-8")
+            text = raw_path.read_text(encoding="utf-8")
+            inventory = parse_showtech(text)
+            copper_ports = find_copper_10g_ports(text)
+            switches = []
+            for sw, items in inventory.items():
+                if sw.lower() == "global":
+                    continue
+                sw_items = []
+                for pid, count in items.items():
+                    replacement = mapping.get(pid, "no replacement model defined")
+                    sw_items.append({"pid": pid, "count": count, "replacement": replacement})
+                switches.append({"switch": sw, "items": sw_items})
+            copper_total = sum(len(v) for v in copper_ports.values())
+    except Exception as exc:
+        return {"host": host, "ok": False, "error": str(exc), "index": index}
+
+    return {
+        "host": host,
+        "ok": True,
+        "index": index,
+        "filename": host,
+        "switches": switches,
+        "copper_10g_ports": {**copper_ports, "total": copper_total},
+        "message": "Retrieved hardware details",
+    }
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return _render_page("index.html", "config")
@@ -306,36 +530,45 @@ def api_save_replacements(request: Request, doc: Dict[str, Any] = Body(...)):
 
 
 @app.post("/api/showtech")
-async def api_showtech(files: List[UploadFile] = File(...)):
+async def api_showtech(req: HardwareSSHRequest):
     try:
         mapping = load_mapping()
-        results = []
-        for f in files:
-            text = (await f.read()).decode("utf-8", errors="ignore")
-            inventory = parse_showtech(text)
-            copper_ports = find_copper_10g_ports(text)
-            switches = []
-            for sw, items in inventory.items():
-                if sw.lower() == "global":
-                    continue
-                sw_items = []
-                for pid, count in items.items():
-                    replacement = mapping.get(pid, "no replacement model defined")
-                    sw_items.append(
-                        {"pid": pid, "count": count, "replacement": replacement}
-                    )
-                switches.append({"switch": sw, "items": sw_items})
-            copper_total = sum(len(v) for v in copper_ports.values())
-            results.append(
-                {
-                    "filename": f.filename,
-                    "switches": switches,
-                    "copper_10g_ports": {**copper_ports, "total": copper_total},
-                }
-            )
-        return {"ok": True, "results": results}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    results: List[Dict[str, Any]] = []
+    summary = {"total": len(req.hosts), "succeeded": 0, "failed": 0}
+    if req.hosts:
+        max_workers = max(1, min(MAX_SSH_WORKERS, len(req.hosts)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    _hardware_host_via_ssh,
+                    host=host,
+                    index=idx,
+                    username=req.username,
+                    password=req.password,
+                    command=req.command,
+                    device_type=req.device_type,
+                    read_timeout=req.read_timeout,
+                    mapping=mapping,
+                ): (host, idx)
+                for idx, host in enumerate(req.hosts)
+            }
+            for future in as_completed(futures):
+                host, idx = futures[future]
+                try:
+                    item = future.result()
+                except Exception as exc:
+                    item = {"host": host, "ok": False, "error": str(exc), "index": idx}
+                if item.get("ok"):
+                    summary["succeeded"] += 1
+                else:
+                    summary["failed"] += 1
+                results.append(item)
+
+    results.sort(key=lambda x: x.get("index", 0))
+    return {"ok": True, "results": results, "summary": summary}
 
 
 @app.post("/api/showtech/pdf")
@@ -623,38 +856,46 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
 
 
 @app.post("/api/convert")
-async def api_convert(
-    files: List[UploadFile] = File(...),
-    uplink_module: int = Form(1),
-    force_model: Optional[str] = Form(None),
-    strict_overflow: bool = Form(False),
-) -> JSONResponse:
+async def api_convert(req: ConvertSSHRequest) -> JSONResponse:
     """
-    Converts one or more Cisco configs into the normalized JSON that the push script consumes.
+    Collect Cisco configurations over SSH and convert them to the normalized JSON format.
     """
-    results = []
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir_path = Path(tmpdir)
-        for uf in files:
-            contents = await uf.read()
-            in_path = tmpdir_path / uf.filename
-            in_path.write_bytes(contents)
 
-            out_path = convert_one_file(
-                input_path=in_path,
-                uplink_module=uplink_module,
-                strict_overflow=strict_overflow,
-                force_model=force_model,
-                output_dir=tmpdir_path,
-            )
-            try:
-                data = json.loads(out_path.read_text(encoding="utf-8"))
-            except Exception as e:
-                return JSONResponse({"ok": False, "error": f"Failed to load JSON for {uf.filename}: {e}"}, status_code=400)
+    items: List[Dict[str, Any]] = []
+    summary = {"total": len(req.hosts), "succeeded": 0, "failed": 0}
+    if req.hosts:
+        max_workers = max(1, min(MAX_SSH_WORKERS, len(req.hosts)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    _convert_host_via_ssh,
+                    host=host,
+                    index=idx,
+                    username=req.username,
+                    password=req.password,
+                    command=req.command,
+                    device_type=req.device_type,
+                    read_timeout=req.read_timeout,
+                    strict_overflow=req.strict_overflow,
+                    uplink_module=req.uplink_module,
+                    force_model=req.force_model,
+                ): (host, idx)
+                for idx, host in enumerate(req.hosts)
+            }
+            for future in as_completed(futures):
+                host, idx = futures[future]
+                try:
+                    item = future.result()
+                except Exception as exc:
+                    item = {"host": host, "ok": False, "error": str(exc), "index": idx}
+                if item.get("ok"):
+                    summary["succeeded"] += 1
+                else:
+                    summary["failed"] += 1
+                items.append(item)
 
-            results.append({"source_file": uf.filename, "output_file": out_path.name, "json": data})
-
-    return JSONResponse({"ok": True, "items": results})
+    items.sort(key=lambda x: x.get("index", 0))
+    return JSONResponse({"ok": True, "items": items, "summary": summary})
 
 
 def _build_payload_for_row(

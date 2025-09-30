@@ -10,8 +10,6 @@
   <script>tailwind.config = { darkMode: 'media' };</script>
 
   <style>
-    .dropzone { border: 2px dashed #cbd5e1; }
-    .dropzone.dragover { border-color: #60a5fa; background: #f8fafc; }
     pre { white-space: pre-wrap; word-wrap: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }
     .status-info { border-color: #bae6fd; background: #ecfeff; }
     .status-success { border-color: #86efac; background: #f0fdf4; }
@@ -54,18 +52,44 @@
     </header>
 
     <div class="max-w-7xl mx-auto p-6">
-      <!-- Drag & Drop -->
       <section class="mb-6">
-      <div id="dz" class="dropzone rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 p-8 text-center text-slate-500 dark:text-slate-300">
-        <p class="mb-2">Drag & drop Cisco config files here (or click to select)</p>
-        <input id="file_input" type="file" multiple class="hidden" accept=".txt,.cfg,.conf,.json" />
-        <button id="choose_files" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Choose files</button>
-      </div>
-      <div class="flex items-center justify-between mt-2">
-        <div id="convert_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
-        <button id="clear_all" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Clear</button>
-      </div>
-    </section>
+        <div class="rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 shadow p-6 space-y-4">
+          <div>
+            <label class="block text-sm font-medium mb-1" for="ssh_targets">Device hostnames or IPs</label>
+            <textarea id="ssh_targets" class="w-full border rounded p-2 h-28 dark:bg-slate-900 dark:border-slate-700" placeholder="switch1.example.com&#10;10.0.0.5" spellcheck="false"></textarea>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Enter one host per line. Connections run in parallel using the same credentials.</p>
+          </div>
+          <div class="grid md:grid-cols-4 gap-4">
+            <div>
+              <label class="block text-sm font-medium mb-1" for="ssh_username">Username</label>
+              <input id="ssh_username" type="text" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" autocomplete="username" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1" for="ssh_password">Password</label>
+              <div class="relative">
+                <input id="ssh_password" type="password" class="w-full border rounded p-2 pr-20 dark:bg-slate-900 dark:border-slate-700" autocomplete="current-password" />
+                <button id="toggle_password" type="button" class="absolute inset-y-0 right-0 px-3 text-xs font-medium text-sky-600 hover:text-sky-700 dark:text-sky-400 dark:hover:text-sky-300">Show</button>
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1" for="ssh_command">Command</label>
+              <input id="ssh_command" type="text" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" value="show running-config" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1" for="ssh_device_type">Device type</label>
+              <input id="ssh_device_type" type="text" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" value="cisco_ios" />
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div id="convert_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
+            <div class="flex items-center gap-2">
+              <button id="run_fetch" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Fetch configs</button>
+              <button id="clear_all" class="px-4 py-2 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">Clear</button>
+            </div>
+          </div>
+          <ul id="host_status_list" class="space-y-2 text-sm"></ul>
+        </div>
+      </section>
 
     <!-- Converted JSON -->
     <section id="results" class="hidden mb-8">
@@ -160,11 +184,16 @@
     });
 
     // --- Elements ---
-    const dz = document.getElementById('dz');
-    const fileInput = document.getElementById('file_input');
-    const chooseBtn = document.getElementById('choose_files');
     const convertStatus = document.getElementById('convert_status');
     const clearAll = document.getElementById('clear_all');
+    const fetchBtn = document.getElementById('run_fetch');
+    const hostInput = document.getElementById('ssh_targets');
+    const usernameInput = document.getElementById('ssh_username');
+    const passwordInput = document.getElementById('ssh_password');
+    const commandInput = document.getElementById('ssh_command');
+    const deviceTypeInput = document.getElementById('ssh_device_type');
+    const statusList = document.getElementById('host_status_list');
+    const passwordToggle = document.getElementById('toggle_password');
     const results = document.getElementById('results');
     const resultsList = document.getElementById('results_list');
 
@@ -181,9 +210,8 @@
     const modelOverride = document.getElementById('model_override');
 
     // --- Data ---
-    let convertedItems = []; // [{ source_file, output_file, json }]
+    let convertedItems = []; // [{ source_file, output_file, json, host, index }]
     let rows = []; // [{ idx, site_id, device_id, excludes, exclude_uplinks, member_offset, port_offset, model_override?, userChangedSite? }]
-    let seenFiles = new Set(); // dedupe chooser/dnd
     let sitesCache = []; // list of sites
     const devicesBySite = new Map(); // site_id -> devices[]
 
@@ -192,28 +220,26 @@
     function hide(el){ el.classList.add('hidden'); }
     function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
 
-    // --- File input UX (Chrome/Edge: single dialog & same-file reselect) ---
-    chooseBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      fileInput.value = '';
-      fileInput.click();
+    passwordToggle?.addEventListener('click', () => {
+      if (!passwordInput) return;
+      const isHidden = passwordInput.type === 'password';
+      passwordInput.type = isHidden ? 'text' : 'password';
+      passwordToggle.textContent = isHidden ? 'Hide' : 'Show';
     });
-    dz.addEventListener('click', (e) => {
-      if (e.target === dz) { fileInput.value = ''; fileInput.click(); }
-    });
-    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
-    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-    dz.addEventListener('drop', (e) => { e.preventDefault(); dz.classList.remove('dragover'); if (e.dataTransfer.files?.length) handleFiles([...e.dataTransfer.files]); });
-    fileInput.addEventListener('change', () => { handleFiles([...fileInput.files]); fileInput.value = ''; });
 
-    clearAll.addEventListener('click', () => {
+    fetchBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      collectConfigs();
+    });
+
+    clearAll.addEventListener('click', (e) => {
+      e.preventDefault();
       convertedItems = [];
       rows = [];
-      seenFiles.clear();
       resultsList.innerHTML = '';
       batchRows.innerHTML = '';
       batchOutput.innerHTML = '';
+      statusList.innerHTML = '';
       convertStatus.textContent = '';
       hide(results);
       hide(batchSection);
@@ -222,6 +248,117 @@
       dryRun.checked = true;
       pushBatchBtn.textContent = 'Test configuration for all';
     });
+
+    function renderHostStatuses(hosts){
+      statusList.innerHTML = '';
+      hosts.forEach((host, idx) => {
+        const li = document.createElement('li');
+        li.dataset.host = host;
+        li.dataset.index = String(idx);
+        li.className = 'flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 px-3 py-2';
+        li.innerHTML = `<span class="font-medium">${escapeHtml(host)}</span><span data-role="status" class="text-slate-500">Pending…</span>`;
+        statusList.appendChild(li);
+      });
+    }
+
+    function updateHostStatuses(items){
+      if (!Array.isArray(items)) return;
+      items.forEach(item => {
+        if (!item) return;
+        const host = item.host || item.source_file;
+        if (!host) return;
+        const li = Array.from(statusList.children).find(el => el.dataset.host === host);
+        if (!li) return;
+        const statusEl = li.querySelector('[data-role="status"]');
+        if (!statusEl) return;
+        if (item.ok){
+          statusEl.textContent = item.message || 'Success';
+          statusEl.className = 'text-emerald-600 dark:text-emerald-400 font-medium';
+          li.classList.add('bg-emerald-50', 'dark:bg-emerald-900/40', 'border-emerald-200');
+          li.classList.remove('bg-slate-50', 'dark:bg-slate-900/60', 'border-slate-200');
+        } else {
+          statusEl.textContent = item.error || 'Failed';
+          statusEl.className = 'text-rose-600 dark:text-rose-300 font-medium';
+          li.classList.add('bg-rose-50', 'dark:bg-rose-900/40', 'border-rose-200');
+          li.classList.remove('bg-slate-50', 'dark:bg-slate-900/60', 'border-slate-200');
+        }
+      });
+    }
+
+    async function collectConfigs(){
+      const hostLines = (hostInput.value || '').split(/\r?\n/).map(h => h.trim()).filter(Boolean);
+      if (!hostLines.length){
+        convertStatus.textContent = 'Enter at least one host.';
+        return;
+      }
+      if (!usernameInput.value.trim()){
+        convertStatus.textContent = 'Username is required.';
+        return;
+      }
+      if (!passwordInput.value){
+        convertStatus.textContent = 'Password is required.';
+        return;
+      }
+
+      const uniqueHosts = Array.from(new Map(hostLines.map(h => [h, h])).values());
+      renderHostStatuses(uniqueHosts);
+      convertStatus.textContent = `Connecting to ${uniqueHosts.length} device${uniqueHosts.length === 1 ? '' : 's'}...`;
+
+      try {
+        const res = await fetch('/api/convert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            hosts: uniqueHosts,
+            username: usernameInput.value.trim(),
+            password: passwordInput.value,
+            command: (commandInput.value || 'show running-config').trim() || 'show running-config',
+            device_type: (deviceTypeInput.value || 'cisco_ios').trim() || 'cisco_ios',
+            strict_overflow: strictOverflow.checked,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok){
+          throw new Error(data?.error || `Request failed with status ${res.status}`);
+        }
+
+        updateHostStatuses(data.items);
+        const successes = (data.items || []).filter(it => it && it.ok);
+        const failed = data.summary?.failed ?? ((data.items?.length || 0) - successes.length);
+
+        if (successes.length){
+          successes.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+          successes.forEach(it => convertedItems.push(it));
+          renderConvertedList();
+          convertStatus.textContent = `Completed: ${successes.length} succeeded, ${failed} failed.`;
+
+          if (!sitesCache.length) await fetchSites();
+
+          const defaultSite = rows.length ? rows[0].site_id : (sitesCache[0]?.id || '');
+          for (let i = rows.length; i < convertedItems.length; i++){
+            rows.push({
+              idx: i,
+              site_id: defaultSite || '',
+              device_id: '',
+              excludes: '',
+              exclude_uplinks: true,
+              member_offset: 0,
+              port_offset: 0,
+              model_override: '',
+              userChangedSite: false
+            });
+            if (defaultSite) await fetchDevices(defaultSite);
+          }
+
+          renderBatchRows();
+          show(batchSection);
+        } else {
+          convertStatus.textContent = `No configurations collected. ${failed} failed.`;
+        }
+      } catch (err){
+        convertStatus.textContent = `Error: ${err.message || err}`;
+      }
+    }
 
     // --- Sites/Devices ---
     async function fetchSites(){
@@ -254,56 +391,6 @@
     }
 
     // --- Conversion ---
-    function keyForFile(f){ return `${f.name}|${f.size}|${f.lastModified}`; }
-
-    async function handleFiles(files){
-      if (!files.length) return;
-
-      // dedupe files
-      const unique = [];
-      for (const f of files){
-        const key = keyForFile(f);
-        if (!seenFiles.has(key)) { seenFiles.add(key); unique.push(f); }
-      }
-      if (!unique.length){ convertStatus.textContent = 'All selected files were duplicates.'; return; }
-
-      convertStatus.textContent = 'Converting...';
-      const form = new FormData();
-      unique.forEach(f => form.append('files', f));
-      form.append('strict_overflow', strictOverflow.checked ? 'true' : 'false');
-
-      const res = await fetch('/api/convert', { method: 'POST', body: form });
-      const data = await res.json();
-      if (!data.ok){
-        convertStatus.textContent = `Error: ${data.error || res.status}`;
-        return;
-      }
-      (data.items || []).forEach(it => convertedItems.push(it));
-      renderConvertedList();
-      convertStatus.textContent = `Converted ${data.items.length} file(s). Total: ${convertedItems.length}.`;
-
-      if (!sitesCache.length) await fetchSites();
-
-      // New rows: site defaults to first row's site if exists, else first site in list
-      const defaultSite = rows.length ? rows[0].site_id : (sitesCache[0]?.id || '');
-      for (let i = rows.length; i < convertedItems.length; i++){
-        rows.push({
-          idx: i,
-          site_id: defaultSite || '',
-          device_id: '',
-          excludes: '',
-          exclude_uplinks: true,
-          member_offset: 0,
-          port_offset: 0,
-          model_override: '',
-          userChangedSite: false
-        });
-        if (defaultSite) await fetchDevices(defaultSite);
-      }
-
-      renderBatchRows();
-      show(batchSection);
-    }
 
     function renderConvertedList(){
       show(results);
@@ -311,9 +398,10 @@
       convertedItems.forEach((it, idx) => {
         const card = document.createElement('div');
         card.className = 'rounded-xl border bg-white dark:bg-slate-800 dark:border-slate-700 p-4';
+        const label = it.source_file || it.host || `Device ${idx+1}`;
         card.innerHTML = `
           <div class="flex items-center justify-between">
-            <div class="text-sm font-medium">${escapeHtml(it.source_file)}</div>
+            <div class="text-sm font-medium">${escapeHtml(label)}</div>
             <div class="text-xs text-slate-500 dark:text-slate-300">Row ${idx+1}</div>
           </div>
           <details class="mt-2">
@@ -357,8 +445,8 @@
           <div class="grid md:grid-cols-12 gap-2 items-end">
             <div class="md:col-span-1">
               <label class="block text-xs font-medium mb-1">File</label>
-              <div class="text-sm text-slate-700 dark:text-slate-200 truncate" title="${escapeHtml(convertedItems[row.idx]?.source_file || '')}">
-                ${escapeHtml(convertedItems[row.idx]?.source_file || '(missing)')}
+              <div class="text-sm text-slate-700 dark:text-slate-200 truncate" title="${escapeHtml(convertedItems[row.idx]?.source_file || convertedItems[row.idx]?.host || '')}">
+                ${escapeHtml(convertedItems[row.idx]?.source_file || convertedItems[row.idx]?.host || '(missing)')}
               </div>
             </div>
 
@@ -626,7 +714,9 @@
     function renderBatchResults(results){
       batchOutput.innerHTML = '';
       results.forEach((r, i) => {
-        const fileLabel = convertedItems[rows[r.row_index]?.idx || 0]?.source_file || `Row ${i+1}`;
+        const sourceIdx = rows[r.row_index]?.idx ?? 0;
+        const sourceItem = convertedItems[sourceIdx] || {};
+        const fileLabel = sourceItem.source_file || sourceItem.host || `Row ${i+1}`;
         const statusBadge = r.ok
           ? '<span class="inline-block px-2 py-0.5 text-xs rounded bg-emerald-100 text-emerald-800">OK</span>'
           : '<span class="inline-block px-2 py-0.5 text-xs rounded bg-rose-100 text-rose-800">Failed</span>';
