@@ -317,7 +317,12 @@ def _read_until_prompt(
 
     while time.monotonic() < end_time:
         if channel.recv_ready():
-            data = channel.recv(65535)
+            try:
+                data = channel.recv(65535)
+            except EOFError as exc:
+                raise SSHCommandError(
+                    f"{host}: connection closed while waiting for '{command}' response; this often happens when the remote device drops idle SSH sessions or the connection is hit by high latency. Try increasing the SSH timeout and rerunning the collection."
+                ) from exc
             if not data:
                 continue
             buffer += data.decode(errors="ignore")
