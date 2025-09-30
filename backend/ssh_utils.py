@@ -5,7 +5,9 @@ import importlib
 import getpass
 import logging
 import re
-from typing import Iterable, Mapping, Optional, Sequence, TYPE_CHECKING
+
+from typing import Iterable, Mapping, Optional, Sequence
+
 
 try:  # pragma: no cover - import guard for optional dependency
     from netmiko import ConnectHandler
@@ -14,13 +16,15 @@ try:  # pragma: no cover - import guard for optional dependency
         NetmikoAuthenticationException,
         NetmikoTimeoutException,
     )
-except Exception:  # pragma: no cover - handled at runtime
+
+except Exception as exc:  # pragma: no cover - handled at runtime
     ConnectHandler = None  # type: ignore[assignment]
     NetmikoAuthenticationException = NetmikoTimeoutException = None  # type: ignore[assignment]
     NetmikoBaseConnection = object  # type: ignore[assignment]
+    _NETMIKO_IMPORT_ERROR = exc
+else:  # pragma: no cover - simple import path
+    _NETMIKO_IMPORT_ERROR = None
 
-if TYPE_CHECKING:  # pragma: no cover - imported only for typing
-    from netmiko.base_connection import BaseConnection as NetmikoBaseConnection
 
 logger = logging.getLogger(__name__)
 
@@ -29,42 +33,13 @@ class SSHCommandError(RuntimeError):
     """Raised when a remote SSH command fails."""
 
 
-def _ensure_netmiko() -> None:
-    """Ensure Netmiko is importable before attempting any SSH operations."""
 
-    global ConnectHandler
-    global NetmikoAuthenticationException
-    global NetmikoTimeoutException
-    global NetmikoBaseConnection
-    if ConnectHandler is not None:
-        return
-
-    try:
-        netmiko_module = importlib.import_module("netmiko")
-        ssh_exc_module = importlib.import_module("netmiko.ssh_exception")
-        base_module = importlib.import_module("netmiko.base_connection")
-    except Exception as exc:  # pragma: no cover - pass through real error for operators
-        logger.error("Unable to import netmiko for SSH support", exc_info=True)
+def _require_netmiko() -> None:
+    if ConnectHandler is None:  # pragma: no cover - dependency guard
         raise RuntimeError(
-            "netmiko is required to run SSH commands. The Python interpreter "
-            f"could not import netmiko ({exc!s}). Ensure the package is installed "
-            "and restart the application if it was installed while the service "
-            "was running."
-        ) from exc
+            "netmiko is required to run SSH commands. Install netmiko to enable remote collection."
+        ) from _NETMIKO_IMPORT_ERROR
 
-    ConnectHandler = getattr(netmiko_module, "ConnectHandler")  # type: ignore[assignment]
-    NetmikoAuthenticationException = getattr(  # type: ignore[assignment]
-        ssh_exc_module,
-        "NetmikoAuthenticationException",
-    )
-    NetmikoTimeoutException = getattr(  # type: ignore[assignment]
-        ssh_exc_module,
-        "NetmikoTimeoutException",
-    )
-    NetmikoBaseConnection = getattr(  # type: ignore[assignment]
-        base_module,
-        "BaseConnection",
-    )
 
 
 def prompt_for_credentials(host: str, default_username: Optional[str] = None) -> tuple[str, str]:
@@ -98,20 +73,22 @@ def run_ssh_command(
     timeout: float = 60.0,
     device_type: str = "cisco_ios",
     global_delay_factor: float = 1.0,
+    setup_commands: Sequence[str] = ("terminal length 0", "terminal width 0"),
 ) -> str:
     """Execute *command* over SSH and return the textual output."""
 
-    _ensure_netmiko()
-    connection = _connect_ssh_client(host, username, password, timeout, device_type)
+    _require_netmiko()
+    connection = _open_connection(
+        host,
+        username,
+        password,
+        timeout,
+        device_type,
+        global_delay_factor,
+    )
     try:
-        _prepare_session(connection, host, timeout, global_delay_factor)
-        return _execute_command(
-            connection,
-            host,
-            command,
-            timeout,
-            global_delay_factor,
-        )
+        _send_setup_commands(connection, host, setup_commands, timeout, global_delay_factor)
+        return _send_command(connection, host, command, timeout, global_delay_factor)
     finally:
         _safe_disconnect(connection)
 
@@ -125,9 +102,11 @@ def run_ssh_commands(
     timeout: float = 60.0,
     device_type: str = "cisco_ios",
     global_delay_factor: float = 1.0,
+    setup_commands: Sequence[str] = ("terminal length 0", "terminal width 0"),
 ) -> Mapping[str, str]:
     """Execute multiple *commands* over SSH and return their outputs."""
-    _ensure_netmiko()
+
+    _require_netmiko()
     command_list = [c for c in (cmd.strip() for cmd in commands) if c]
     if not command_list:
         raise ValueError("At least one command must be provided for run_ssh_commands().")
@@ -143,15 +122,23 @@ def run_ssh_commands(
                 timeout=timeout,
                 device_type=device_type,
                 global_delay_factor=global_delay_factor,
+                setup_commands=setup_commands,
             )
         }
 
-    connection = _connect_ssh_client(host, username, password, timeout, device_type)
+    connection = _open_connection(
+        host,
+        username,
+        password,
+        timeout,
+        device_type,
+        global_delay_factor,
+    )
     try:
-        _prepare_session(connection, host, timeout, global_delay_factor)
+        _send_setup_commands(connection, host, setup_commands, timeout, global_delay_factor)
         outputs: dict[str, str] = {}
         for command in command_list:
-            outputs[command] = _execute_command(
+            outputs[command] = _send_command(
                 connection,
                 host,
                 command,
@@ -162,15 +149,15 @@ def run_ssh_commands(
     finally:
         _safe_disconnect(connection)
 
-
-def _connect_ssh_client(
+def _open_connection(
     host: str,
     username: str,
     password: str,
     timeout: float,
     device_type: str,
+    global_delay_factor: float,
 ) -> NetmikoBaseConnection:
-    return ConnectHandler(
+    connection = ConnectHandler(
         device_type=device_type,
         host=host,
         username=username,
@@ -180,31 +167,13 @@ def _connect_ssh_client(
         banner_timeout=timeout,
         fast_cli=False,
     )
-
-
-def _prepare_session(
-    connection: NetmikoBaseConnection,
-    host: str,
-    timeout: float,
-    global_delay_factor: float,
-) -> None:
+    
     try:
         if global_delay_factor > 0:
-            connection.global_delay_factor = max(
-                getattr(connection, "global_delay_factor", 1.0),
-                global_delay_factor,
-            )
+            connection.global_delay_factor = max(1.0, global_delay_factor)
     except Exception:  # pragma: no cover - defensive
-        logger.debug("Failed to adjust global delay factor for %s", host, exc_info=True)
-
-    _send_setup_commands(
-        connection,
-        host,
-        ("terminal length 0", "terminal width 0"),
-        timeout,
-        global_delay_factor,
-    )
-
+        logger.debug("Failed to adjust global delay factor for %s", host, exc_info=True
+    return connection
 
 def _send_setup_commands(
     connection: NetmikoBaseConnection,
@@ -213,6 +182,8 @@ def _send_setup_commands(
     timeout: float,
     global_delay_factor: float,
 ) -> None:
+    if not commands:
+        return
     for setup_command in commands:
         try:
             connection.send_command(
@@ -229,7 +200,7 @@ def _send_setup_commands(
                 "Setup command '%s' failed on %s", setup_command, host, exc_info=True
             )
 
-def _execute_command(
+def _send_command(
     connection: NetmikoBaseConnection,
     host: str,
     command: str,
@@ -250,7 +221,7 @@ def _execute_command(
         logger.error(
             "SSH session closed while executing '%s' on %s", command, host, exc_info=True
         )
-        raise _connection_closed_error(host, f"the '{command}' response", command) from exc
+        raise _connection_closed_error(host, command) from exc
     except NetmikoTimeoutException as exc:  # type: ignore[arg-type]
         logger.error(
             "Timed out waiting for '%s' response on %s", command, host, exc_info=True
@@ -277,8 +248,6 @@ def _safe_disconnect(connection: NetmikoBaseConnection) -> None:
         connection.disconnect()
     except Exception:
         logger.debug("Failed to close SSH session cleanly", exc_info=True)
-
-
 def _connection_closed_error(host: str, context: str, command: Optional[str]) -> SSHCommandError:
     if command:
         command_text = f" while handling '{command}'"
@@ -290,7 +259,7 @@ def _connection_closed_error(host: str, context: str, command: Optional[str]) ->
     )
 
 
-def _connection_closed_error(host: str, context: str, command: Optional[str]) -> SSHCommandError:
+def _connection_closed_error(host: str, command: Optional[str]) -> SSHCommandError:
     if command:
         command_text = f" while handling '{command}'"
     else:
