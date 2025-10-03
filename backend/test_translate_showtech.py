@@ -10,7 +10,7 @@ import io
 import asyncio
 from fastapi import UploadFile
 
-from backend.translate_showtech import build_report, find_copper_10g_ports
+from backend.translate_showtech import build_report, find_copper_10g_ports, parse_showtech
 from backend.app import api_showtech
 
 
@@ -77,3 +77,29 @@ def test_api_showtech_copper_ports():
     assert data["ok"]
     assert data["results"][0]["copper_10g_ports"]["total"] == 3
     assert "Te1/1/5" not in data["results"][0]["copper_10g_ports"]["Switch 1"]
+
+
+def test_parse_showtech_handles_switch_prefixed_interfaces():
+    text = (
+        "TenGigabitEthernet1/1/1 is up, line protocol is up\n"
+        "TenGigabitEthernet2/1/1 is up, line protocol is up\n"
+        "TenGigabitEthernet2/1/2 is up, line protocol is up\n"
+        "------------------ show inventory ------------------\n"
+        'NAME: "Switch 1"\n'
+        'DESCR: "Switch 1"\n'
+        'PID: WS-C3850-24XS-S\n'
+        'NAME: "Switch 1 - TenGigabitEthernet1/1/1"\n'
+        'DESCR: "10GBase-SR"\n'
+        'PID: SFP-10G-SR\n'
+        'NAME: "Switch 2 - TenGigabitEthernet2/1/1"\n'
+        'DESCR: "10GBase-SR"\n'
+        'PID: SFP-10G-SR\n'
+        'NAME: "TenGigabitEthernet2/1/2"\n'
+        'DESCR: "10GBase-LR"\n'
+        'PID: SFP-10G-LR\n'
+    )
+    inventory = parse_showtech(text)
+    assert inventory == {
+        "Switch 1": {"WS-C3850-24XS-S": 1, "SFP-10G-SR": 1},
+        "Switch 2": {"SFP-10G-SR": 1, "SFP-10G-LR": 1},
+    }

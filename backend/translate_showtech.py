@@ -126,7 +126,11 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
         # Detect a new switch section (e.g. "Switch 1" or NAME: "1")
         m_switch = re.match(r"^Switch\s+(\d+)", line, re.IGNORECASE)
         if not m_switch:
-            m_switch = re.match(r"NAME:\s*\"(?:Switch\s*)?(\d+)\"", line, re.IGNORECASE)
+            m_switch = re.match(
+                r"NAME:\s*\"Switch\s*(\d+)\b",
+                line,
+                re.IGNORECASE,
+            )
         if m_switch:
             current_switch = f"Switch {m_switch.group(1)}"
             current_intf = None
@@ -136,14 +140,23 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
         # Track individual interface names from NAME lines so we can skip
         # their PIDs if the interface is down and so we can derive the switch
         # number when explicit switch headers are missing.
-        m_name = re.match(r'NAME:\s*"((?:Te|TenGigabitEthernet)[\d/]+)"', line)
+        m_name = re.match(
+            r'NAME:\s*"(?:Switch\s*(\d+)\s*-\s*)?((?:Te|TenGigabitEthernet)[\d/]+)"',
+            line,
+            re.IGNORECASE,
+        )
         if m_name:
-            current_intf = m_name.group(1)
-            m_intf_sw = re.match(r"(?:Te|TenGigabitEthernet)(\d+)/", current_intf)
-            if m_intf_sw:
-                current_intf_switch = f"Switch {m_intf_sw.group(1)}"
+            current_intf = m_name.group(2)
+            switch_hint = m_name.group(1)
+            if switch_hint:
+                current_intf_switch = f"Switch {switch_hint}"
+                current_switch = current_switch or current_intf_switch
             else:
-                current_intf_switch = current_switch
+                m_intf_sw = re.match(r"(?:Te|TenGigabitEthernet)(\d+)/", current_intf)
+                if m_intf_sw:
+                    current_intf_switch = f"Switch {m_intf_sw.group(1)}"
+                else:
+                    current_intf_switch = current_switch
             continue
         elif line.startswith("NAME:"):
             current_intf = None
