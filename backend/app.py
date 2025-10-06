@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from logging_utils import get_user_logger
 from netmiko import ConnectHandler  # type: ignore
-from netmiko.ssh_exception import (  # type: ignore
+from netmiko.exceptions import (  # type: ignore
     NetmikoAuthenticationException,
     NetmikoTimeoutException,
 )
