@@ -324,6 +324,9 @@ def _execute_ssh_command(
     read_timeout: int,
     delay_factor: float = 1.0,
 ) -> Dict[str, Any]:
+    action_logger.info(
+        "ssh.connect host=%s user=%s device_type=%s command=%s", host, username, device_type, command
+    )
     params = {
         "device_type": device_type,
         "host": host,
@@ -340,10 +343,33 @@ def _execute_ssh_command(
                 strip_prompt=True,
                 strip_command=True,
             )
+        action_logger.info(
+            "ssh.success host=%s user=%s device_type=%s bytes=%s",
+            host,
+            username,
+            device_type,
+            len(output or ""),
+        )
         return {"host": host, "ok": True, "output": output}
     except (NetmikoAuthenticationException, NetmikoTimeoutException) as exc:
+        action_logger.warning(
+            "ssh.error host=%s user=%s device_type=%s exc=%s",
+            host,
+            username,
+            device_type,
+            exc,
+            exc_info=True,
+        )
         return {"host": host, "ok": False, "error": str(exc)}
     except Exception as exc:
+        action_logger.error(
+            "ssh.exception host=%s user=%s device_type=%s exc=%s",
+            host,
+            username,
+            device_type,
+            exc,
+            exc_info=True,
+        )
         return {"host": host, "ok": False, "error": str(exc)}
 
 
@@ -369,6 +395,13 @@ def _convert_host_via_ssh(
         read_timeout=read_timeout,
     )
     if not result.get("ok"):
+        action_logger.warning(
+            "ssh.convert.failed host=%s user=%s index=%s detail=%s",
+            host,
+            username,
+            index,
+            result.get("error", "unknown error"),
+        )
         return {"host": host, "ok": False, "error": result.get("error", "unknown error"), "index": index}
 
     output = result.get("output", "")
@@ -388,8 +421,23 @@ def _convert_host_via_ssh(
             data = json.loads(out_path.read_text(encoding="utf-8"))
             output_name = out_path.name
     except Exception as exc:
+        action_logger.error(
+            "ssh.convert.exception host=%s user=%s index=%s exc=%s",
+            host,
+            username,
+            index,
+            exc,
+            exc_info=True,
+        )
         return {"host": host, "ok": False, "error": str(exc), "index": index}
 
+    action_logger.info(
+        "ssh.convert.success host=%s user=%s index=%s json_keys=%s",
+        host,
+        username,
+        index,
+        list(data.keys()) if isinstance(data, dict) else "non-dict",
+    )
     return {
         "host": host,
         "ok": True,
@@ -422,6 +470,13 @@ def _hardware_host_via_ssh(
         delay_factor=2.0,
     )
     if not result.get("ok"):
+        action_logger.warning(
+            "ssh.hardware.failed host=%s user=%s index=%s detail=%s",
+            host,
+            username,
+            index,
+            result.get("error", "unknown error"),
+        )
         return {"host": host, "ok": False, "error": result.get("error", "unknown error"), "index": index}
 
     output = result.get("output", "")
@@ -445,8 +500,23 @@ def _hardware_host_via_ssh(
                 switches.append({"switch": sw, "items": sw_items})
             copper_total = sum(len(v) for v in copper_ports.values())
     except Exception as exc:
+        action_logger.error(
+            "ssh.hardware.exception host=%s user=%s index=%s exc=%s",
+            host,
+            username,
+            index,
+            exc,
+            exc_info=True,
+        )
         return {"host": host, "ok": False, "error": str(exc), "index": index}
 
+    action_logger.info(
+        "ssh.hardware.success host=%s user=%s index=%s switches=%s",
+        host,
+        username,
+        index,
+        len(switches),
+    )
     return {
         "host": host,
         "ok": True,
@@ -531,9 +601,17 @@ def api_save_replacements(request: Request, doc: Dict[str, Any] = Body(...)):
 
 @app.post("/api/showtech")
 async def api_showtech(req: HardwareSSHRequest):
+    action_logger.info(
+        "hardware.request hosts=%s user=%s device_type=%s command=%s",
+        len(req.hosts),
+        req.username,
+        req.device_type,
+        req.command,
+    )
     try:
         mapping = load_mapping()
     except Exception as exc:
+        action_logger.error("hardware.mapping.error user=%s exc=%s", req.username, exc, exc_info=True)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
     results: List[Dict[str, Any]] = []
@@ -560,6 +638,14 @@ async def api_showtech(req: HardwareSSHRequest):
                 try:
                     item = future.result()
                 except Exception as exc:
+                    action_logger.error(
+                        "hardware.future.exception host=%s user=%s index=%s exc=%s",
+                        host,
+                        req.username,
+                        idx,
+                        exc,
+                        exc_info=True,
+                    )
                     item = {"host": host, "ok": False, "error": str(exc), "index": idx}
                 if item.get("ok"):
                     summary["succeeded"] += 1
@@ -568,6 +654,13 @@ async def api_showtech(req: HardwareSSHRequest):
                 results.append(item)
 
     results.sort(key=lambda x: x.get("index", 0))
+    action_logger.info(
+        "hardware.response user=%s total=%s succeeded=%s failed=%s",
+        req.username,
+        summary["total"],
+        summary["succeeded"],
+        summary["failed"],
+    )
     return {"ok": True, "results": results, "summary": summary}
 
 
@@ -861,6 +954,13 @@ async def api_convert(req: ConvertSSHRequest) -> JSONResponse:
     Collect Cisco configurations over SSH and convert them to the normalized JSON format.
     """
 
+    action_logger.info(
+        "convert.request hosts=%s user=%s device_type=%s command=%s",
+        len(req.hosts),
+        req.username,
+        req.device_type,
+        req.command,
+    )
     items: List[Dict[str, Any]] = []
     summary = {"total": len(req.hosts), "succeeded": 0, "failed": 0}
     if req.hosts:
@@ -887,6 +987,14 @@ async def api_convert(req: ConvertSSHRequest) -> JSONResponse:
                 try:
                     item = future.result()
                 except Exception as exc:
+                    action_logger.error(
+                        "convert.future.exception host=%s user=%s index=%s exc=%s",
+                        host,
+                        req.username,
+                        idx,
+                        exc,
+                        exc_info=True,
+                    )
                     item = {"host": host, "ok": False, "error": str(exc), "index": idx}
                 if item.get("ok"):
                     summary["succeeded"] += 1
@@ -895,6 +1003,13 @@ async def api_convert(req: ConvertSSHRequest) -> JSONResponse:
                 items.append(item)
 
     items.sort(key=lambda x: x.get("index", 0))
+    action_logger.info(
+        "convert.response user=%s total=%s succeeded=%s failed=%s",
+        req.username,
+        summary["total"],
+        summary["succeeded"],
+        summary["failed"],
+    )
     return JSONResponse({"ok": True, "items": items, "summary": summary})
 
 
