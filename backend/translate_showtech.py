@@ -162,6 +162,16 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
             current_intf_switch = None
             continue
 
+        # Some standalone switches report their chassis as NAME: "1" without the
+        # "Switch" prefix.  Treat those as switch identifiers so their PIDs are
+        # attributed correctly instead of being dropped.
+        m_simple_switch = re.match(r'NAME:\s*"(\d+)"', line)
+        if m_simple_switch:
+            current_switch = f"Switch {m_simple_switch.group(1)}"
+            current_intf = None
+            current_intf_switch = None
+            continue
+
         # Track individual interface names from NAME lines so we can skip
         # their PIDs if the interface is down and so we can derive the switch
         # number when explicit switch headers are missing.
@@ -187,9 +197,9 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
             current_intf = None
             current_intf_switch = None
 
-        m_pid = re.search(r"PID:\s*([^,\s]+)", line, re.IGNORECASE)
+        m_pid = re.search(r"PID:\s*([^,]*)", line, re.IGNORECASE)
         if m_pid:
-            pid = m_pid.group(1)
+            pid = m_pid.group(1).strip() or "MISSING PID"
             switch = current_intf_switch or current_switch
             # If this PID corresponds to an interface that is not up, skip it.
             if current_intf:
