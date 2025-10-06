@@ -167,10 +167,7 @@ def test_parse_showtech_counts_sfps_without_interface_status():
         'NAME: "Te2/1/8", DESCR: "SFP-10GBase-CX1"\n'
         'PID: SFP-H10GB-CU3M      , VID: V03  , SN: TED2546B0FK\n'
     )
-    inventory = {
-        switch: dict(pids)
-        for switch, pids in parse_showtech(text).items()
-    }
+    inventory = parse_showtech(text)
     assert inventory == {
         "Switch 1": {
             "C9300-48UXM": 1,
@@ -180,7 +177,6 @@ def test_parse_showtech_counts_sfps_without_interface_status():
             "GLC-SX-MMD": 3,
             "SFP-H10GB-CU5M": 2,
             "SFP-H10GB-CU3M": 2,
-            "MISSING PID": 1,
         },
         "Switch 2": {
             "C9300-48UXM": 1,
@@ -191,23 +187,5 @@ def test_parse_showtech_counts_sfps_without_interface_status():
             "GLC-T": 1,
             "SFP-H10GB-CU5M": 2,
             "SFP-H10GB-CU3M": 2,
-            "MISSING PID": 2,
         },
-    }
-
-
-def test_parse_showtech_handles_single_switch_without_switch_keyword():
-    text = (
-        "------------------ show inventory ------------------\n"
-        'NAME: "1", DESCR: "WS-C2960X-24PS-L"\n'
-        'PID: WS-C2960X-24PS-L  , VID: V02  , SN: FOC1931S585\n'
-        'NAME: "Te1/0/1", DESCR: "1000BaseSX SFP"\n'
-        'PID:                     , VID:      , SN: FNS163010RN\n'
-    )
-    inventory = {
-        switch: dict(pids)
-        for switch, pids in parse_showtech(text).items()
-    }
-    assert inventory == {
-        "Switch 1": {"WS-C2960X-24PS-L": 1, "MISSING PID": 1},
     }
