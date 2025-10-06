@@ -82,19 +82,44 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
     skips any pluggables found on ports that are down.
     """
 
-    # Record interfaces that are operationally up so that only active optics
-    # are counted towards the inventory.  This prevents a 1G SFP in a down
-    # port from appearing as a migration requirement.
-    up_intfs: set[str] = set()
+    # Record interfaces that are operationally up/down so that optics on
+    # administratively disabled ports can be ignored.  The ``show
+    # tech-support`` dump is not guaranteed to include interface state for
+    # every port, so interfaces default to "unknown" and are only skipped when
+    # we positively identify them as down.
+    intf_state: dict[str, bool] = {}
+    current_state_intf: str | None = None
     intf_status_re = re.compile(
-        r"^(?:Interface\s*)?(?P<intf>(?:Te|TenGigabitEthernet)[\d/]+) is up, line protocol is up",
+        r"^(?:Interface\s*)?(?P<intf>(?:Te|TenGigabitEthernet)[\d/]+)\s+is\s+(?P<state>administratively down|down|up)",
         re.IGNORECASE,
     )
-    for line in text.splitlines():
-        line = line.strip()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
         m_status = intf_status_re.match(line)
         if m_status:
-            up_intfs.add(m_status.group("intf"))
+            current_state_intf = m_status.group("intf")
+            state = m_status.group("state").lower()
+            is_up = state == "up"
+            if "line protocol is down" in line.lower():
+                is_up = False
+            elif "line protocol is up" in line.lower():
+                is_up = True
+            intf_state[current_state_intf] = is_up
+            continue
+
+        if current_state_intf:
+            lowered = line.lower()
+            if "line protocol is down" in lowered:
+                intf_state[current_state_intf] = False
+            elif "line protocol is up" in lowered:
+                intf_state[current_state_intf] = True
+
+        # Reset the context once we leave the indented block that describes a
+        # particular interface.  These detail lines are typically indented with
+        # spaces; encountering a non-indented line means the next match should
+        # stand on its own.
+        if raw_line and not raw_line.startswith(" "):
+            current_state_intf = None
 
     inventory: DefaultDict[str, DefaultDict[str, int]] = defaultdict(
         lambda: defaultdict(int)
@@ -126,9 +151,23 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
         # Detect a new switch section (e.g. "Switch 1" or NAME: "1")
         m_switch = re.match(r"^Switch\s+(\d+)", line, re.IGNORECASE)
         if not m_switch:
-            m_switch = re.match(r"NAME:\s*\"(?:Switch\s*)?(\d+)\"", line, re.IGNORECASE)
+            m_switch = re.match(
+                r"NAME:\s*\"Switch\s*(\d+)\b",
+                line,
+                re.IGNORECASE,
+            )
         if m_switch:
             current_switch = f"Switch {m_switch.group(1)}"
+            current_intf = None
+            current_intf_switch = None
+            continue
+
+        # Some standalone switches report their chassis as NAME: "1" without the
+        # "Switch" prefix.  Treat those as switch identifiers so their PIDs are
+        # attributed correctly instead of being dropped.
+        m_simple_switch = re.match(r'NAME:\s*"(\d+)"', line)
+        if m_simple_switch:
+            current_switch = f"Switch {m_simple_switch.group(1)}"
             current_intf = None
             current_intf_switch = None
             continue
@@ -136,26 +175,37 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
         # Track individual interface names from NAME lines so we can skip
         # their PIDs if the interface is down and so we can derive the switch
         # number when explicit switch headers are missing.
-        m_name = re.match(r'NAME:\s*"((?:Te|TenGigabitEthernet)[\d/]+)"', line)
+        m_name = re.match(
+            r'NAME:\s*"(?:Switch\s*(\d+)\s*-\s*)?((?:Te|TenGigabitEthernet)[\d/]+)"',
+            line,
+            re.IGNORECASE,
+        )
         if m_name:
-            current_intf = m_name.group(1)
-            m_intf_sw = re.match(r"(?:Te|TenGigabitEthernet)(\d+)/", current_intf)
-            if m_intf_sw:
-                current_intf_switch = f"Switch {m_intf_sw.group(1)}"
+            current_intf = m_name.group(2)
+            switch_hint = m_name.group(1)
+            if switch_hint:
+                current_intf_switch = f"Switch {switch_hint}"
+                current_switch = current_switch or current_intf_switch
             else:
-                current_intf_switch = current_switch
+                m_intf_sw = re.match(r"(?:Te|TenGigabitEthernet)(\d+)/", current_intf)
+                if m_intf_sw:
+                    current_intf_switch = f"Switch {m_intf_sw.group(1)}"
+                else:
+                    current_intf_switch = current_switch
             continue
         elif line.startswith("NAME:"):
             current_intf = None
             current_intf_switch = None
 
-        m_pid = re.search(r"PID:\s*([^,\s]+)", line, re.IGNORECASE)
+        m_pid = re.search(r"PID:\s*([^,]*)", line, re.IGNORECASE)
         if m_pid:
-            pid = m_pid.group(1)
+            pid = m_pid.group(1).strip() or "MISSING PID"
             switch = current_intf_switch or current_switch
             # If this PID corresponds to an interface that is not up, skip it.
-            if current_intf and current_intf not in up_intfs:
-                continue
+            if current_intf:
+                state = intf_state.get(current_intf)
+                if state is False:
+                    continue
             if switch:
                 inventory[switch][pid] += 1
 
