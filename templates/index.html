@@ -172,13 +172,25 @@
       if (!res.ok) throw new Error('not authed');
       return res.json();
     }).then(data => {
-      userGreeting.textContent = `Hey ${data.user.name}!`;
+      const user = data.user || {};
+      const name = user.name || 'there';
+      const readOnly = Boolean(user.read_only);
+      const suffix = readOnly ? ' (read-only)' : '';
+      userGreeting.textContent = `Hey ${name}!${suffix}`;
       userGreeting.classList.remove('hidden');
       logoutBtn?.classList.remove('hidden');
       logoutBtn?.addEventListener('click', (e) => {
         e.preventDefault();
         window.location.href = '/logout';
       });
+
+      if (readOnly) {
+        dryRun.checked = true;
+        dryRun.disabled = true;
+        dryRun.setAttribute('aria-disabled', 'true');
+        dryRun.title = 'Read-only accounts can only run in Test mode.';
+        syncPushBtnLabel();
+      }
     }).catch(() => {
       window.location.href = '/login';
     });

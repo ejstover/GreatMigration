@@ -90,6 +90,7 @@ def post_login(request: Request, username: str = Form(...), password: str = Form
         "name": username,
         "email": "",
         "can_push": username in _PUSH_USERS,
+        "read_only": username not in _PUSH_USERS,
     }
     client_host = request.client.host if request.client else "-"
     action_logger.info("local_login_success user=%s client=%s", username, client_host)
@@ -123,7 +124,15 @@ def require_push_rights(user=Depends(current_user)):
 
 @router.get("/me")
 def me(user=Depends(current_user)):
-    return {"ok": True, "user": {"name": user.get("name"), "email": user.get("email"), "can_push": user.get("can_push", False)}}
+    return {
+        "ok": True,
+        "user": {
+            "name": user.get("name"),
+            "email": user.get("email"),
+            "can_push": user.get("can_push", False),
+            "read_only": user.get("read_only", False),
+        },
+    }
 
 
 def install_auth(app):
