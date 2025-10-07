@@ -31,6 +31,15 @@ except Exception as exc:  # pragma: no cover - optional dependency
 else:
     NETMIKO_IMPORT_ERROR = None
 
+
+def _raise_missing_netmiko() -> None:
+    message = (
+        "netmiko is required for SSH collection. Install the optional dependency to enable this feature."
+    )
+    if NETMIKO_IMPORT_ERROR is not None:
+        message = f"{message} (Import error: {NETMIKO_IMPORT_ERROR})"
+    raise RuntimeError(message)
+
 from translate_showtech import find_copper_10g_ports, load_mapping, parse_showtech
 
 
@@ -124,9 +133,7 @@ def _collect_one_device(
     read_timeout: int,
 ) -> DeviceResult:
     if ConnectHandler is None:  # pragma: no cover - handled in start_job
-        raise RuntimeError(
-            "netmiko is required for SSH collection. Install the optional dependency to enable this feature."
-        )
+        _raise_missing_netmiko()
 
     label = device.label or device.host
     safe_label = sanitize_label(label.replace(" ", "_"))
@@ -246,9 +253,7 @@ def start_job(
     max_workers: int,
 ) -> JobState:
     if ConnectHandler is None:
-        raise RuntimeError(
-            "netmiko is required for SSH collection. Install the optional dependency to enable this feature."
-        )
+        _raise_missing_netmiko()
 
     job_id = uuid.uuid4().hex
     job_dir = Path(Path.cwd() / "tmp_ssh_jobs")
