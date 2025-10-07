@@ -42,6 +42,27 @@ from translate_showtech import (
 from fpdf import FPDF
 from fpdf.errors import FPDFException
 
+PDF_CHAR_REPLACEMENTS = {
+    ord("•"): "-",
+    ord("–"): "-",
+    ord("—"): "-",
+    ord("“"): '"',
+    ord("”"): '"',
+    ord("’"): "'",
+    ord("‘"): "'",
+}
+
+
+def _normalize_pdf_text(text: str) -> str:
+    """Best-effort conversion of unicode text into the latin-1 subset FPDF supports."""
+
+    normalized = text.translate(PDF_CHAR_REPLACEMENTS)
+    try:
+        normalized.encode("latin-1")
+        return normalized
+    except UnicodeEncodeError:
+        return normalized.encode("latin-1", "ignore").decode("latin-1")
+
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
 DEFAULT_TZ = "America/New_York"
@@ -377,7 +398,7 @@ def api_showtech_pdf(request: Request, data: Dict[str, Any] = Body(...)):
         if text is None:
             text_to_render = ""
         else:
-            text_to_render = str(text)
+            text_to_render = _normalize_pdf_text(str(text))
 
         try:
             pdf.multi_cell(content_width, height, text_to_render)
