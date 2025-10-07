@@ -11,7 +11,7 @@
 param(
   [string]$RepoUrl,                # e.g. https://github.com/ejstover/GreatMigration.git
   [string]$TargetDir = "$PWD",     # where to clone/use the project
-  [string]$Branch = "codex/update-post_login-to-check-can_push-flag",
+  [string]$Branch = "main",
   [int]$Port = 0
 )
 
