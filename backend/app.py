@@ -2,6 +2,8 @@ import os
 import json
 import tempfile
 import re
+from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
@@ -116,6 +118,8 @@ app.add_middleware(
 static_path = Path(__file__).resolve().parent.parent / "static"
 if static_path.exists():
     app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+
+REPORT_LOGO_PATH = static_path / "reportlogo.png"
 
 # Optional authentication
 # Optional authentication
@@ -356,27 +360,206 @@ async def api_showtech(files: List[UploadFile] = File(...)):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+class HardwareReportPDF(FPDF):
+    """Styled PDF subclass for the hardware report."""
+
+    def __init__(self, *args, logo_path: Path | None = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        if logo_path and logo_path.is_file():
+            self._logo_path: Path | None = logo_path
+        else:
+            self._logo_path = None
+
+    def header(self) -> None:  # pragma: no cover - rendering logic
+        self.set_fill_color(15, 23, 42)
+        self.rect(0, 0, self.w, 15, "F")
+        text_x = self.l_margin
+        if self._logo_path:
+            try:
+                logo_width = 22
+                self.image(str(self._logo_path), x=self.w - self.r_margin - logo_width, y=3, w=logo_width)
+            except Exception:
+                self._logo_path = None
+            else:
+                text_x = self.l_margin
+        self.set_xy(text_x, 8)
+        self.set_text_color(255, 255, 255)
+        self.set_font("Helvetica", "B", 11)
+        self.cell(0, 5, "GreatMigration • Hardware Conversion Report", align="L")
+
+    def footer(self) -> None:  # pragma: no cover - rendering logic
+        self.set_y(-15)
+        self.set_font("Helvetica", "I", 8)
+        self.set_text_color(100, 116, 139)
+        self.cell(0, 10, f"Page {self.page_no()}", align="R")
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _table_row(pdf: HardwareReportPDF, columns: List[str], widths: List[float], *, line_height: float = 6, fill: bool = False) -> None:
+    x_initial = pdf.get_x()
+    y_start = pdf.get_y()
+    max_height = 0.0
+    x_cursor = x_initial
+    for text, width in zip(columns, widths):
+        pdf.set_xy(x_cursor, y_start)
+        pdf.multi_cell(width, line_height, text, border=0, align="L", fill=fill)
+        cell_height = pdf.get_y() - y_start
+        if cell_height > max_height:
+            max_height = cell_height
+        x_cursor += width
+    pdf.set_xy(x_initial, y_start + max_height)
+
+
 @app.post("/api/showtech/pdf")
 def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
+    results = data.get("results", []) or []
+
+    logo_path = REPORT_LOGO_PATH if REPORT_LOGO_PATH.is_file() else None
+    pdf = HardwareReportPDF(logo_path=logo_path)
+    pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
-    pdf.set_font("Helvetica", size=12)
-    for file in data.get("results", []):
-        pdf.set_font("Helvetica", "B", 14)
-        pdf.cell(0, 10, file.get("filename", ""), ln=True)
-        pdf.set_font("Helvetica", size=12)
+
+    pdf.ln(8)
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.set_text_color(15, 23, 42)
+    pdf.cell(0, 12, "Hardware Conversion Report", ln=True)
+    pdf.set_font("Helvetica", size=11)
+    pdf.set_text_color(71, 85, 105)
+    pdf.cell(0, 6, f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}", ln=True)
+    pdf.ln(4)
+
+    total_files = len(results)
+    total_switches = sum(len(file.get("switches", [])) for file in results)
+    total_items = 0
+    copper_ports_total = 0
+    replacement_counts: Counter[str] = Counter()
+
+    for file in results:
+        copper_ports_total += _safe_int(file.get("copper_10g_ports", {}).get("total"))
         for sw in file.get("switches", []):
-            pdf.cell(0, 10, sw.get("switch", ""), ln=True)
             for item in sw.get("items", []):
-                line = f"  {item.get('pid')} x{item.get('count')} -> {item.get('replacement')}"
-                pdf.cell(0, 10, line, ln=True)
-        copper_total = file.get("copper_10g_ports", {}).get("total")
+                qty = _safe_int(item.get("count"))
+                total_items += qty
+                replacement = item.get("replacement") or "Unspecified replacement"
+                if replacement:
+                    replacement_counts[replacement] += qty or 1
+
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.set_text_color(15, 23, 42)
+    pdf.cell(0, 10, "Summary", ln=True)
+    pdf.set_font("Helvetica", size=11)
+    pdf.set_text_color(71, 85, 105)
+
+    if not results:
+        pdf.multi_cell(0, 6, "No hardware data was provided for this report.")
+    else:
+        summary_lines = [
+            f"• {total_files} source file{'s' if total_files != 1 else ''} processed",
+            f"• {total_switches} switch{'es' if total_switches != 1 else ''} analyzed",
+        ]
+        if total_items:
+            summary_lines.append(
+                f"• {total_items} hardware item{'s' if total_items != 1 else ''} evaluated"
+            )
+        if copper_ports_total:
+            summary_lines.append(
+                f"• {copper_ports_total} 10Gb copper port{'s' if copper_ports_total != 1 else ''} require SFPP-10G-T modules"
+            )
+        for line in summary_lines:
+            pdf.multi_cell(0, 6, line)
+
+        if replacement_counts:
+            pdf.ln(2)
+            pdf.set_font("Helvetica", "B", 11)
+            pdf.set_text_color(15, 23, 42)
+            pdf.cell(0, 6, "Top recommended replacements", ln=True)
+            pdf.set_font("Helvetica", size=11)
+            pdf.set_text_color(71, 85, 105)
+            for model, qty in replacement_counts.most_common(5):
+                qty_display = f" ({qty})" if qty else ""
+                pdf.multi_cell(0, 6, f"   • {model}{qty_display}")
+
+    for file in results:
+        pdf.ln(6)
+        filename = file.get("filename") or "Unnamed file"
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.set_text_color(15, 23, 42)
+        pdf.cell(0, 8, filename, ln=True)
+        pdf.set_draw_color(226, 232, 240)
+        x1 = pdf.l_margin
+        x2 = pdf.w - pdf.r_margin
+        y = pdf.get_y()
+        pdf.line(x1, y, x2, y)
+        pdf.ln(2)
+
+        switches = file.get("switches", []) or []
+        if not switches:
+            pdf.set_font("Helvetica", size=11)
+            pdf.set_text_color(100, 116, 139)
+            pdf.multi_cell(0, 6, "No switch inventory detected in this file.")
+        for sw in switches:
+            switch_name = sw.get("switch") or "Unnamed switch"
+            pdf.ln(2)
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.set_text_color(15, 23, 42)
+            pdf.cell(0, 7, switch_name, ln=True)
+
+            items = sw.get("items", []) or []
+            if not items:
+                pdf.set_font("Helvetica", size=10)
+                pdf.set_text_color(100, 116, 139)
+                pdf.multi_cell(0, 6, "No hardware entries were detected for this switch.")
+                continue
+
+            available_width = pdf.w - pdf.l_margin - pdf.r_margin
+            col_widths = [available_width * 0.32, available_width * 0.12, available_width * 0.56]
+            line_height = 6
+
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.set_fill_color(30, 64, 175)
+            pdf.set_text_color(255, 255, 255)
+            _table_row(pdf, ["Part Number", "Qty", "Recommended Replacement"], col_widths, line_height=line_height, fill=True)
+
+            pdf.set_text_color(55, 65, 81)
+            pdf.set_font("Helvetica", size=10)
+            fill_colors = [(248, 250, 252), (255, 255, 255)]
+            for idx, item in enumerate(items):
+                pdf.set_fill_color(*fill_colors[idx % 2])
+                pid = item.get("pid") or "—"
+                qty = item.get("count")
+                qty_display = str(qty) if qty not in (None, "") else "—"
+                replacement = item.get("replacement") or "No replacement model defined"
+                _table_row(pdf, [pid, qty_display, replacement], col_widths, line_height=line_height, fill=True)
+                pdf.set_draw_color(226, 232, 240)
+                line_y = pdf.get_y()
+                pdf.line(pdf.l_margin, line_y, pdf.w - pdf.r_margin, line_y)
+
+        copper_info = file.get("copper_10g_ports", {}) or {}
+        copper_total = _safe_int(copper_info.get("total"))
         if copper_total:
-            line = f"10Gb copper ports requiring SFPs (SFPP-10G-T): {copper_total}"
-            pdf.cell(0, 10, line, ln=True)
-        pdf.ln(5)
-    # fpdf2 returns a bytearray; convert it to bytes for the response
+            pdf.ln(4)
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.set_text_color(15, 23, 42)
+            pdf.cell(0, 7, "10Gb Copper Ports", ln=True)
+            pdf.set_font("Helvetica", size=11)
+            pdf.set_text_color(71, 85, 105)
+            pdf.multi_cell(0, 6, f"Total ports requiring SFPP-10G-T modules: {copper_total}")
+
+            detail = {k: v for k, v in copper_info.items() if k != "total"}
+            for switch_name, ports in detail.items():
+                if not ports:
+                    continue
+                pdf.multi_cell(0, 6, f"   • {switch_name}: {len(ports)} ports")
+
+    if results:
+        pdf.ln(4)
+
     pdf_bytes = bytes(pdf.output())
     headers = {"Content-Disposition": "attachment; filename=hardware_conversion_report.pdf"}
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
