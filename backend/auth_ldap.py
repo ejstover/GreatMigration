@@ -12,8 +12,23 @@ from logging_utils import get_user_logger
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")
 LDAP_SERVER_URL = os.getenv("LDAP_SERVER_URL", "ldaps://dc01.testdomain.local:636")
 LDAP_SEARCH_BASE = os.getenv("LDAP_SEARCH_BASE", "DC=testdomain,DC=local")
+
+
+def _parse_search_bases(raw: Optional[str]) -> List[str]:
+    """Return a list of search bases, supporting semicolon/newline separated input."""
+    if not raw:
+        return []
+
+    # Accept semicolons or newlines as separators while preserving DN commas
+    cleaned = raw.replace("\n", ";")
+    bases = [part.strip() for part in cleaned.split(";") if part.strip()]
+    return bases or []
+
+
+LDAP_SEARCH_BASES = _parse_search_bases(os.getenv("LDAP_SEARCH_BASES") or LDAP_SEARCH_BASE)
 LDAP_BIND_TEMPLATE = os.getenv("LDAP_BIND_TEMPLATE", "{username}@testdomain.local")
 PUSH_GROUP_DN = os.getenv("PUSH_GROUP_DN")  # CN=NetAuto-Push,OU=Groups,...
+READONLY_GROUP_DNS = _parse_search_bases(os.getenv("READONLY_GROUP_DN"))
 
 # Optional service account for searches
 LDAP_SERVICE_DN = os.getenv("LDAP_SERVICE_DN", "CN=GreatMigration,CN=Users,DC=testdomain,DC=local")
@@ -42,6 +57,13 @@ def _bind_service() -> Optional[Connection]:
         return None
     return Connection(_server(), user=LDAP_SERVICE_DN, password=LDAP_SERVICE_PASSWORD, auto_bind=True)
 
+def _iter_search_bases() -> List[str]:
+    bases = LDAP_SEARCH_BASES or []
+    if not bases and LDAP_SEARCH_BASE:
+        bases = [LDAP_SEARCH_BASE]
+    return bases
+
+
 def _search_user(conn: Connection, username: str) -> Optional[Dict[str, Any]]:
     """Find user entry by UPN or sAMAccountName."""
     # Two filters to be robust
@@ -54,15 +76,19 @@ def _search_user(conn: Connection, username: str) -> Optional[Dict[str, Any]]:
         "userPrincipalName",
         "memberOf",
     ]
-    ok = conn.search(
-        search_base=LDAP_SEARCH_BASE,
-        search_filter=search_filter,
-        search_scope=SUBTREE,
-        attributes=attrs,
-        size_limit=1,
-    )
-    if not ok or not conn.entries:
+    for base in _iter_search_bases():
+        ok = conn.search(
+            search_base=base,
+            search_filter=search_filter,
+            search_scope=SUBTREE,
+            attributes=attrs,
+            size_limit=1,
+        )
+        if ok and conn.entries:
+            break
+    else:
         return None
+
     e = conn.entries[0]
     def _list(attr):
         try:
@@ -83,9 +109,17 @@ def _is_member_of_group(user_dn: str, group_dn: str, search_conn: Connection) ->
     """
     # (memberOf:1.2.840.113556.1.4.1941:=<groupDN>) true if user is directly or indirectly a member
     filt = f"(&(distinguishedName={user_dn})(memberOf:1.2.840.113556.1.4.1941:={group_dn}))"
-    ok = search_conn.search(search_base=LDAP_SEARCH_BASE, search_filter=filt,
-                            search_scope=SUBTREE, attributes=["distinguishedName"], size_limit=1)
-    return bool(ok and search_conn.entries)
+    for base in _iter_search_bases():
+        ok = search_conn.search(
+            search_base=base,
+            search_filter=filt,
+            search_scope=SUBTREE,
+            attributes=["distinguishedName"],
+            size_limit=1,
+        )
+        if ok and search_conn.entries:
+            return True
+    return False
 
 def _html_login(error: Optional[str] = None) -> str:
     msg = f'<p class="text-sm text-rose-600 dark:text-rose-400 mt-2">{error}</p>' if error else ''
@@ -149,29 +183,62 @@ def post_login(request: Request, username: str = Form(...), password: str = Form
         return HTMLResponse(_html_login("User not found in directory."), status_code=401)
 
     # 3) If we need recursive group check, bind service (or reuse user bind if permitted)
+    svc_conn = None
+    if PUSH_GROUP_DN or READONLY_GROUP_DNS:
+        try:
+            svc_conn = _bind_service()
+        except Exception:
+            svc_conn = None
+
+    membership_conn = svc_conn or user_conn
+
     can_push = False
     if PUSH_GROUP_DN:
         try:
-            svc = _bind_service() or user_conn
-            can_push = _is_member_of_group(entry["dn"], PUSH_GROUP_DN, svc)
+            can_push = _is_member_of_group(entry["dn"], PUSH_GROUP_DN, membership_conn)
         except Exception:
-            # if check fails, default to False
             can_push = False
 
+    is_read_only = False
+    if READONLY_GROUP_DNS:
+        try:
+            for group_dn in READONLY_GROUP_DNS:
+                if _is_member_of_group(entry["dn"], group_dn, membership_conn):
+                    is_read_only = True
+                    break
+        except Exception:
+            is_read_only = False
+
+    has_group_requirement = bool(PUSH_GROUP_DN or READONLY_GROUP_DNS)
+    if has_group_requirement and not (can_push or is_read_only):
+        client_host = request.client.host if request.client else "-"
+        action_logger.warning(
+            "ldap_login_failed user=%s client=%s reason=not_in_allowed_group",
+            username,
+            client_host,
+        )
+        return HTMLResponse(
+            _html_login("Your account is not authorized for Mist pushes."),
+            status_code=403,
+        )
+
     # 4) Store session
+    read_only_flag = bool(is_read_only and not can_push)
     request.session["user"] = {
         "name": entry.get("displayName") or username,
         "email": entry.get("mail") or entry.get("upn") or "",
         "dn": entry["dn"],
         "upn": entry.get("upn") or "",
         "can_push": bool(can_push),
+        "read_only": read_only_flag,
     }
     client_host = request.client.host if request.client else "-"
     action_logger.info(
-        "ldap_login_success user=%s client=%s can_push=%s",
+        "ldap_login_success user=%s client=%s can_push=%s read_only=%s",
         entry.get("displayName") or username,
         client_host,
         bool(can_push),
+        read_only_flag,
     )
     return RedirectResponse("/", status_code=302)
 
@@ -200,7 +267,15 @@ def require_push_rights(user = Depends(current_user)):
 @router.get("/me")
 def me(user = Depends(current_user)):
     # Minimal info for the frontend
-    return {"ok": True, "user": {"name": user.get("name"), "email": user.get("email"), "can_push": user.get("can_push", False)}}
+    return {
+        "ok": True,
+        "user": {
+            "name": user.get("name"),
+            "email": user.get("email"),
+            "can_push": user.get("can_push", False),
+            "read_only": user.get("read_only", False),
+        },
+    }
 
 def install_auth(app):
     """Call this from app.py to enable sessions + routes."""
