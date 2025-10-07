@@ -385,7 +385,7 @@ class HardwareReportPDF(FPDF):
         self.set_xy(text_x, 8)
         self.set_text_color(255, 255, 255)
         self.set_font("Helvetica", "B", 11)
-        self.cell(0, 5, "GreatMigration - Hardware Conversion Report", align="L")
+        self.cell(0, 5, "GreatMigration • Hardware Conversion Report", align="L")
 
     def footer(self) -> None:  # pragma: no cover - rendering logic
         self.set_y(-15)
@@ -460,16 +460,16 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
         pdf.multi_cell(0, 6, "No hardware data was provided for this report.")
     else:
         summary_lines = [
-            f"- {total_files} source file{'s' if total_files != 1 else ''} processed",
-            f"- {total_switches} switch{'es' if total_switches != 1 else ''} analyzed",
+            f"• {total_files} source file{'s' if total_files != 1 else ''} processed",
+            f"• {total_switches} switch{'es' if total_switches != 1 else ''} analyzed",
         ]
         if total_items:
             summary_lines.append(
-                f"- {total_items} hardware item{'s' if total_items != 1 else ''} evaluated"
+                f"• {total_items} hardware item{'s' if total_items != 1 else ''} evaluated"
             )
         if copper_ports_total:
             summary_lines.append(
-                f"- {copper_ports_total} 10Gb copper port{'s' if copper_ports_total != 1 else ''} require SFPP-10G-T modules"
+                f"• {copper_ports_total} 10Gb copper port{'s' if copper_ports_total != 1 else ''} require SFPP-10G-T modules"
             )
         for line in summary_lines:
             pdf.multi_cell(0, 6, line)
@@ -483,7 +483,7 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
             pdf.set_text_color(71, 85, 105)
             for model, qty in replacement_counts.most_common(5):
                 qty_display = f" ({qty})" if qty else ""
-                pdf.multi_cell(0, 6, f"   - {model}{qty_display}")
+                pdf.multi_cell(0, 6, f"   • {model}{qty_display}")
 
     for file in results:
         pdf.ln(6)
@@ -555,7 +555,7 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
             for switch_name, ports in detail.items():
                 if not ports:
                     continue
-                pdf.multi_cell(0, 6, f"   - {switch_name}: {len(ports)} ports")
+                pdf.multi_cell(0, 6, f"   • {switch_name}: {len(ports)} ports")
 
     if results:
         pdf.ln(4)
