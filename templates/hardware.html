@@ -164,19 +164,37 @@
     }
 
     exportBtn.addEventListener('click', () => {
-      if(!lastResults) return;
+      if(!lastResults || exportBtn.disabled) return;
+
+      exportBtn.disabled = true;
+      uploadStatus.textContent = 'Generating PDF report...';
+
       fetch('/api/showtech/pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
         body: JSON.stringify({ results: lastResults })
       })
-        .then(res => res.blob())
+        .then(res => {
+          if(!res.ok) {
+            throw new Error('PDF generation failed');
+          }
+          return res.blob();
+        })
         .then(blob => {
           const url = window.URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url; a.download = 'hardware_conversion_report.pdf';
           document.body.appendChild(a); a.click(); a.remove();
           window.URL.revokeObjectURL(url);
+          uploadStatus.textContent = 'PDF downloaded.';
+        })
+        .catch(err => {
+          console.error(err);
+          uploadStatus.textContent = 'Error: ' + err.message;
+        })
+        .finally(() => {
+          exportBtn.disabled = false;
         });
     });
   </script>
