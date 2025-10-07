@@ -10,6 +10,7 @@ from fastapi import FastAPI, UploadFile, File, Form, Request, Body, HTTPExceptio
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 from logging_utils import get_user_logger
 
@@ -37,6 +38,7 @@ from translate_showtech import (
     load_mapping,
     find_copper_10g_ports,
 )  # type: ignore
+import ssh_collect
 from fpdf import FPDF
 
 APP_TITLE = "Switch Port Config Frontend"
@@ -48,11 +50,11 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 PAGE_COPY: dict[str, dict[str, str]] = {
     "config": {
         "title": "Config Conversion",
-        "tagline": "Upload Cisco configs → map rows → batch test/push to Mist",
+        "tagline": "Collect Cisco configs via SSH or upload files → map rows → batch test/push to Mist",
     },
     "hardware": {
         "title": "Hardware Conversion",
-        "tagline": "Upload Cisco show tech files and map to Juniper replacements",
+        "tagline": "Collect Cisco hardware via SSH or upload show tech files",
     },
     "replacements": {
         "title": "Hardware Replacement Rules",
@@ -65,6 +67,59 @@ PAGE_COPY: dict[str, dict[str, str]] = {
 }
 
 NAV_LINK_KEYS = ("hardware", "replacements", "config", "rules")
+
+
+class SSHDeviceModel(BaseModel):
+    host: str
+    label: Optional[str] = None
+
+    @field_validator("host")
+    @classmethod
+    def _clean_host(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("host is required")
+        return cleaned
+
+    @field_validator("label")
+    @classmethod
+    def _strip_label(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @model_validator(mode="after")
+    def _default_label(self):
+        if not self.label:
+            self.label = self.host
+        return self
+
+
+class SSHJobRequest(BaseModel):
+    username: str
+    password: SecretStr
+    devices: List[SSHDeviceModel]
+    delay_factor: float = Field(default=1.0, ge=0.1, le=10.0)
+    read_timeout: int = Field(default=90, ge=15, le=600)
+    max_workers: int = Field(default=4, ge=1, le=16)
+
+    @field_validator("username")
+    @classmethod
+    def _validate_username(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("username is required")
+        return cleaned
+
+    @field_validator("devices")
+    @classmethod
+    def _validate_devices(cls, value: List[SSHDeviceModel]) -> List[SSHDeviceModel]:
+        if not value:
+            raise ValueError("devices must not be empty")
+        if len(value) > 64:
+            raise ValueError("a maximum of 64 devices can be processed at once")
+        return value
 
 
 def _page_label(key: str) -> str:
@@ -321,6 +376,38 @@ def api_save_replacements(request: Request, doc: Dict[str, Any] = Body(...)):
         return {"ok": True}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/ssh/jobs")
+def api_start_ssh_job(payload: SSHJobRequest):
+    try:
+        ssh_collect.cleanup_old_jobs()
+        password_bytes = bytearray(payload.password.get_secret_value(), "utf-8")
+        devices = [
+            ssh_collect.DeviceInput(host=item.host, label=item.label)
+            for item in payload.devices
+        ]
+        max_workers = max(1, min(payload.max_workers, len(devices)))
+        job = ssh_collect.start_job(
+            devices=devices,
+            username=payload.username,
+            password_bytes=password_bytes,
+            delay_factor=payload.delay_factor,
+            read_timeout=payload.read_timeout,
+            max_workers=max_workers,
+        )
+        return {"ok": True, "job_id": job.id}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/ssh/jobs/{job_id}")
+def api_get_ssh_job(job_id: str):
+    ssh_collect.cleanup_old_jobs()
+    job = ssh_collect.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"ok": True, "job": job.to_dict()}
 
 
 @app.post("/api/showtech")

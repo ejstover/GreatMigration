@@ -209,7 +209,12 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
             if switch:
                 inventory[switch][pid] += 1
 
-    return inventory
+    cleaned: Dict[str, Dict[str, int]] = {}
+    for switch, items in inventory.items():
+        filtered = {pid: count for pid, count in items.items() if pid != "MISSING PID"}
+        if filtered:
+            cleaned[switch] = filtered
+    return cleaned
 
 
 def find_copper_10g_ports(text: str) -> Dict[str, List[str]]:
