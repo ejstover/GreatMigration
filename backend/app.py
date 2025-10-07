@@ -82,7 +82,7 @@ def _render_page(template_name: str, page_key: str) -> HTMLResponse:
     if not doc_title:
         base_title = page_data.get("title")
         if base_title and base_title != APP_TITLE:
-            doc_title = f"{base_title} • {APP_TITLE}"
+            doc_title = f"{base_title} - {APP_TITLE}"
         else:
             doc_title = APP_TITLE
     banner_title = page_data.get("banner_title") or page_data.get("title") or APP_TITLE
