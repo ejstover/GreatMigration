@@ -2,6 +2,7 @@ import os
 import json
 import tempfile
 import re
+import textwrap
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -39,6 +40,7 @@ from translate_showtech import (
     find_copper_10g_ports,
 )  # type: ignore
 from fpdf import FPDF
+from fpdf.errors import FPDFException
 
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
@@ -367,6 +369,27 @@ def api_showtech_pdf(request: Request, data: Dict[str, Any] = Body(...)):
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
 
+    content_width = getattr(pdf, "epw", pdf.w - pdf.l_margin - pdf.r_margin)
+
+    def safe_multicell(text: str, height: float = 6) -> None:
+        """Write text to the PDF, wrapping stubborn long tokens if needed."""
+
+        if text is None:
+            text_to_render = ""
+        else:
+            text_to_render = str(text)
+
+        try:
+            pdf.multi_cell(content_width, height, text_to_render)
+        except FPDFException:
+            wrapped = textwrap.fill(
+                text_to_render,
+                width=80,
+                break_long_words=True,
+                break_on_hyphens=True,
+            )
+            pdf.multi_cell(content_width, height, wrapped)
+
     if REPORT_LOGO_PATH.is_file():
         try:
             logo_width = 40
@@ -418,9 +441,9 @@ def api_showtech_pdf(request: Request, data: Dict[str, Any] = Body(...)):
                             replacement = item.get("replacement") or "No replacement defined"
                             count_str = str(count) if count is not None else "-"
                             line = f"  PID: {pid} | Count: {count_str} | Replacement: {replacement}"
-                            pdf.multi_cell(0, 6, line)
+                            safe_multicell(line)
                     else:
-                        pdf.multi_cell(0, 6, "  No inventory items found.")
+                        safe_multicell("  No inventory items found.")
                     pdf.ln(2)
             pdf.ln(4)
 
@@ -433,15 +456,17 @@ def api_showtech_pdf(request: Request, data: Dict[str, Any] = Body(...)):
                     if sw_name == "total":
                         continue
                     count = len(ports) if isinstance(ports, list) else ports
-                    pdf.multi_cell(0, 6, f"  {sw_name}: {count}")
+                    safe_multicell(f"  {sw_name}: {count}")
                 total = copper_ports.get("total")
                 if total is not None:
-                    pdf.multi_cell(0, 6, f"  Total: {total}")
+                    safe_multicell(f"  Total: {total}")
                 pdf.ln(4)
             pdf.ln(4)
 
     pdf.set_font("Helvetica", size=10)
-    pdf.multi_cell(0, 6, "This report summarizes parsed inventory and suggested replacements from the uploaded show tech files.")
+    safe_multicell(
+        "This report summarizes parsed inventory and suggested replacements from the uploaded show tech files.",
+    )
 
     pdf_output = pdf.output(dest="S")
     if isinstance(pdf_output, (bytes, bytearray)):
