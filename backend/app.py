@@ -440,27 +440,29 @@ def api_showtech_pdf(request: Request, data: Dict[str, Any] = Body(...)):
                             count = item.get("count")
                             replacement = item.get("replacement") or "No replacement defined"
                             count_str = str(count) if count is not None else "-"
-                            line = f"  PID: {pid} | Count: {count_str} | Replacement: {replacement}"
+                            line = f"    • {pid} x{count_str} -> {replacement}"
                             safe_multicell(line)
                     else:
-                        safe_multicell("  No inventory items found.")
+                        safe_multicell("    • No inventory items found")
                     pdf.ln(2)
-            pdf.ln(4)
+            else:
+                safe_multicell("  No switches detected in this file.")
+            pdf.ln(2)
 
             copper_ports = report.get("copper_10g_ports") if isinstance(report, dict) else None
             if isinstance(copper_ports, dict) and copper_ports:
-                pdf.set_font("Helvetica", "B", 12)
-                pdf.cell(0, 8, "Copper 10G Ports", ln=True)
-                pdf.set_font("Helvetica", size=11)
+                total = copper_ports.get("total")
+                if total:
+                    pdf.set_font("Helvetica", "B", 12)
+                    pdf.cell(0, 8, "10Gb copper ports requiring SFPs (SFPP-10G-T)", ln=True)
+                    pdf.set_font("Helvetica", size=11)
+                    safe_multicell(f"    • Total: {total}")
                 for sw_name, ports in copper_ports.items():
                     if sw_name == "total":
                         continue
                     count = len(ports) if isinstance(ports, list) else ports
-                    safe_multicell(f"  {sw_name}: {count}")
-                total = copper_ports.get("total")
-                if total is not None:
-                    safe_multicell(f"  Total: {total}")
-                pdf.ln(4)
+                    safe_multicell(f"    • {sw_name}: {count}")
+                pdf.ln(2)
             pdf.ln(4)
 
     pdf.set_font("Helvetica", size=10)
