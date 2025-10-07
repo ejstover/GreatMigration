@@ -8,8 +8,6 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'media' };</script>
   <style>
-    .dropzone { border: 2px dashed #cbd5e1; }
-    .dropzone.dragover { border-color: #60a5fa; background: #f8fafc; }
   </style>
   </head>
   <body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100 overflow-x-hidden">
@@ -40,17 +38,34 @@
 
     <div class="max-w-5xl mx-auto p-6">
     <section class="mb-6">
-      <div id="dz" class="dropzone rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 p-8 text-center text-slate-500 dark:text-slate-300">
-        <p class="mb-2">Drag & drop show tech files here (or click to select)</p>
-        <input id="file_input" type="file" multiple class="hidden" accept=".txt" />
-        <button id="choose_files" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Choose files</button>
-      </div>
-      <div class="flex items-center justify-between mt-2">
-        <div id="upload_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
-        <div class="space-x-2">
-          <button id="clear_all" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Clear</button>
-          <button id="export_pdf" class="hidden px-4 py-2 rounded bg-sky-600 text-white hover:bg-sky-700">Download PDF</button>
+      <div class="rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 shadow p-6 space-y-4">
+        <div>
+          <label class="block text-sm font-medium mb-1" for="ssh_targets">Device hostnames or IPs</label>
+          <textarea id="ssh_targets" class="w-full border rounded p-2 h-28 dark:bg-slate-900 dark:border-slate-700" placeholder="switch1.example.com&#10;10.0.0.5" spellcheck="false"></textarea>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Enter one host per line. The command runs on each device using the provided credentials.</p>
         </div>
+        <div class="grid md:grid-cols-3 gap-4">
+          <div>
+            <label class="block text-sm font-medium mb-1" for="ssh_username">Username</label>
+            <input id="ssh_username" type="text" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" autocomplete="username" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1" for="ssh_password">Password</label>
+            <div class="relative">
+              <input id="ssh_password" type="password" class="w-full border rounded p-2 pr-20 dark:bg-slate-900 dark:border-slate-700" autocomplete="current-password" />
+              <button id="toggle_password" type="button" class="absolute inset-y-0 right-0 px-3 text-xs font-medium text-sky-600 hover:text-sky-700 dark:text-sky-400 dark:hover:text-sky-300">Show</button>
+            </div>
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div id="upload_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button id="run_fetch" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Collect hardware data</button>
+            <button id="clear_all" class="px-4 py-2 rounded bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-700 dark:hover:bg-rose-600">Clear</button>
+            <button id="export_pdf" class="hidden px-4 py-2 rounded bg-sky-600 text-white hover:bg-sky-700">Download PDF</button>
+          </div>
+        </div>
+        <ul id="host_status_list" class="space-y-2 text-sm"></ul>
       </div>
     </section>
 
@@ -82,48 +97,136 @@
       logoutBtn?.addEventListener('click', (e) => { e.preventDefault(); window.location.href = '/logout'; });
     }).catch(() => { window.location.href = '/login'; });
 
-    const dz = document.getElementById('dz');
-    const fileInput = document.getElementById('file_input');
-    const chooseBtn = document.getElementById('choose_files');
     const uploadStatus = document.getElementById('upload_status');
     const results = document.getElementById('results');
     const exportBtn = document.getElementById('export_pdf');
     const clearBtn = document.getElementById('clear_all');
+    const fetchBtn = document.getElementById('run_fetch');
+    const hostInput = document.getElementById('ssh_targets');
+    const usernameInput = document.getElementById('ssh_username');
+    const passwordInput = document.getElementById('ssh_password');
+    const statusList = document.getElementById('host_status_list');
+    const passwordToggle = document.getElementById('toggle_password');
 
-    let lastResults = null;
+    let lastResults = [];
 
-    chooseBtn.addEventListener('click', (e) => { e.preventDefault(); fileInput.value=''; fileInput.click(); });
-    dz.addEventListener('click', (e) => { if (e.target === dz) { fileInput.value=''; fileInput.click(); }});
-    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
-    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-    dz.addEventListener('drop', (e) => { e.preventDefault(); dz.classList.remove('dragover'); handleFiles([...e.dataTransfer.files]); });
-    fileInput.addEventListener('change', () => { handleFiles([...fileInput.files]); fileInput.value=''; });
+    function escapeHtml(str){
+      return String(str ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+    }
 
-    clearBtn.addEventListener('click', () => {
+    passwordToggle?.addEventListener('click', () => {
+      if (!passwordInput) return;
+      const hidden = passwordInput.type === 'password';
+      passwordInput.type = hidden ? 'text' : 'password';
+      passwordToggle.textContent = hidden ? 'Hide' : 'Show';
+    });
+
+    fetchBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      collectHardware();
+    });
+
+    clearBtn.addEventListener('click', (e) => {
+      e.preventDefault();
       results.innerHTML = '';
       results.classList.add('hidden');
       uploadStatus.textContent = '';
       exportBtn.classList.add('hidden');
-      lastResults = null;
+      statusList.innerHTML = '';
+      lastResults = [];
     });
 
-    function handleFiles(files){
-      if(!files.length) return;
-      const fd = new FormData();
-      files.forEach(f => fd.append('files', f));
-      uploadStatus.textContent = 'Processing...';
-      fetch('/api/showtech', { method:'POST', body: fd })
-        .then(r => r.json())
-        .then(data => {
-          if(!data.ok) throw new Error(data.error || 'error');
-          lastResults = data.results;
-          renderResults(data.results);
-          uploadStatus.textContent = `Processed ${data.results.length} file(s)`;
-          exportBtn.classList.remove('hidden');
-        })
-        .catch(err => {
-          uploadStatus.textContent = 'Error: ' + err.message;
+    function renderHostStatuses(hosts){
+      statusList.innerHTML = '';
+      hosts.forEach(host => {
+        const li = document.createElement('li');
+        li.dataset.host = host;
+        li.className = 'flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 px-3 py-2';
+        li.innerHTML = `<span data-role="host" class="font-medium">${escapeHtml(host)}</span><span data-role="status" class="text-slate-500">Pending…</span>`;
+        statusList.appendChild(li);
+      });
+    }
+
+    function updateHostStatuses(items){
+      if (!Array.isArray(items)) return;
+      items.forEach(item => {
+        if (!item) return;
+        const hostKey = item.host || '';
+        if (!hostKey) return;
+        const li = Array.from(statusList.children).find(el => el.dataset.host === hostKey);
+        if (!li) return;
+        const hostLabel = li.querySelector('[data-role="host"]');
+        const statusEl = li.querySelector('[data-role="status"]');
+        if (!statusEl) return;
+        if (hostLabel){
+          const label = item.filename || (item.hostname ? `${item.host} → ${item.hostname}` : item.host || '');
+          if (label) hostLabel.textContent = label;
+        }
+        if (item.ok){
+          statusEl.textContent = item.message || 'Success';
+          statusEl.className = 'text-emerald-600 dark:text-emerald-400 font-medium';
+          li.classList.add('bg-emerald-50', 'dark:bg-emerald-900/40', 'border-emerald-200');
+          li.classList.remove('bg-slate-50', 'dark:bg-slate-900/60', 'border-slate-200');
+        } else {
+          statusEl.textContent = item.error || 'Failed';
+          statusEl.className = 'text-rose-600 dark:text-rose-300 font-medium';
+          li.classList.add('bg-rose-50', 'dark:bg-rose-900/40', 'border-rose-200');
+          li.classList.remove('bg-slate-50', 'dark:bg-slate-900/60', 'border-slate-200');
+        }
+      });
+    }
+
+    async function collectHardware(){
+      const hosts = (hostInput.value || '').split(/\r?\n/).map(h => h.trim()).filter(Boolean);
+      if (!hosts.length){
+        uploadStatus.textContent = 'Enter at least one host.';
+        return;
+      }
+      if (!usernameInput.value.trim()){
+        uploadStatus.textContent = 'Username is required.';
+        return;
+      }
+      if (!passwordInput.value){
+        uploadStatus.textContent = 'Password is required.';
+        return;
+      }
+
+      const uniqueHosts = Array.from(new Map(hosts.map(h => [h, h])).values());
+      renderHostStatuses(uniqueHosts);
+      uploadStatus.textContent = `Collecting data from ${uniqueHosts.length} device${uniqueHosts.length === 1 ? '' : 's'}...`;
+
+      try {
+        const res = await fetch('/api/showtech', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            hosts: uniqueHosts,
+            username: usernameInput.value.trim(),
+            password: passwordInput.value,
+          }),
         });
+        const data = await res.json();
+        if (!res.ok || !data.ok){
+          throw new Error(data?.error || `Request failed with status ${res.status}`);
+        }
+
+        updateHostStatuses(data.results);
+        const successes = (data.results || []).filter(r => r && r.ok);
+        const failed = data.summary?.failed ?? ((data.results?.length || 0) - successes.length);
+        lastResults = successes;
+        renderResults(successes);
+
+        if (successes.length){
+          uploadStatus.textContent = `Completed: ${successes.length} succeeded, ${failed} failed.`;
+          exportBtn.classList.remove('hidden');
+        } else {
+          uploadStatus.textContent = `No hardware data collected. ${failed} failed.`;
+          exportBtn.classList.add('hidden');
+        }
+      } catch (err){
+        uploadStatus.textContent = 'Error: ' + (err.message || err);
+        exportBtn.classList.add('hidden');
+      }
     }
 
     function renderResults(items){
@@ -135,7 +238,7 @@
         wrap.className = 'bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-4';
         const h = document.createElement('h3');
         h.className = 'font-medium mb-2';
-        h.textContent = file.filename;
+        h.textContent = file.filename || file.host || 'Device';
         wrap.appendChild(h);
         file.switches.forEach(sw => {
           const s = document.createElement('div');
@@ -164,7 +267,7 @@
     }
 
     exportBtn.addEventListener('click', () => {
-      if(!lastResults) return;
+      if(!lastResults?.length) return;
       fetch('/api/showtech/pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

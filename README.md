@@ -67,13 +67,15 @@ services:
 
 ## Hardware Conversion
 
-This page parses Cisco `show tech-support` files and lists user specified Juniper or other OEM replacement models. 
+Collect Cisco `show tech-support` directly from switches via SSH and map the detected hardware to Juniper (or other vendor) replacements.
 
-1. **File area** – drag text files into the drop zone or click **Choose files** to open the hidden file selector.
-2. **Clear** – removes all uploaded results.
-3. **Download PDF** – appears after processing and exports a report of detected hardware.
+1. **Devices** – paste IPs or hostnames (one per line) for the devices to audit.
+1. **Credentials** – provide the shared username/password used to log into each target. Use the **Show** toggle beside the password field to temporarily reveal the value if needed.
+1. **Fetch hardware** – runs the `show tech-support` command against each device in parallel using Netmiko. The UI displays live status updates (including hostname discovery) while sessions complete. Connections honor generous timeouts and delay factors so high-latency global links and lengthy command output are handled gracefully.
+1. **Clear** – resets the list of devices and collected results.
+1. **Download PDF** – available after a successful run and exports the summarized hardware replacements.
 
-Each processed file shows the detected Cisco items and their suggested replacements.
+Each result groups the detected Cisco items, the discovered hostname, and suggested replacements.
 
 ## Hardware Replacement Rules
 
@@ -87,11 +89,14 @@ Create permanent mappings between Cisco and Juniper model names.
 
 ## Config Conversion
 
-Convert Cisco configs, map them to Mist switches, and test or push the resulting port settings.
+Log into Cisco IOS switches over SSH, capture their running configuration, and translate the result into Mist-ready JSON that can be tested or pushed to the cloud.
 
-1. **File area** – drop configs or click **Choose files** to start conversion.  Use **Clear** to reset.
-2. **Converted JSON Preview** – shows the normalized output for each file.
-3. **Batch: Map files to switches** – adds a row per file with the following controls:
+1. **Devices** – paste the hostnames or IPs for every switch to collect. Connections are executed concurrently with extended timeouts to accommodate distant sites.
+1. **Credentials** – enter the common username/password (with a Show toggle to confirm input). Passwords are never logged and only held in memory for the duration of the request.
+1. **Fetch configs** – issues `show running-config` on each device, captures the output, and extracts the hostname so the results list and status updates are easy to correlate.
+1. **Clear** – removes all pending device entries and results.
+1. **Converted JSON Preview** – shows the normalized output for each successful device.
+1. **Batch: Map files to switches** – adds a row per converted device with the following controls:
    * **Site** – drop-down listing Mist sites. Changing the first site will change all sites below. Changing all subsequent sites allows for multi-site deployments. 
    * **Device** – drop-down listing switches within the selected site.
    * **Start member** – number box offsetting Juniper virtual-chassis member numbers.
@@ -99,12 +104,12 @@ Convert Cisco configs, map them to Mist switches, and test or push the resulting
    * **Exclude uplinks** – checkbox that skips common uplink interfaces.
    * **Exclude interfaces** – text box for comma-separated interface names or ranges to skip.
    * **Remove row (✕)** – deletes the mapping row.
-4. **Global options** above the table:
+1. **Global options** above the table:
    * **Time zone** – read‑only text box displaying the zone used when pushing.
    * **Model override** – text box applied to rows without their own model override.
    * **Test mode (no changes)** – checkbox that sends payloads without applying them.
    * **Strict overflow (convert)** – checkbox that drops unmappable interfaces during conversion.
-5. **Test configuration for all / Apply configuration for all** – button that runs a dry run or pushes live based on **Test mode**.
+1. **Test configuration for all / Apply configuration for all** – button that runs a dry run or pushes live based on **Test mode**.
 
 Results include per‑row payloads, validation warnings, and (for live pushes) the Mist API response.
 
