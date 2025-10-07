@@ -575,7 +575,7 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
     if results:
         pdf.ln(4)
 
-    pdf_bytes = pdf.output(dest="S").encode("latin1")
+    pdf_bytes = bytes(pdf.output())
     headers = {"Content-Disposition": "attachment; filename=hardware_conversion_report.pdf"}
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
