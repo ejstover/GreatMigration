@@ -370,31 +370,6 @@ class HardwareReportPDF(FPDF):
         else:
             self._logo_path = None
 
-    @staticmethod
-    def _safe_text(value: Any) -> str:
-        """Return a latin-1 safe string for PDF rendering."""
-        if value is None:
-            return ""
-        text = str(value)
-        if not text:
-            return ""
-        replacements = {
-            "•": "-",
-            "–": "-",
-            "—": "-",
-            "“": '"',
-            "”": '"',
-            "’": "'",
-            "→": "->",
-        }
-        for src, dest in replacements.items():
-            text = text.replace(src, dest)
-        try:
-            text.encode("latin-1")
-            return text
-        except UnicodeEncodeError:
-            return text.encode("latin-1", "replace").decode("latin-1")
-
     def header(self) -> None:  # pragma: no cover - rendering logic
         self.set_fill_color(15, 23, 42)
         self.rect(0, 0, self.w, 15, "F")
@@ -410,13 +385,13 @@ class HardwareReportPDF(FPDF):
         self.set_xy(text_x, 8)
         self.set_text_color(255, 255, 255)
         self.set_font("Helvetica", "B", 11)
-        self.cell(0, 5, self._safe_text("GreatMigration - Hardware Conversion Report"), align="L")
+        self.cell(0, 5, "GreatMigration • Hardware Conversion Report", align="L")
 
     def footer(self) -> None:  # pragma: no cover - rendering logic
         self.set_y(-15)
         self.set_font("Helvetica", "I", 8)
         self.set_text_color(100, 116, 139)
-        self.cell(0, 10, self._safe_text(f"Page {self.page_no()}"), align="R")
+        self.cell(0, 10, f"Page {self.page_no()}", align="R")
 
 
 def _safe_int(value: Any) -> int:
@@ -426,22 +401,14 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
-def _table_row(
-    pdf: HardwareReportPDF,
-    columns: List[str],
-    widths: List[float],
-    *,
-    line_height: float = 6,
-    fill: bool = False,
-) -> None:
+def _table_row(pdf: HardwareReportPDF, columns: List[str], widths: List[float], *, line_height: float = 6, fill: bool = False) -> None:
     x_initial = pdf.get_x()
     y_start = pdf.get_y()
     max_height = 0.0
     x_cursor = x_initial
     for text, width in zip(columns, widths):
         pdf.set_xy(x_cursor, y_start)
-        safe_text = pdf._safe_text(text)
-        pdf.multi_cell(width, line_height, safe_text, border=0, align="L", fill=fill)
+        pdf.multi_cell(width, line_height, text, border=0, align="L", fill=fill)
         cell_height = pdf.get_y() - y_start
         if cell_height > max_height:
             max_height = cell_height
@@ -461,11 +428,10 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
     pdf.ln(8)
     pdf.set_font("Helvetica", "B", 18)
     pdf.set_text_color(15, 23, 42)
-    pdf.cell(0, 12, pdf._safe_text("Hardware Conversion Report"), ln=True)
+    pdf.cell(0, 12, "Hardware Conversion Report", ln=True)
     pdf.set_font("Helvetica", size=11)
     pdf.set_text_color(71, 85, 105)
-    generated = f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
-    pdf.cell(0, 6, pdf._safe_text(generated), ln=True)
+    pdf.cell(0, 6, f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}", ln=True)
     pdf.ln(4)
 
     total_files = len(results)
@@ -486,45 +452,45 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
 
     pdf.set_font("Helvetica", "B", 14)
     pdf.set_text_color(15, 23, 42)
-    pdf.cell(0, 10, pdf._safe_text("Summary"), ln=True)
+    pdf.cell(0, 10, "Summary", ln=True)
     pdf.set_font("Helvetica", size=11)
     pdf.set_text_color(71, 85, 105)
 
     if not results:
-        pdf.multi_cell(0, 6, pdf._safe_text("No hardware data was provided for this report."))
+        pdf.multi_cell(0, 6, "No hardware data was provided for this report.")
     else:
         summary_lines = [
-            f"- {total_files} source file{'s' if total_files != 1 else ''} processed",
-            f"- {total_switches} switch{'es' if total_switches != 1 else ''} analyzed",
+            f"• {total_files} source file{'s' if total_files != 1 else ''} processed",
+            f"• {total_switches} switch{'es' if total_switches != 1 else ''} analyzed",
         ]
         if total_items:
             summary_lines.append(
-                f"- {total_items} hardware item{'s' if total_items != 1 else ''} evaluated"
+                f"• {total_items} hardware item{'s' if total_items != 1 else ''} evaluated"
             )
         if copper_ports_total:
             summary_lines.append(
-                f"- {copper_ports_total} 10Gb copper port{'s' if copper_ports_total != 1 else ''} require SFPP-10G-T modules"
+                f"• {copper_ports_total} 10Gb copper port{'s' if copper_ports_total != 1 else ''} require SFPP-10G-T modules"
             )
         for line in summary_lines:
-            pdf.multi_cell(0, 6, pdf._safe_text(line))
+            pdf.multi_cell(0, 6, line)
 
         if replacement_counts:
             pdf.ln(2)
             pdf.set_font("Helvetica", "B", 11)
             pdf.set_text_color(15, 23, 42)
-            pdf.cell(0, 6, pdf._safe_text("Top recommended replacements"), ln=True)
+            pdf.cell(0, 6, "Top recommended replacements", ln=True)
             pdf.set_font("Helvetica", size=11)
             pdf.set_text_color(71, 85, 105)
             for model, qty in replacement_counts.most_common(5):
                 qty_display = f" ({qty})" if qty else ""
-                pdf.multi_cell(0, 6, pdf._safe_text(f"   - {model}{qty_display}"))
+                pdf.multi_cell(0, 6, f"   • {model}{qty_display}")
 
     for file in results:
         pdf.ln(6)
         filename = file.get("filename") or "Unnamed file"
         pdf.set_font("Helvetica", "B", 13)
         pdf.set_text_color(15, 23, 42)
-        pdf.cell(0, 8, pdf._safe_text(filename), ln=True)
+        pdf.cell(0, 8, filename, ln=True)
         pdf.set_draw_color(226, 232, 240)
         x1 = pdf.l_margin
         x2 = pdf.w - pdf.r_margin
@@ -536,19 +502,19 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
         if not switches:
             pdf.set_font("Helvetica", size=11)
             pdf.set_text_color(100, 116, 139)
-            pdf.multi_cell(0, 6, pdf._safe_text("No switch inventory detected in this file."))
+            pdf.multi_cell(0, 6, "No switch inventory detected in this file.")
         for sw in switches:
             switch_name = sw.get("switch") or "Unnamed switch"
             pdf.ln(2)
             pdf.set_font("Helvetica", "B", 12)
             pdf.set_text_color(15, 23, 42)
-            pdf.cell(0, 7, pdf._safe_text(switch_name), ln=True)
+            pdf.cell(0, 7, switch_name, ln=True)
 
             items = sw.get("items", []) or []
             if not items:
                 pdf.set_font("Helvetica", size=10)
                 pdf.set_text_color(100, 116, 139)
-                pdf.multi_cell(0, 6, pdf._safe_text("No hardware entries were detected for this switch."))
+                pdf.multi_cell(0, 6, "No hardware entries were detected for this switch.")
                 continue
 
             available_width = pdf.w - pdf.l_margin - pdf.r_margin
@@ -580,16 +546,16 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
             pdf.ln(4)
             pdf.set_font("Helvetica", "B", 12)
             pdf.set_text_color(15, 23, 42)
-            pdf.cell(0, 7, pdf._safe_text("10Gb Copper Ports"), ln=True)
+            pdf.cell(0, 7, "10Gb Copper Ports", ln=True)
             pdf.set_font("Helvetica", size=11)
             pdf.set_text_color(71, 85, 105)
-            pdf.multi_cell(0, 6, pdf._safe_text(f"Total ports requiring SFPP-10G-T modules: {copper_total}"))
+            pdf.multi_cell(0, 6, f"Total ports requiring SFPP-10G-T modules: {copper_total}")
 
             detail = {k: v for k, v in copper_info.items() if k != "total"}
             for switch_name, ports in detail.items():
                 if not ports:
                     continue
-                pdf.multi_cell(0, 6, pdf._safe_text(f"   - {switch_name}: {len(ports)} ports"))
+                pdf.multi_cell(0, 6, f"   • {switch_name}: {len(ports)} ports")
 
     if results:
         pdf.ln(4)
