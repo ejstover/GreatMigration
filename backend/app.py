@@ -40,6 +40,7 @@ from translate_showtech import (
     find_copper_10g_ports,
 )  # type: ignore
 from fpdf import FPDF
+from fpdf.enums import WrapMode
 
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
@@ -369,6 +370,20 @@ class HardwareReportPDF(FPDF):
             self._logo_path: Path | None = logo_path
         else:
             self._logo_path = None
+
+    def multi_cell(self, *args, **kwargs):  # type: ignore[override]
+        """Ensure long tokens wrap instead of raising errors.
+
+        FPDF defaults to wrapping on whitespace only. Some hardware part
+        numbers or replacement model names can exceed the available column
+        width without any natural breakpoints, which raises an exception.
+        Switching to character-based wrapping guarantees progress while
+        preserving the rendered content.
+        """
+
+        if "wrapmode" not in kwargs or kwargs.get("wrapmode") == WrapMode.WORD:
+            kwargs["wrapmode"] = WrapMode.CHAR
+        return super().multi_cell(*args, **kwargs)
 
     def header(self) -> None:  # pragma: no cover - rendering logic
         self.set_fill_color(15, 23, 42)
