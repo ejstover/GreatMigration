@@ -59,7 +59,7 @@
             <textarea id="ssh_targets" class="w-full border rounded p-2 h-28 dark:bg-slate-900 dark:border-slate-700" placeholder="switch1.example.com&#10;10.0.0.5" spellcheck="false"></textarea>
             <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Enter one host per line. Connections run in parallel using the same credentials.</p>
           </div>
-          <div class="grid md:grid-cols-3 gap-4">
+          <div class="grid md:grid-cols-4 gap-4">
             <div>
               <label class="block text-sm font-medium mb-1" for="ssh_username">Username</label>
               <input id="ssh_username" type="text" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" autocomplete="username" />
@@ -71,12 +71,20 @@
                 <button id="toggle_password" type="button" class="absolute inset-y-0 right-0 px-3 text-xs font-medium text-sky-600 hover:text-sky-700 dark:text-sky-400 dark:hover:text-sky-300">Show</button>
               </div>
             </div>
+            <div>
+              <label class="block text-sm font-medium mb-1" for="ssh_command">Command</label>
+              <input id="ssh_command" type="text" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" value="show running-config" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1" for="ssh_device_type">Device type</label>
+              <input id="ssh_device_type" type="text" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" value="cisco_ios" />
+            </div>
           </div>
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div id="convert_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
             <div class="flex items-center gap-2">
               <button id="run_fetch" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Fetch configs</button>
-              <button id="clear_all" class="px-4 py-2 rounded bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-700 dark:hover:bg-rose-600">Clear</button>
+              <button id="clear_all" class="px-4 py-2 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">Clear</button>
             </div>
           </div>
           <ul id="host_status_list" class="space-y-2 text-sm"></ul>
@@ -194,6 +202,8 @@
     const hostInput = document.getElementById('ssh_targets');
     const usernameInput = document.getElementById('ssh_username');
     const passwordInput = document.getElementById('ssh_password');
+    const commandInput = document.getElementById('ssh_command');
+    const deviceTypeInput = document.getElementById('ssh_device_type');
     const statusList = document.getElementById('host_status_list');
     const passwordToggle = document.getElementById('toggle_password');
     const results = document.getElementById('results');
@@ -212,7 +222,7 @@
     const modelOverride = document.getElementById('model_override');
 
     // --- Data ---
-    let convertedItems = []; // [{ source_file, output_file, json, host, hostname, index }]
+    let convertedItems = []; // [{ source_file, output_file, json, host, index }]
     let rows = []; // [{ idx, site_id, device_id, excludes, exclude_uplinks, member_offset, port_offset, model_override?, userChangedSite? }]
     let sitesCache = []; // list of sites
     const devicesBySite = new Map(); // site_id -> devices[]
@@ -258,7 +268,7 @@
         li.dataset.host = host;
         li.dataset.index = String(idx);
         li.className = 'flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 px-3 py-2';
-        li.innerHTML = `<span data-role="host" class="font-medium">${escapeHtml(host)}</span><span data-role="status" class="text-slate-500">Pending…</span>`;
+        li.innerHTML = `<span class="font-medium">${escapeHtml(host)}</span><span data-role="status" class="text-slate-500">Pending…</span>`;
         statusList.appendChild(li);
       });
     }
@@ -267,17 +277,12 @@
       if (!Array.isArray(items)) return;
       items.forEach(item => {
         if (!item) return;
-        const hostKey = item.host || '';
-        if (!hostKey) return;
-        const li = Array.from(statusList.children).find(el => el.dataset.host === hostKey);
+        const host = item.host || item.source_file;
+        if (!host) return;
+        const li = Array.from(statusList.children).find(el => el.dataset.host === host);
         if (!li) return;
-        const hostLabel = li.querySelector('[data-role="host"]');
         const statusEl = li.querySelector('[data-role="status"]');
         if (!statusEl) return;
-        if (hostLabel){
-          const label = item.source_file || (item.hostname ? `${item.host} → ${item.hostname}` : item.host || '');
-          if (label) hostLabel.textContent = label;
-        }
         if (item.ok){
           statusEl.textContent = item.message || 'Success';
           statusEl.className = 'text-emerald-600 dark:text-emerald-400 font-medium';
@@ -319,6 +324,8 @@
             hosts: uniqueHosts,
             username: usernameInput.value.trim(),
             password: passwordInput.value,
+            command: (commandInput.value || 'show running-config').trim() || 'show running-config',
+            device_type: (deviceTypeInput.value || 'cisco_ios').trim() || 'cisco_ios',
             strict_overflow: strictOverflow.checked,
           }),
         });

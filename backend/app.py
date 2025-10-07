@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from logging_utils import get_user_logger
 from netmiko import ConnectHandler  # type: ignore
-from netmiko.exceptions import (  # type: ignore
+from netmiko.ssh_exception import (  # type: ignore
     NetmikoAuthenticationException,
     NetmikoTimeoutException,
 )
@@ -260,16 +260,15 @@ async def _log_user_actions(request: Request, call_next):
 
 
 MAX_SSH_WORKERS = 8
-DEFAULT_DEVICE_TYPE = "cisco_ios"
-CONFIG_COMMAND = "show running-config"
-HARDWARE_COMMAND = "show tech-support"
 
 
-class SSHAuthRequest(BaseModel):
+class SSHCommandRequest(BaseModel):
     hosts: List[str] = Field(..., min_items=1)
     username: str = Field(..., min_length=1)
     password: str = Field(..., min_length=1)
-    read_timeout: int = Field(default=240, ge=30, le=1200)
+    command: str = Field(default="show running-config", min_length=1)
+    device_type: str = Field(default="cisco_ios", min_length=1)
+    read_timeout: int = Field(default=90, ge=10, le=600)
 
     @validator("hosts", pre=True)
     def _normalize_hosts(cls, value):
@@ -294,7 +293,7 @@ class SSHAuthRequest(BaseModel):
             raise ValueError("at least one host is required")
         return unique
 
-    @validator("username", pre=True)
+    @validator("username", "command", "device_type", pre=True)
     def _strip_values(cls, value):
         if value is None:
             raise ValueError("field is required")
@@ -310,7 +309,7 @@ class SSHAuthRequest(BaseModel):
         return password
 
 
-class ConvertSSHRequest(SSHAuthRequest):
+class ConvertSSHRequest(SSHCommandRequest):
     strict_overflow: bool = False
     uplink_module: int = Field(default=1, ge=0, le=10)
     force_model: Optional[str] = None
@@ -323,35 +322,14 @@ class ConvertSSHRequest(SSHAuthRequest):
         return value_str or None
 
 
-class HardwareSSHRequest(SSHAuthRequest):
-    read_timeout: int = Field(default=600, ge=60, le=1800)
+class HardwareSSHRequest(SSHCommandRequest):
+    command: str = Field(default="show tech-support", min_length=1)
+    read_timeout: int = Field(default=300, ge=30, le=900)
 
 
 def _safe_label(value: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", value)
     return safe or "device"
-
-
-def _extract_hostname_from_output(text: str) -> Optional[str]:
-    if not text:
-        return None
-    lines = text.splitlines()
-    start_idx = 0
-    section_pattern = re.compile(r"show\s+running-?config", re.IGNORECASE)
-    for idx, line in enumerate(lines):
-        if section_pattern.search(line):
-            start_idx = idx + 1
-            break
-    for line in lines[start_idx:]:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.lower().startswith("hostname"):
-            parts = stripped.split(None, 1)
-            if len(parts) == 2:
-                return parts[1].strip()
-            return None
-    return None
 
 
 def _execute_ssh_command(
@@ -360,21 +338,12 @@ def _execute_ssh_command(
     username: str,
     password: str,
     command: str,
-    device_type: str = DEFAULT_DEVICE_TYPE,
+    device_type: str,
     read_timeout: int,
-    delay_factor: float = 2.0,
-    auth_timeout: int = 60,
-    conn_timeout: int = 60,
-    banner_timeout: int = 120,
+    delay_factor: float = 1.0,
 ) -> Dict[str, Any]:
     action_logger.info(
-        "ssh.connect host=%s user=%s device_type=%s command=%s read_timeout=%s delay_factor=%s",
-        host,
-        username,
-        device_type,
-        command,
-        read_timeout,
-        delay_factor,
+        "ssh.connect host=%s user=%s device_type=%s command=%s", host, username, device_type, command
     )
     params = {
         "device_type": device_type,
@@ -382,23 +351,15 @@ def _execute_ssh_command(
         "username": username,
         "password": password,
         "fast_cli": False,
-        "auth_timeout": auth_timeout,
-        "timeout": conn_timeout,
-        "banner_timeout": banner_timeout,
     }
     try:
         with ConnectHandler(**params) as conn:  # type: ignore[arg-type]
-            try:
-                conn.global_delay_factor = max(delay_factor, 1.0)  # type: ignore[attr-defined]
-            except Exception:
-                pass
             output = conn.send_command(
                 command,
                 read_timeout=read_timeout,
                 delay_factor=delay_factor,
                 strip_prompt=True,
                 strip_command=True,
-                max_loops=10000,
             )
         action_logger.info(
             "ssh.success host=%s user=%s device_type=%s bytes=%s",
@@ -436,6 +397,8 @@ def _convert_host_via_ssh(
     index: int,
     username: str,
     password: str,
+    command: str,
+    device_type: str,
     read_timeout: int,
     strict_overflow: bool,
     uplink_module: int,
@@ -445,9 +408,9 @@ def _convert_host_via_ssh(
         host=host,
         username=username,
         password=password,
-        command=CONFIG_COMMAND,
+        command=command,
+        device_type=device_type,
         read_timeout=read_timeout,
-        delay_factor=2.5,
     )
     if not result.get("ok"):
         action_logger.warning(
@@ -460,7 +423,6 @@ def _convert_host_via_ssh(
         return {"host": host, "ok": False, "error": result.get("error", "unknown error"), "index": index}
 
     output = result.get("output", "")
-    hostname = _extract_hostname_from_output(output)
     safe_label = _safe_label(host)
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -488,19 +450,17 @@ def _convert_host_via_ssh(
         return {"host": host, "ok": False, "error": str(exc), "index": index}
 
     action_logger.info(
-        "ssh.convert.success host=%s user=%s index=%s hostname=%s json_keys=%s",
+        "ssh.convert.success host=%s user=%s index=%s json_keys=%s",
         host,
         username,
         index,
-        hostname or "-",
         list(data.keys()) if isinstance(data, dict) else "non-dict",
     )
     return {
         "host": host,
         "ok": True,
         "index": index,
-        "source_file": f"{host} → {hostname}" if hostname else host,
-        "hostname": hostname,
+        "source_file": host,
         "output_file": output_name,
         "json": data,
         "message": "Converted successfully",
@@ -513,6 +473,8 @@ def _hardware_host_via_ssh(
     index: int,
     username: str,
     password: str,
+    command: str,
+    device_type: str,
     read_timeout: int,
     mapping: Dict[str, str],
 ) -> Dict[str, Any]:
@@ -520,9 +482,10 @@ def _hardware_host_via_ssh(
         host=host,
         username=username,
         password=password,
-        command=HARDWARE_COMMAND,
+        command=command,
+        device_type=device_type,
         read_timeout=read_timeout,
-        delay_factor=3.0,
+        delay_factor=2.0,
     )
     if not result.get("ok"):
         action_logger.warning(
@@ -535,7 +498,6 @@ def _hardware_host_via_ssh(
         return {"host": host, "ok": False, "error": result.get("error", "unknown error"), "index": index}
 
     output = result.get("output", "")
-    hostname = _extract_hostname_from_output(output)
     safe_label = _safe_label(host)
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -567,19 +529,17 @@ def _hardware_host_via_ssh(
         return {"host": host, "ok": False, "error": str(exc), "index": index}
 
     action_logger.info(
-        "ssh.hardware.success host=%s user=%s index=%s hostname=%s switches=%s",
+        "ssh.hardware.success host=%s user=%s index=%s switches=%s",
         host,
         username,
         index,
-        hostname or "-",
         len(switches),
     )
     return {
         "host": host,
         "ok": True,
         "index": index,
-        "filename": f"{host} → {hostname}" if hostname else host,
-        "hostname": hostname,
+        "filename": host,
         "switches": switches,
         "copper_10g_ports": {**copper_ports, "total": copper_total},
         "message": "Retrieved hardware details",
@@ -660,10 +620,11 @@ def api_save_replacements(request: Request, doc: Dict[str, Any] = Body(...)):
 @app.post("/api/showtech")
 async def api_showtech(req: HardwareSSHRequest):
     action_logger.info(
-        "hardware.request hosts=%s user=%s read_timeout=%s",
+        "hardware.request hosts=%s user=%s device_type=%s command=%s",
         len(req.hosts),
         req.username,
-        req.read_timeout,
+        req.device_type,
+        req.command,
     )
     try:
         mapping = load_mapping()
@@ -683,6 +644,8 @@ async def api_showtech(req: HardwareSSHRequest):
                     index=idx,
                     username=req.username,
                     password=req.password,
+                    command=req.command,
+                    device_type=req.device_type,
                     read_timeout=req.read_timeout,
                     mapping=mapping,
                 ): (host, idx)
@@ -1010,10 +973,11 @@ async def api_convert(req: ConvertSSHRequest) -> JSONResponse:
     """
 
     action_logger.info(
-        "convert.request hosts=%s user=%s read_timeout=%s",
+        "convert.request hosts=%s user=%s device_type=%s command=%s",
         len(req.hosts),
         req.username,
-        req.read_timeout,
+        req.device_type,
+        req.command,
     )
     items: List[Dict[str, Any]] = []
     summary = {"total": len(req.hosts), "succeeded": 0, "failed": 0}
@@ -1027,6 +991,8 @@ async def api_convert(req: ConvertSSHRequest) -> JSONResponse:
                     index=idx,
                     username=req.username,
                     password=req.password,
+                    command=req.command,
+                    device_type=req.device_type,
                     read_timeout=req.read_timeout,
                     strict_overflow=req.strict_overflow,
                     uplink_module=req.uplink_module,
