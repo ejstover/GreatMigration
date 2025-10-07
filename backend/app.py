@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 import requests
-from fastapi import FastAPI, UploadFile, File, Form, Request, Body, HTTPException
+from fastapi import FastAPI, Form, Request, Body
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -155,7 +155,7 @@ elif AUTH_METHOD == "local":
 else:
     def current_user(request: Request | None = None):  # type: ignore[override]
         """Fallback auth stub when AUTH_METHOD is unset."""
-        return {"name": "anon", "can_push": True, "read_only": False}
+        return {"name": "anon", "can_push": True}
 
     def require_push_rights(user=current_user()):  # type: ignore[override]
         return user
@@ -200,24 +200,6 @@ def _request_user_label(request: Request) -> str:
             if val:
                 return str(val)
     return str(info) if info is not None else "anonymous"
-
-
-def _ensure_push_allowed(request: Request, *, dry_run: bool) -> Dict[str, Any]:
-    """Ensure the current user is allowed to execute a live push."""
-    user = current_user(request)
-    if not dry_run and not user.get("can_push"):
-        label = user.get("name") or user.get("email") or user.get("upn") or "anonymous"
-        client_host = request.client.host if request.client else "-"
-        action_logger.warning(
-            "mist_push_denied user=%s client=%s reason=read_only_attempt",
-            label,
-            client_host,
-        )
-        raise HTTPException(
-            status_code=403,
-            detail="Push permission required for live changes.",
-        )
-    return user
 
 
 @app.middleware("http")
@@ -1142,7 +1124,6 @@ def _build_payload_for_row(
 
 @app.post("/api/push")
 async def api_push(
-    request: Request,
     site_id: str = Form(...),
     device_id: str = Form(...),
     input_json: str = Form(...),
@@ -1159,8 +1140,6 @@ async def api_push(
     """
     Single push. Response includes `payload` (the exact body to Mist) and `validation`.
     """
-    _ensure_push_allowed(request, dry_run=dry_run)
-
     try:
         payload_in = json.loads(input_json)
     except Exception as e:
@@ -1185,7 +1164,6 @@ async def api_push(
 
 @app.post("/api/push_batch")
 async def api_push_batch(
-    request: Request,
     rows: str = Form(...),  # JSON array of rows
     dry_run: bool = Form(True),
     base_url: str = Form(DEFAULT_BASE_URL),
@@ -1201,8 +1179,6 @@ async def api_push_batch(
     NOTE: Duplicate devices ARE allowed as long as (device_id, member_offset, port_offset) triples are unique.
     If the same triple appears more than once, those rows are rejected with a clear error.
     """
-    _ensure_push_allowed(request, dry_run=dry_run)
-
     token = _load_mist_token()
     base_url = base_url.rstrip("/")
 

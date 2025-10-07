@@ -44,7 +44,7 @@ The script prompts for a Mist token, Mist Org ID (Optional), Switch Template ID 
    * `SESSION_SECRET` – random string for signing session cookies
    * `AUTH_METHOD` – `local` (default) or `ldap`
    * For **local** auth: set `LOCAL_USERS` with comma‑separated `user:pass` pairs and optional `LOCAL_PUSH_USERS` for accounts allowed to push to Mist [Local Login Screen](screenshots/local.png)
-  * For **LDAP** auth: uncomment `AUTH_METHOD=ldap` and configure `LDAP_SERVER_URL`, `LDAP_SEARCH_BASE`, `LDAP_BIND_TEMPLATE`, `PUSH_GROUP_DN`, `LDAP_SERVICE_DN`, and `LDAP_SERVICE_PASSWORD` [LDAP Login Screen](screenshots/ldap.png). When `PUSH_GROUP_DN` is set, only members of that group may sign in with push rights. Optionally set `READONLY_GROUP_DN` (semicolon/newline separated) to admit read-only users—these accounts can upload files and run conversions but remain locked in Test mode and are blocked from live pushes on the backend. Provide multiple directory scopes by setting `LDAP_SEARCH_BASES` (or separating entries in `LDAP_SEARCH_BASE`) with semicolons or newlines.
+   * For **LDAP** auth: uncomment `AUTH_METHOD=ldap` and configure `LDAP_SERVER_URL`, `LDAP_SEARCH_BASE`, `LDAP_BIND_TEMPLATE`, `PUSH_GROUP_DN`, `LDAP_SERVICE_DN`, and `LDAP_SERVICE_PASSWORD` [LDAP Login Screen](screenshots/ldap.png)
    * Optional defaults: `MIST_BASE_URL`, `MIST_ORG_ID`, `SWITCH_TEMPLATE_ID`, `HELP_URL`
    * Device type sources: `NETBOX_DT_URL` (community library) and `NETBOX_LOCAL_DT` for additional models
 4. (Optional) copy `backend/port_rules.sample.json` to `backend/port_rules.json` to maintain custom port mappings outside version control
