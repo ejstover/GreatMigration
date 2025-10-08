@@ -33,6 +33,7 @@ from pathlib import Path
 import shutil
 from typing import Dict
 from getpass import getpass
+import telnetlib  # noqa: F401  # required by some netmiko transports
 
 # ---------- Utilities ----------
 
