@@ -125,6 +125,7 @@ def ensure_requirements(project_dir: Path, venv_python: Path):
             "python-dotenv",
         )
 
+
 def ensure_env_file(project_dir: Path) -> int | None:
     env_file = project_dir / "backend" / ".env"
     if env_file.exists():
