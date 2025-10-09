@@ -237,11 +237,29 @@
     let seenFiles = new Set(); // dedupe chooser/dnd
     let sitesCache = []; // list of sites
     const devicesBySite = new Map(); // site_id -> devices[]
+    let sshCollectStartedAt = null;
+    let sshCollectRequested = 0;
 
     // --- Utils ---
     function show(el){ el.classList.remove('hidden'); }
     function hide(el){ el.classList.add('hidden'); }
     function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
+
+    async function logTiming(eventName, durationMs, metadata = {}){
+      try {
+        await fetch('/api/log_timing', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event: eventName,
+            duration_ms: Math.max(0, Math.round(durationMs)),
+            metadata
+          })
+        });
+      } catch (err) {
+        console.warn('Failed to log timing metric', err);
+      }
+    }
 
     const savedSshUser = localStorage.getItem('ssh_username');
     if (savedSshUser && sshUsernameInput) sshUsernameInput.value = savedSshUser;
@@ -275,6 +293,8 @@
         sshCollectBtn.classList.add('opacity-70', 'cursor-not-allowed');
         if (sshProgress) sshProgress.textContent = 'Starting SSH collection…';
         convertStatus.textContent = '';
+        sshCollectStartedAt = performance.now();
+        sshCollectRequested = devices.length;
 
         try {
           const res = await fetch('/api/ssh/jobs', {
@@ -292,6 +312,8 @@
           sshCollectBtn.disabled = false;
           sshCollectBtn.classList.remove('opacity-70', 'cursor-not-allowed');
           if (sshProgress) sshProgress.textContent = '';
+          sshCollectStartedAt = null;
+          sshCollectRequested = 0;
         }
       });
     }
@@ -318,7 +340,7 @@
 
           if (job.status === 'complete'){
             clearInterval(timer);
-            handleConfigJobComplete(job);
+            await handleConfigJobComplete(job);
             if (sshCollectBtn){
               sshCollectBtn.disabled = false;
               sshCollectBtn.classList.remove('opacity-70', 'cursor-not-allowed');
@@ -333,13 +355,15 @@
             sshCollectBtn.classList.remove('opacity-70', 'cursor-not-allowed');
           }
           if (sshProgress) sshProgress.textContent = '';
+          sshCollectStartedAt = null;
+          sshCollectRequested = 0;
         }
       };
       fetchStatus();
       timer = setInterval(fetchStatus, 1500);
     }
 
-    function handleConfigJobComplete(job){
+    async function handleConfigJobComplete(job){
       const resultsArr = job.results || [];
       const successes = resultsArr.filter(r => r.status === 'ok' && r.running_config && r.running_config.text);
       const failures = resultsArr.filter(r => r.status !== 'ok');
@@ -350,6 +374,8 @@
         } else {
           convertStatus.textContent = 'No configs collected via SSH.';
         }
+        sshCollectStartedAt = null;
+        sshCollectRequested = 0;
         return;
       }
 
@@ -365,8 +391,19 @@
       });
 
       if (files.length){
-        handleFiles(files);
+        await handleFiles(files);
+        if (sshCollectStartedAt !== null){
+          const duration = performance.now() - sshCollectStartedAt;
+          logTiming('config_fetch_results', duration, {
+            devices_requested: sshCollectRequested,
+            successes: successes.length,
+            failures: failures.length
+          });
+        }
       }
+
+      sshCollectStartedAt = null;
+      sshCollectRequested = 0;
 
       if (failures.length){
         convertStatus.textContent += ` ${failures.length} device(s) failed.`;
