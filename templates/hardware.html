@@ -128,6 +128,24 @@
     const sshProgress = document.getElementById('ssh_progress');
 
     let lastResults = null;
+    let hardwareCollectStartedAt = null;
+    let hardwareCollectRequested = 0;
+
+    async function logTiming(eventName, durationMs, metadata = {}){
+      try {
+        await fetch('/api/log_timing', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event: eventName,
+            duration_ms: Math.max(0, Math.round(durationMs)),
+            metadata
+          })
+        });
+      } catch (err) {
+        console.warn('Failed to log timing metric', err);
+      }
+    }
     const savedUser = localStorage.getItem('ssh_username');
     if (savedUser) sshUsername.value = savedUser;
 
@@ -156,6 +174,8 @@
       sshCollectBtn.classList.add('opacity-70', 'cursor-not-allowed');
       sshProgress.textContent = 'Starting SSH collection…';
       uploadStatus.textContent = '';
+      hardwareCollectStartedAt = performance.now();
+      hardwareCollectRequested = devices.length;
 
       try {
         const res = await fetch('/api/ssh/jobs', {
@@ -173,6 +193,8 @@
         sshCollectBtn.disabled = false;
         sshCollectBtn.classList.remove('opacity-70', 'cursor-not-allowed');
         sshProgress.textContent = '';
+        hardwareCollectStartedAt = null;
+        hardwareCollectRequested = 0;
       }
     });
 
@@ -209,6 +231,8 @@
           sshCollectBtn.disabled = false;
           sshCollectBtn.classList.remove('opacity-70', 'cursor-not-allowed');
           sshProgress.textContent = '';
+          hardwareCollectStartedAt = null;
+          hardwareCollectRequested = 0;
         }
       };
       fetchStatus();
@@ -225,6 +249,14 @@
         renderResults(lastResults);
         uploadStatus.textContent = `Collected hardware from ${successes.length} device(s).` + (failures.length ? ` ${failures.length} failed.` : '');
         exportBtn.classList.remove('hidden');
+        if (hardwareCollectStartedAt !== null){
+          const duration = performance.now() - hardwareCollectStartedAt;
+          logTiming('hardware_collect_results', duration, {
+            devices_requested: hardwareCollectRequested,
+            successes: successes.length,
+            failures: failures.length
+          });
+        }
       } else {
         lastResults = null;
         results.innerHTML = '';
@@ -232,6 +264,9 @@
         exportBtn.classList.add('hidden');
         uploadStatus.textContent = failures.length ? `All devices failed (${failures.length}).` : 'No hardware data collected.';
       }
+
+      hardwareCollectStartedAt = null;
+      hardwareCollectRequested = 0;
 
       if (failures.length){
         const lines = failures.map(f => `${f.label || f.host}: ${f.error || 'Unknown error'}`);

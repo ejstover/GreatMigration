@@ -122,6 +122,21 @@ class SSHJobRequest(BaseModel):
         return value
 
 
+class TimingEvent(BaseModel):
+    event: str = Field(..., min_length=1, max_length=64)
+    duration_ms: float = Field(..., ge=0)
+    metadata: Optional[Dict[str, Any]] = None
+
+    @field_validator("event")
+    @classmethod
+    def _normalize_event(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("event must not be empty")
+        normalized = re.sub(r"[^A-Za-z0-9_.-]", "_", cleaned.lower())
+        return normalized[:64]
+
+
 def _page_label(key: str) -> str:
     data = PAGE_COPY.get(key, {})
     return data.get("menu_label") or data.get("title") or ""
@@ -305,6 +320,26 @@ async def _log_user_actions(request: Request, call_next):
         response.status_code,
     )
     return response
+
+
+@app.post("/api/log_timing")
+async def api_log_timing(request: Request, payload: TimingEvent):
+    user_label = _request_user_label(request)
+    client_host = request.client.host if request.client else "-"
+    metadata = payload.metadata or {}
+    try:
+        metadata_json = json.dumps(metadata, sort_keys=True)
+    except TypeError:
+        metadata_json = json.dumps(str(metadata))
+    action_logger.info(
+        "timing event=%s user=%s client=%s duration_ms=%.2f metadata=%s",
+        payload.event,
+        user_label,
+        client_host,
+        payload.duration_ms,
+        metadata_json,
+    )
+    return {"ok": True}
 
 @app.get("/", response_class=HTMLResponse)
 def index():
