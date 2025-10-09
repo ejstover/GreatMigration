@@ -106,8 +106,10 @@
 
     const userGreeting = document.getElementById('user_greeting');
     const logoutBtn = document.getElementById('logout_btn');
+    let currentUserName = null;
     fetch('/me').then(res => { if (!res.ok) throw new Error('not authed'); return res.json(); }).then(data => {
-      userGreeting.textContent = `Hey ${data.user.name}!`;
+      currentUserName = data.user?.name || null;
+      userGreeting.textContent = `Hey ${currentUserName || 'there'}!`;
       userGreeting.classList.remove('hidden');
       logoutBtn?.classList.remove('hidden');
       logoutBtn?.addEventListener('click', (e) => { e.preventDefault(); window.location.href = '/logout'; });
@@ -351,7 +353,7 @@
       fetch('/api/showtech/pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ results: lastResults })
+        body: JSON.stringify({ results: lastResults, generated_by: currentUserName })
       })
         .then(res => res.blob())
         .then(blob => {
