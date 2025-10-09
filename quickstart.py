@@ -33,6 +33,7 @@ from pathlib import Path
 import shutil
 from typing import Dict
 from getpass import getpass
+import telnetlib  # noqa: F401  # required by some netmiko transports
 
 # ---------- Utilities ----------
 
@@ -126,6 +127,34 @@ def ensure_requirements(project_dir: Path, venv_python: Path):
             "telnetlib3",
         )
 
+    print("Verifying netmiko installation ...")
+    def can_import_netmiko() -> bool:
+        return (
+            run(
+                [
+                    str(venv_python),
+                    "-c",
+                    "import importlib.util, sys;"
+                    "sys.exit(0 if importlib.util.find_spec('netmiko') else 1)",
+                ],
+                check=False,
+            )
+            == 0
+        )
+
+    if not can_import_netmiko():
+        print("netmiko not importable; attempting reinstall with --no-cache-dir ...")
+        pip(venv_python, "install", "--no-cache-dir", "netmiko")
+
+    if not can_import_netmiko():
+        raise SystemExit(
+            "netmiko is required but was not installed successfully.\n"
+            "If you're seeing deprecation warnings from the cryptography package "
+            "(for example about TripleDES), try running 'pip install --upgrade cryptography' "
+            "inside .venv and then rerun the quickstart."
+        )
+
+    run([str(venv_python), "-m", "pip", "show", "netmiko"], check=False)
 
 def ensure_env_file(project_dir: Path) -> int | None:
     env_file = project_dir / "backend" / ".env"
