@@ -155,6 +155,18 @@ def _collect_one_device(
             "global_delay_factor": delay_factor,
         }
         conn = ConnectHandler(**params)
+        transport = getattr(conn, "protocol", "ssh")
+        if str(transport).lower() != "ssh":
+            try:
+                conn.disconnect()
+            except Exception:
+                pass
+            finally:
+                conn = None
+            raise RuntimeError(
+                "This tool only supports SSH connections; Netmiko negotiated a"
+                f" '{transport}' transport."
+            )
         try:
             conn.enable()
         except Exception:
