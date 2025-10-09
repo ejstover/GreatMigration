@@ -123,7 +123,9 @@ def ensure_requirements(project_dir: Path, venv_python: Path):
             "requests",
             "ciscoconfparse>=1.6.52",
             "python-dotenv",
+            "telnetlib3",
         )
+
 
 def ensure_env_file(project_dir: Path) -> int | None:
     env_file = project_dir / "backend" / ".env"

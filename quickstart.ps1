@@ -80,7 +80,7 @@ function Ensure-Requirements {
     Pip $venvPython install -r $reqPath
   } else {
     Write-Host "requirements.txt not found; installing core deps..." -ForegroundColor Yellow
-    Pip $venvPython install fastapi==0.115.0 uvicorn==0.30.6 python-multipart==0.0.9 jinja2==3.1.4 requests 'ciscoconfparse>=1.6.52' python-dotenv
+    Pip $venvPython install fastapi==0.115.0 uvicorn==0.30.6 python-multipart==0.0.9 jinja2==3.1.4 requests 'ciscoconfparse>=1.6.52' python-dotenv telnetlib3
   }
 }
 
