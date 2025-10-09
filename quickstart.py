@@ -123,7 +123,6 @@ def ensure_requirements(project_dir: Path, venv_python: Path):
             "requests",
             "ciscoconfparse>=1.6.52",
             "python-dotenv",
-            "telnetlib3",
         )
 
 
