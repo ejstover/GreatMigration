@@ -3,7 +3,7 @@ import pytest
 from compliance import (
     SiteContext,
     RequiredSiteVariablesCheck,
-    LabTemplateRestrictionCheck,
+    SwitchTemplateConfigurationCheck,
     ConfigurationOverridesCheck,
     DeviceNamingConventionCheck,
     DeviceDocumentationCheck,
@@ -65,7 +65,7 @@ def test_required_site_variables_check_respects_env(monkeypatch):
     }
 
 
-def test_lab_template_restriction_check_identifies_non_lab_site():
+def test_switch_template_check_flags_non_lab_site_without_prod_template():
     ctx = SiteContext(
         site_id="site-2",
         site_name="Corporate Campus",
@@ -74,23 +74,69 @@ def test_lab_template_restriction_check_identifies_non_lab_site():
         templates=[{"name": "Test - Standard Template"}],
         devices=[],
     )
-    check = LabTemplateRestrictionCheck()
+    check = SwitchTemplateConfigurationCheck()
     findings = check.run(ctx)
     assert len(findings) == 1
-    assert "does not appear" in findings[0].message
+    assert "should apply" in findings[0].message
 
 
-def test_lab_template_restriction_allows_lab_site():
+def test_switch_template_check_flags_extra_templates_on_non_lab_site():
     ctx = SiteContext(
         site_id="site-3",
+        site_name="HQ",
+        site={},
+        setting={},
+        templates=[
+            {"name": "Prod - Standard Template"},
+            {"name": "Custom Template"},
+        ],
+        devices=[],
+    )
+    check = SwitchTemplateConfigurationCheck()
+    findings = check.run(ctx)
+    assert len(findings) == 1
+    assert "should not apply additional templates" in findings[0].message
+
+
+def test_switch_template_check_allows_lab_site_with_test_template():
+    ctx = SiteContext(
+        site_id="site-4",
         site_name="Innovation Lab",
         site={},
         setting={},
         templates=[{"name": "Test - Standard Template"}],
         devices=[],
     )
-    check = LabTemplateRestrictionCheck()
+    check = SwitchTemplateConfigurationCheck()
     assert check.run(ctx) == []
+
+
+def test_switch_template_check_allows_lab_site_with_prod_template():
+    ctx = SiteContext(
+        site_id="site-5",
+        site_name="Lab Campus",
+        site={},
+        setting={},
+        templates=[{"name": "Prod - Standard Template"}],
+        devices=[],
+    )
+    check = SwitchTemplateConfigurationCheck()
+    assert check.run(ctx) == []
+
+
+def test_switch_template_check_flags_lab_site_without_allowed_templates():
+    ctx = SiteContext(
+        site_id="site-6",
+        site_name="LAB Annex",
+        site={},
+        setting={},
+        templates=[{"name": "Custom Template"}],
+        devices=[],
+    )
+    check = SwitchTemplateConfigurationCheck()
+    findings = check.run(ctx)
+    assert len(findings) == 1
+    assert "Lab site should apply either" in findings[0].message
 
 
 def test_configuration_overrides_check_respects_access_exceptions():

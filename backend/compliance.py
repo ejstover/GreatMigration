@@ -152,31 +152,66 @@ def _collect_template_names(context: SiteContext) -> Set[str]:
     return names
 
 
-class LabTemplateRestrictionCheck(ComplianceCheck):
-    id = "lab_template_scope"
-    name = "Lab template scope"
-    description = "Validate that the lab template is only applied to lab sites."
+class SwitchTemplateConfigurationCheck(ComplianceCheck):
+    id = "switch_template_configuration"
+    name = "Switch Template Configuration"
+    description = (
+        "Ensure lab sites use approved switch templates and non-lab sites remain on the production template."
+    )
     severity = "warning"
 
-    template_name: str = "Test - Standard Template"
+    prod_template_name: str = "Prod - Standard Template"
+    lab_template_name: str = "Test - Standard Template"
 
     def run(self, context: SiteContext) -> List[Finding]:
         template_names = _collect_template_names(context)
         if not template_names:
             return []
-        if self.template_name not in template_names:
-            return []
-        if "lab" in context.site_name.lower():
-            return []
-        return [
-            Finding(
-                site_id=context.site_id,
-                site_name=context.site_name,
-                message=(
-                    f"Template '{self.template_name}' is applied but the site name does not appear to be a lab."
-                ),
-            )
-        ]
+
+        site_name_upper = (context.site_name or "").upper()
+        is_lab_site = "LAB" in site_name_upper
+        findings: List[Finding] = []
+        sorted_templates = ", ".join(sorted(template_names)) or "none"
+
+        if is_lab_site:
+            allowed = {self.prod_template_name, self.lab_template_name}
+            if template_names.isdisjoint(allowed):
+                findings.append(
+                    Finding(
+                        site_id=context.site_id,
+                        site_name=context.site_name,
+                        message=(
+                            "Lab site should apply either "
+                            f"'{self.prod_template_name}' or '{self.lab_template_name}' but current templates are: "
+                            f"{sorted_templates}."
+                        ),
+                    )
+                )
+        else:
+            if self.prod_template_name not in template_names:
+                findings.append(
+                    Finding(
+                        site_id=context.site_id,
+                        site_name=context.site_name,
+                        message=(
+                            f"Site should apply '{self.prod_template_name}' but current templates are: {sorted_templates}."
+                        ),
+                    )
+                )
+            extra_templates = template_names - {self.prod_template_name}
+            if self.prod_template_name in template_names and extra_templates:
+                findings.append(
+                    Finding(
+                        site_id=context.site_id,
+                        site_name=context.site_name,
+                        message=(
+                            f"Site should not apply additional templates ({', '.join(sorted(extra_templates))}) when "
+                            f"using '{self.prod_template_name}'."
+                        ),
+                    )
+                )
+
+        return findings
 
 
 @dataclass
@@ -1243,7 +1278,7 @@ class SiteAuditRunner:
 
 DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
     RequiredSiteVariablesCheck(),
-    LabTemplateRestrictionCheck(),
+    SwitchTemplateConfigurationCheck(),
     ConfigurationOverridesCheck(),
     DeviceNamingConventionCheck(),
     DeviceDocumentationCheck(),
