@@ -508,6 +508,7 @@ def test_device_naming_convention_enforces_pattern():
         templates=[],
         devices=[
             {"id": "good1", "name": "NAABCMDFAS1", "type": "switch", "status": "connected"},
+            {"id": "spare", "name": "NAABCMDFSPARE", "type": "switch", "status": "connected"},
             {"id": "bad1", "name": "NaABCMDFAS2", "type": "switch", "status": "connected"},
             {"id": "bad2", "name": "NAABCIDFAS3", "type": "switch", "status": "connected"},
             {"id": "ignore1", "name": "ap-1", "type": "ap", "status": "connected"},

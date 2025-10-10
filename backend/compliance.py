@@ -903,7 +903,9 @@ class DeviceNamingConventionCheck(ComplianceCheck):
     description = "Ensure switch names follow the region-site-location-role numbering convention."
     severity = "warning"
 
-    name_pattern = re.compile(r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDF|IDF\d+)(AS|CS|WS)\d+$")
+    name_pattern = re.compile(
+        r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDFSPARE|MDF(AS|CS|WS)\d+|IDF\d+(AS|CS|WS)\d+)$"
+    )
 
     def run(self, context: SiteContext) -> List[Finding]:
         findings: List[Finding] = []
@@ -924,7 +926,7 @@ class DeviceNamingConventionCheck(ComplianceCheck):
                         site_name=context.site_name,
                         device_id=device_id,
                         device_name=device_name or device_id or "device",
-                        message="Switch name does not match required convention (e.g., NACHIMDFWS1 or NACHIIDF1AS3).",
+                        message="Switch name does not match required convention (e.g., NACHIMDFWS1, NACHIIDF1AS3, or NACHIMDFSPARE).",
                         details={"expected_pattern": self.name_pattern.pattern},
                     )
                 )
