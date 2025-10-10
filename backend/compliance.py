@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -287,6 +288,25 @@ def _is_switch(device: Dict[str, Any]) -> bool:
         return True
     return False
 
+
+def _is_access_point(device: Dict[str, Any]) -> bool:
+    """Return True when the device appears to be an access point/AP."""
+
+    type_hints: Sequence[Any] = (
+        device.get("type"),
+        device.get("device_type"),
+        device.get("category"),
+        device.get("role"),
+        device.get("device_profile"),
+        device.get("device_profile_name"),
+    )
+    for value in type_hints:
+        if isinstance(value, str) and "ap" in value.lower():
+            return True
+    model = device.get("model")
+    if isinstance(model, str) and "ap" in model.lower():
+        return True
+    return False
 
 
 def _is_device_online(device: Dict[str, Any]) -> bool:
@@ -903,37 +923,104 @@ class ConfigurationOverridesCheck(ComplianceCheck):
         return findings
 
 
+DEFAULT_SWITCH_NAME_PATTERN = (
+    r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDFSPARE|MDF(AS|CS|WS)\d+|IDF\d+(AS|CS|WS)\d+)$"
+)
+
+
+def _load_pattern_from_env(var_name: str, default: Optional[str]) -> Optional[re.Pattern[str]]:
+    raw = os.getenv(var_name)
+    candidate = (raw or "").strip()
+    if not candidate:
+        candidate = default or ""
+    if not candidate:
+        return None
+    try:
+        return re.compile(candidate)
+    except re.error:
+        if default and candidate != default:
+            try:
+                return re.compile(default)
+            except re.error:
+                return None
+        return None
+
+
+def _ensure_pattern(
+    pattern: Optional[re.Pattern[str] | str],
+    fallback: Optional[re.Pattern[str]],
+) -> Optional[re.Pattern[str]]:
+    if isinstance(pattern, re.Pattern):
+        return pattern
+    if isinstance(pattern, str):
+        stripped = pattern.strip()
+        if not stripped:
+            return None
+        try:
+            return re.compile(stripped)
+        except re.error:
+            return fallback
+    return fallback
+
+
+ENV_SWITCH_NAME_PATTERN = _load_pattern_from_env("SWITCH_NAME_REGEX_PATTERN", DEFAULT_SWITCH_NAME_PATTERN)
+ENV_AP_NAME_PATTERN = _load_pattern_from_env("AP_NAME_REGEX_PATTERN", None)
+
+
 class DeviceNamingConventionCheck(ComplianceCheck):
     id = "device_naming_convention"
     name = "Device naming convention"
-    description = "Ensure switch names follow the region-site-location-role numbering convention."
+    description = "Ensure device names follow the configured naming convention."
     severity = "warning"
 
-    name_pattern = re.compile(
-        r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDFSPARE|MDF(AS|CS|WS)\d+|IDF\d+(AS|CS|WS)\d+)$"
-    )
+    def __init__(
+        self,
+        switch_pattern: Optional[re.Pattern[str] | str] = None,
+        ap_pattern: Optional[re.Pattern[str] | str] = None,
+    ) -> None:
+        self.switch_pattern = _ensure_pattern(switch_pattern, ENV_SWITCH_NAME_PATTERN)
+        self.ap_pattern = _ensure_pattern(ap_pattern, ENV_AP_NAME_PATTERN)
 
     def run(self, context: SiteContext) -> List[Finding]:
         findings: List[Finding] = []
         for device in context.devices:
             if not isinstance(device, dict):
                 continue
-            if not _is_switch(device):
+
+            pattern: Optional[re.Pattern[str]] = None
+            label = "Device"
+            if _is_switch(device):
+                pattern = self.switch_pattern
+                label = "Switch"
+            elif _is_access_point(device):
+                pattern = self.ap_pattern
+                label = "Access point"
+
+            if pattern is None:
                 continue
+
             device_id = str(device.get("id")) if device.get("id") is not None else None
             device_name = (
                 (device.get("name") or device.get("hostname") or device.get("device_name") or "")
                 .strip()
             )
-            if not device_name or not self.name_pattern.fullmatch(device_name):
+            if not device_name or not pattern.fullmatch(device_name):
+                if label == "Switch" and pattern.pattern == DEFAULT_SWITCH_NAME_PATTERN:
+                    message = (
+                        "Switch name does not match required convention (e.g., NACHIMDFWS1, "
+                        "NACHIIDF1AS3, or NACHIMDFSPARE)."
+                    )
+                else:
+                    message = f"{label} name does not match required convention."
+
                 findings.append(
                     Finding(
                         site_id=context.site_id,
                         site_name=context.site_name,
                         device_id=device_id,
                         device_name=device_name or device_id or "device",
-                        message="Switch name does not match required convention (e.g., NACHIMDFWS1, NACHIIDF1AS3, or NACHIMDFSPARE).",
-                        details={"expected_pattern": self.name_pattern.pattern},
+                        message=message,
+                        details={"expected_pattern": pattern.pattern},
                     )
                 )
         return findings

@@ -536,6 +536,28 @@ def test_device_naming_convention_enforces_pattern():
         assert finding.details and "expected_pattern" in finding.details
 
 
+def test_device_naming_convention_respects_custom_patterns():
+    ctx = SiteContext(
+        site_id="site-9b",
+        site_name="Naming Site Custom",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "switch-ok", "name": "SW-1", "type": "switch", "status": "connected"},
+            {"id": "switch-bad", "name": "NAABCMDFAS1", "type": "switch", "status": "connected"},
+            {"id": "ap-ok", "name": "AP-1", "type": "ap", "status": "connected"},
+            {"id": "ap-bad", "name": "bad-ap", "type": "ap", "status": "connected"},
+        ],
+    )
+    check = DeviceNamingConventionCheck(switch_pattern=r"^SW-\d+$", ap_pattern=r"^AP-\d+$")
+    findings = check.run(ctx)
+    assert {(f.device_id, f.details.get("expected_pattern")) for f in findings} == {
+        ("switch-bad", r"^SW-\d+$"),
+        ("ap-bad", r"^AP-\d+$"),
+    }
+
+
 def test_device_documentation_reports_missing_items():
     ctx = SiteContext(
         site_id="site-10",
