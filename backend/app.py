@@ -375,8 +375,31 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
         setting_doc = {}
     templates_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/networktemplates", optional=True)
     template_list = [t for t in templates_doc or [] if isinstance(t, dict)] if isinstance(templates_doc, list) else []
+
     devices_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/devices", optional=True)
-    device_list = [d for d in devices_doc or [] if isinstance(d, dict)] if isinstance(devices_doc, list) else []
+    device_list: List[Dict[str, Any]] = []
+    if isinstance(devices_doc, list):
+        for device in devices_doc:
+            if not isinstance(device, dict):
+                continue
+            device_id = device.get("id")
+            detailed_doc: Optional[Dict[str, Any]] = None
+            if isinstance(device_id, str) and device_id:
+                try:
+                    detailed = _mist_get_json(
+                        base_url,
+                        headers,
+                        f"/sites/{site_id}/devices/{device_id}",
+                        optional=True,
+                    )
+                except Exception:
+                    detailed = None
+                if isinstance(detailed, dict):
+                    detailed_doc = detailed
+            merged: Dict[str, Any] = dict(device)
+            if detailed_doc:
+                merged.update({k: v for k, v in detailed_doc.items() if k not in {"id", "site_id"} or v is not None})
+            device_list.append(merged)
     return SiteContext(
         site_id=site_id,
         site_name=site_name or site_id,
