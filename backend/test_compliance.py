@@ -383,6 +383,122 @@ def test_configuration_overrides_check_skips_vc_port_differences():
     assert not any(f.device_id == "vc1" and "differs" in f.message for f in findings)
 
 
+def test_configuration_overrides_check_allows_wan_mgmt_and_oob_blocks():
+    ctx = SiteContext(
+        site_id="site-11",
+        site_name="WAN Site",
+        site={},
+        setting={},
+        templates=[
+            {
+                "id": "tmpl-1",
+                "name": "Standard",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.0.0.2",
+                        "gateway": "10.0.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    }
+                },
+            }
+        ],
+        devices=[
+            {
+                "id": "wan1",
+                "name": "WAN Switch",
+                "role": "WAN",
+                "status": "connected",
+                "map_id": "map-wan1",
+                "switch_template_id": "tmpl-1",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.0.0.2",
+                        "gateway": "10.0.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    },
+                    "mgmt_ip_config": {
+                        "type": "static",
+                        "ip": "10.10.10.10",
+                        "gateway": "10.10.10.1",
+                        "netmask": "255.255.255.0",
+                    },
+                    "oob_ip_config": {
+                        "type": "static",
+                        "ip": "10.20.20.20",
+                        "gateway": "10.20.20.1",
+                        "netmask": "255.255.255.0",
+                    },
+                },
+            }
+        ],
+    )
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+    assert all(f.device_id != "wan1" for f in findings)
+
+
+def test_configuration_overrides_check_flags_unexpected_wan_fields():
+    ctx = SiteContext(
+        site_id="site-12",
+        site_name="WAN Site With Overrides",
+        site={},
+        setting={},
+        templates=[
+            {
+                "id": "tmpl-1",
+                "name": "Standard",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.0.0.2",
+                        "gateway": "10.0.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    }
+                },
+            }
+        ],
+        devices=[
+            {
+                "id": "wan2",
+                "name": "WAN Switch Overrides",
+                "role": "wan",
+                "status": "connected",
+                "map_id": "map-wan2",
+                "switch_template_id": "tmpl-1",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.0.0.2",
+                        "gateway": "10.0.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    },
+                    "mgmt_ip_config": {
+                        "type": "static",
+                        "ip": "10.10.10.10",
+                        "gateway": "10.10.10.1",
+                        "netmask": "255.255.255.0",
+                    },
+                    "dhcp_snooping": {"enabled": True},
+                },
+            }
+        ],
+    )
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+    wan_findings = [f for f in findings if f.device_id == "wan2"]
+    assert wan_findings, "WAN device with unexpected fields should be flagged"
+    assert any(
+        any("dhcp" in (diff.get("path") or "") for diff in (finding.details or {}).get("diffs", []))
+        for finding in wan_findings
+    )
+
+
 def test_device_naming_convention_enforces_pattern():
     ctx = SiteContext(
         site_id="site-9",

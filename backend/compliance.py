@@ -274,7 +274,7 @@ def _is_switch(device: Dict[str, Any]) -> bool:
             lowered = value.lower()
             if "switch" in lowered:
                 return True
-            if lowered in {"access", "distribution", "core"}:
+            if lowered in {"access", "distribution", "core", "wan"}:
                 return True
     model = device.get("model")
     if isinstance(model, str) and "switch" in model.lower():
@@ -513,6 +513,16 @@ IGNORED_CONFIG_KEYS: Set[str] = {
 }
 
 ALLOWED_ADDITIONAL_CONFIG_KEYS: Set[str] = {"image1_url", "image2_url", "image3_url"}
+
+WAN_ROLE_KEYWORDS: Tuple[str, ...] = ("wan",)
+WAN_ALLOWED_CONFIG_PATH_PREFIXES: Tuple[str, ...] = (
+    "mgmt_ip_config",
+    "mgmt_port_config",
+    "mgmt_interface_config",
+    "oob_ip_config",
+    "oob_port_config",
+    "oob_interface_config",
+)
 
 
 def _diff_configs(
@@ -759,6 +769,9 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                 continue
             device_id = str(device.get("id")) if device.get("id") is not None else None
             device_name = _normalize_site_name(device) or device_id or "device"
+            role_value = device.get("role")
+            role_lower = role_value.lower() if isinstance(role_value, str) else ""
+            is_wan_role = bool(role_lower and any(token in role_lower for token in WAN_ROLE_KEYWORDS))
 
             # Non-port overrides (e.g., config_override)
             direct_paths = [path for path in _collect_override_paths(device) if not path.startswith("port_overrides")]
@@ -822,7 +835,7 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                     expected_ip_config,
                     actual_ip_config,
                 ) = _role_scoped_switch_configs(
-                    device.get("role"),
+                    role_value,
                     expected_config_raw,
                     actual_config_source,
                 )
@@ -863,6 +876,11 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                 filtered_diffs: List[Dict[str, Any]] = []
                 for diff in combined_diffs:
                     path = diff.get("path") or ""
+                    normalized_path = path.lower()
+                    if is_wan_role and any(
+                        normalized_path.startswith(prefix) for prefix in WAN_ALLOWED_CONFIG_PATH_PREFIXES
+                    ):
+                        continue
                     if any(path.startswith(p) for p in port_override_allowed_paths):
                         continue
                     filtered_diffs.append(diff)
