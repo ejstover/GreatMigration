@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import os
 import re
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -943,6 +944,12 @@ def _load_pattern_from_env(var_name: str, default: Optional[str]) -> Optional[re
     candidate = (raw or "").strip()
     if candidate:
         candidate = _strip_pattern_wrappers(candidate)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                candidate = candidate.encode("utf-8").decode("unicode_escape")
+        except Exception:
+            pass
     if not candidate:
         candidate = default or ""
     if not candidate:
