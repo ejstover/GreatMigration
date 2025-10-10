@@ -714,8 +714,6 @@ class DeviceNamingConventionCheck(ComplianceCheck):
                 continue
             if not _is_switch(device):
                 continue
-            if not _is_device_online(device):
-                continue
             device_id = str(device.get("id")) if device.get("id") is not None else None
             device_name = (
                 (device.get("name") or device.get("hostname") or device.get("device_name") or "")
@@ -774,7 +772,7 @@ def _collect_device_images(device: Dict[str, Any]) -> List[str]:
 class DeviceImageInventoryCheck(ComplianceCheck):
     id = "device_image_inventory"
     name = "Device image inventory"
-    description = "Ensure each connected device has at least two reference images."
+    description = "Ensure each device has at least two reference images."
     severity = "warning"
 
     minimum_images: int = 2
@@ -783,8 +781,6 @@ class DeviceImageInventoryCheck(ComplianceCheck):
         findings: List[Finding] = []
         for device in context.devices:
             if not isinstance(device, dict):
-                continue
-            if not _is_device_online(device):
                 continue
             device_id = str(device.get("id")) if device.get("id") is not None else None
             device_name = _normalize_site_name(device) or device_id or "device"

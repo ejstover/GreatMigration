@@ -257,7 +257,7 @@ def test_device_image_inventory_requires_two_images():
     )
     check = DeviceImageInventoryCheck()
     findings = check.run(ctx)
-    assert [f.device_id for f in findings] == ["insufficient"]
+    assert [f.device_id for f in findings] == ["insufficient", "offline"]
 
 
 def test_device_image_inventory_handles_numbered_urls():
@@ -314,7 +314,7 @@ def test_device_image_inventory_handles_nested_status_dicts():
     )
     check = DeviceImageInventoryCheck()
     findings = check.run(ctx)
-    assert [f.device_id for f in findings] == ["nested"]
+    assert [f.device_id for f in findings] == ["nested", "offline-nested"]
 
 
 
@@ -343,7 +343,7 @@ def test_device_image_inventory_handles_status_strings_with_suffix():
     )
     check = DeviceImageInventoryCheck()
     findings = check.run(ctx)
-    assert [f.device_id for f in findings] == ["suffix"]
+    assert [f.device_id for f in findings] == ["suffix", "offline-suffix"]
 
 
 def test_device_image_inventory_handles_deeply_nested_status_structures():
