@@ -4,8 +4,9 @@ import tempfile
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Sequence
 from zoneinfo import ZoneInfo
+from time import perf_counter
 
 import requests
 from fastapi import FastAPI, UploadFile, File, Form, Request, Body, HTTPException
@@ -40,6 +41,7 @@ from translate_showtech import (
     find_copper_10g_ports,
 )  # type: ignore
 from fpdf import FPDF
+from compliance import SiteAuditRunner, SiteContext, build_default_runner
 
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
@@ -51,6 +53,11 @@ PAGE_COPY: dict[str, dict[str, str]] = {
     "config": {
         "title": "Config Conversion",
         "tagline": "Upload Cisco configs → map rows → batch test/push to Mist",
+    },
+    "audit": {
+        "title": "Compliance Audit",
+        "tagline": "Audit Mist sites for common configuration issues",
+        "menu_label": "Compliance Audit",
     },
     "hardware": {
         "title": "Hardware Conversion",
@@ -66,7 +73,7 @@ PAGE_COPY: dict[str, dict[str, str]] = {
     },
 }
 
-NAV_LINK_KEYS = ("hardware", "replacements", "config", "rules")
+NAV_LINK_KEYS = ("hardware", "replacements", "config", "audit", "rules")
 
 
 def _page_label(key: str) -> str:
@@ -182,6 +189,8 @@ else:
 
 action_logger = get_user_logger()
 
+AUDIT_RUNNER: SiteAuditRunner = build_default_runner()
+
 
 def _request_user_label(request: Request) -> str:
     try:
@@ -258,6 +267,11 @@ def index():
     return _render_page("index.html", "config")
 
 
+@app.get("/audit", response_class=HTMLResponse)
+def audit_page():
+    return _render_page("audit.html", "audit")
+
+
 @app.get("/rules", response_class=HTMLResponse)
 def rules_page():
     return _render_page("rules.html", "rules")
@@ -278,6 +292,135 @@ def _load_mist_token() -> str:
     if not tok:
         raise RuntimeError("Missing MIST_TOKEN environment variable on the server.")
     return tok
+
+
+def _site_display_name(data: Dict[str, Any], fallback: str = "") -> str:
+    for key in ("name", "site_name", "display_name"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    if fallback:
+        return fallback
+    value = data.get("id")
+    return str(value) if value is not None else ""
+
+
+def _mist_get_json(
+    base_url: str,
+    headers: Dict[str, str],
+    path: str,
+    *,
+    optional: bool = False,
+) -> Any:
+    url = f"{base_url}{path}"
+    response = requests.get(url, headers=headers, timeout=30)
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        if optional and exc.response is not None and exc.response.status_code == 404:
+            return None
+        raise
+    if not response.content:
+        return None
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
+def _list_sites(base_url: str, headers: Dict[str, str], org_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    if org_id:
+        r = requests.get(f"{base_url}/orgs/{org_id}/sites", headers=headers, timeout=30)
+        r.raise_for_status()
+        for s in r.json() or []:
+            if not isinstance(s, dict):
+                continue
+            items.append(
+                {
+                    "id": s.get("id"),
+                    "name": _site_display_name(s),
+                    "org_id": org_id,
+                }
+            )
+        return sorted(items, key=lambda x: (x["name"] or "").lower())
+
+    org_ids = _discover_org_ids(base_url, headers)
+    for oid in org_ids:
+        try:
+            r = requests.get(f"{base_url}/orgs/{oid}/sites", headers=headers, timeout=30)
+            r.raise_for_status()
+        except Exception:
+            continue
+        for s in r.json() or []:
+            if not isinstance(s, dict):
+                continue
+            items.append(
+                {
+                    "id": s.get("id"),
+                    "name": _site_display_name(s),
+                    "org_id": oid,
+                }
+            )
+    items.sort(key=lambda x: (x["name"] or "").lower())
+    return items
+
+
+def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) -> SiteContext:
+    raw_site = _mist_get_json(base_url, headers, f"/sites/{site_id}")
+    site_doc = raw_site if isinstance(raw_site, dict) else {}
+    site_name = _site_display_name(site_doc, fallback=site_id)
+    setting_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/setting", optional=True)
+    if not isinstance(setting_doc, dict):
+        setting_doc = {}
+    templates_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/networktemplates", optional=True)
+    template_list = [t for t in templates_doc or [] if isinstance(t, dict)] if isinstance(templates_doc, list) else []
+    devices_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/devices", optional=True)
+    device_list = [d for d in devices_doc or [] if isinstance(d, dict)] if isinstance(devices_doc, list) else []
+    return SiteContext(
+        site_id=site_id,
+        site_name=site_name or site_id,
+        site=site_doc,
+        setting=setting_doc,
+        templates=template_list,
+        devices=device_list,
+    )
+
+
+def _gather_site_contexts(
+    base_url: str,
+    headers: Dict[str, str],
+    site_ids: Sequence[str],
+) -> tuple[List[SiteContext], List[Dict[str, Any]]]:
+    contexts: List[SiteContext] = []
+    errors: List[Dict[str, Any]] = []
+    for site_id in site_ids:
+        try:
+            contexts.append(_fetch_site_context(base_url, headers, site_id))
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            detail: Any = None
+            if exc.response is not None:
+                try:
+                    detail = exc.response.json()
+                except Exception:
+                    detail = exc.response.text
+            errors.append(
+                {
+                    "site_id": site_id,
+                    "error": str(exc),
+                    "status": status,
+                    "detail": detail,
+                }
+            )
+        except Exception as exc:
+            errors.append(
+                {
+                    "site_id": site_id,
+                    "error": str(exc),
+                }
+            )
+    return contexts, errors
 
 
 @app.get("/api/rules")
@@ -469,52 +612,22 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
     base_url = base_url.rstrip("/")
     headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
 
-    items: List[Dict[str, Any]] = []
     try:
-        if org_id:
-            r = requests.get(f"{base_url}/orgs/{org_id}/sites", headers=headers, timeout=30)
-            r.raise_for_status()
-            for s in r.json() or []:
-                items.append({"id": s.get("id"), "name": s.get("name") or s.get("site_name") or s.get("id"), "org_id": org_id})
-        else:
-            # Discover orgs from /self and enumerate sites per org
-            r = requests.get(f"{base_url}/self", headers=headers, timeout=30)
-            r.raise_for_status()
-            who = r.json() or {}
-
-            org_ids = set()
-            if isinstance(who.get("orgs"), list):
-                for o in who["orgs"]:
-                    if isinstance(o, dict) and o.get("org_id"):
-                        org_ids.add(o["org_id"])
-                    elif isinstance(o, dict) and o.get("id"):
-                        org_ids.add(o["id"])
-                    elif isinstance(o, str):
-                        org_ids.add(o)
-            if isinstance(who.get("privileges"), list):
-                for p in who["privileges"]:
-                    if isinstance(p, dict) and p.get("org_id"):
-                        org_ids.add(p["org_id"])
-            if isinstance(who.get("org_id"), str):
-                org_ids.add(who["org_id"])
-
-            for oid in org_ids:
-                try:
-                    r2 = requests.get(f"{base_url}/orgs/{oid}/sites", headers=headers, timeout=30)
-                    r2.raise_for_status()
-                    for s in r2.json() or []:
-                        items.append({"id": s.get("id"), "name": s.get("name") or s.get("site_name") or s.get("id"), "org_id": oid})
-                except Exception:
-                    continue
-
-        items.sort(key=lambda x: (x["name"] or "").lower())
+        items = _list_sites(base_url, headers, org_id=org_id)
         return {"ok": True, "items": items}
+    except requests.HTTPError as exc:
+        response = exc.response
+        status = response.status_code if response is not None else 500
+        if response is not None:
+            try:
+                err_payload: Any = response.json()
+            except Exception:
+                err_payload = response.text
+        else:
+            err_payload = str(exc)
+        return JSONResponse({"ok": False, "error": err_payload}, status_code=status)
     except Exception as e:
-        try:
-            err_payload = r.json()  # type: ignore[name-defined]
-        except Exception:
-            err_payload = {"error": str(e)}
-        return JSONResponse({"ok": False, "error": err_payload}, status_code=getattr(r, "status_code", 500))  # type: ignore[name-defined]
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 @app.get("/api/site_devices")
@@ -663,6 +776,119 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
             {"ok": False, "error": msg},
             status_code=getattr(r, "status_code", 500),
         )  # type: ignore[name-defined]
+
+
+@app.post("/api/audit/run")
+def api_audit_run(
+    request: Request,
+    payload: Dict[str, Any] = Body(...),
+    base_url: str = DEFAULT_BASE_URL,
+):
+    try:
+        current_user(request)
+
+        site_ids_raw = payload.get("site_ids") or []
+        if site_ids_raw and not isinstance(site_ids_raw, list):
+            raise ValueError("site_ids must be a list of site identifiers")
+
+        entire_org = bool(payload.get("entire_org"))
+        requested_org_id = (payload.get("org_id") or "").strip() or None
+
+        base_url = base_url.rstrip("/")
+        token = _load_mist_token()
+        headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
+
+        site_ids: List[str] = []
+        if entire_org:
+            sites = _list_sites(base_url, headers, org_id=requested_org_id)
+            for item in sites:
+                site_id = item.get("id")
+                if isinstance(site_id, str) and site_id:
+                    site_ids.append(site_id)
+        else:
+            for value in site_ids_raw:
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if text:
+                    site_ids.append(text)
+
+        # Deduplicate while preserving order
+        unique_site_ids: List[str] = []
+        seen_ids: set[str] = set()
+        for sid in site_ids:
+            if sid not in seen_ids:
+                seen_ids.add(sid)
+                unique_site_ids.append(sid)
+
+        if not unique_site_ids:
+            raise ValueError("Select at least one site or choose Entire Org.")
+
+        tz_name = os.environ.get("TZ", DEFAULT_TZ)
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = None
+        started_at = datetime.now(tz) if tz else datetime.now()
+        timer = perf_counter()
+
+        contexts, errors = _gather_site_contexts(base_url, headers, unique_site_ids)
+        audit_result = AUDIT_RUNNER.run(contexts)
+        duration_ms = int((perf_counter() - timer) * 1000)
+        finished_at = datetime.now(tz) if tz else datetime.now()
+
+        summary = {
+            "ok": True,
+            "checks": audit_result.get("checks", []),
+            "total_sites": audit_result.get("total_sites", 0),
+            "errors": errors,
+            "sites": [
+                {
+                    "id": ctx.site_id,
+                    "name": ctx.site_name,
+                    "org_id": ctx.site.get("org_id") or ctx.setting.get("org_id"),
+                }
+                for ctx in contexts
+            ],
+            "started_at": started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+            "duration_ms": duration_ms,
+        }
+
+        action_logger.info(
+            "user=%s action=audit_run sites=%s errors=%s",
+            _request_user_label(request),
+            len(unique_site_ids),
+            len(errors),
+        )
+
+        return summary
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except requests.HTTPError as exc:
+        response = exc.response
+        status = response.status_code if response is not None else 500
+        if response is not None:
+            try:
+                err_payload: Any = response.json()
+            except Exception:
+                err_payload = response.text
+        else:
+            err_payload = str(exc)
+        action_logger.error(
+            "user=%s action=audit_run status=%s error=%s",
+            _request_user_label(request),
+            status,
+            err_payload,
+        )
+        return JSONResponse({"ok": False, "error": err_payload}, status_code=status)
+    except Exception as exc:
+        action_logger.error(
+            "user=%s action=audit_run error=%s",
+            _request_user_label(request),
+            exc,
+        )
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
 @app.post("/api/convert")

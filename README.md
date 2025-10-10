@@ -85,6 +85,16 @@ Create permanent mappings between Cisco and Juniper model names.
 * **Save** – writes the rules to `backend/replacement_rules.json`.
 * **Cancel** – leaves without saving.
 
+## Compliance Audit
+
+Evaluate Mist site configuration against a growing catalog of policy checks.
+
+1. **Scope** – choose specific sites from the list or enable **Entire organization** to scan every accessible site. Use search, select all, and clear buttons to manage the selection quickly.
+2. **Run audit** – launches the checks and returns an aggregated report.
+3. **Results** – cards summarise each check, highlighting affected sites, devices, and override details. Site-level errors (for example, sites that couldn’t be queried) appear in a banner above the results.
+
+Current checks include required site variables, enforcing that the “Test - Standard Template” only applies to lab sites, and flagging configuration overrides outside the approved access-switch exception (ports 0–47). The backend architecture makes it straightforward to add future checks.
+
 ## Config Conversion
 
 Convert Cisco configs, map them to Mist switches, and test or push the resulting port settings.
