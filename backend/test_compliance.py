@@ -290,6 +290,33 @@ def test_device_image_inventory_handles_numbered_urls():
     assert [f.device_id for f in findings] == ["single-numbered"]
 
 
+def test_device_image_inventory_handles_nested_status_dicts():
+    ctx = SiteContext(
+        site_id="site-12",
+        site_name="Nested Status",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "nested",
+                "name": "NAABCAS7",
+                "type": "switch",
+                "status": {"status": "connected", "uptime": 12345},
+            },
+            {
+                "id": "offline-nested",
+                "name": "NAABCAS8",
+                "type": "switch",
+                "status": {"status": "offline"},
+            },
+        ],
+    )
+    check = DeviceImageInventoryCheck()
+    findings = check.run(ctx)
+    assert [f.device_id for f in findings] == ["nested"]
+
+
 def test_site_audit_runner_summarizes_results():
     contexts = [
         SiteContext(

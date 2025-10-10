@@ -280,26 +280,31 @@ def _is_switch(device: Dict[str, Any]) -> bool:
 def _is_device_online(device: Dict[str, Any]) -> bool:
     """Return True when the device appears to be online/connected."""
 
+    online_strings = {"connected", "online", "up", "ready"}
+
+    def value_is_online(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in online_strings
+        return False
+
     status = device.get("status")
-    if isinstance(status, str):
-        if status.lower() in {"connected", "online", "up", "ready"}:
-            return True
-    elif isinstance(status, dict):
-        state = status.get("state") if isinstance(status.get("state"), str) else None
-        if state and state.lower() in {"connected", "online", "up", "ready"}:
-            return True
-        for key in ("connected", "online", "up", "ready"):
-            value = status.get(key)
-            if isinstance(value, bool) and value:
+    if value_is_online(status):
+        return True
+    if isinstance(status, dict):
+        for key in ("state", "status", "connection", "connection_state"):
+            nested_value = status.get(key)
+            if value_is_online(nested_value):
+                return True
+        for nested_value in status.values():
+            if value_is_online(nested_value):
                 return True
     for key in ("connected", "online", "is_online", "up", "ready"):
-        value = device.get(key)
-        if isinstance(value, bool) and value:
-            return True
-        if isinstance(value, str) and value.lower() in {"connected", "online", "up", "ready"}:
+        if value_is_online(device.get(key)):
             return True
     connection_state = device.get("connection_state")
-    if isinstance(connection_state, str) and connection_state.lower() in {"connected", "online"}:
+    if value_is_online(connection_state):
         return True
     return False
 
