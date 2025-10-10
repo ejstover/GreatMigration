@@ -86,19 +86,37 @@ def _collect_site_variables(context: SiteContext) -> Dict[str, Any]:
     return merged
 
 
+DEFAULT_REQUIRED_SITE_VARIABLES: Tuple[str, ...] = (
+    "hubradiusserver",
+    "localradiusserver",
+    "siteDNS",
+    "hubDNSserver1",
+    "hubDNSserver2",
+)
+
+
+def _load_site_variable_list(var_name: str, default: Sequence[str]) -> Tuple[str, ...]:
+    raw = os.getenv(var_name)
+    if raw is None:
+        return tuple(default)
+    # Split on commas and strip whitespace while filtering empty entries
+    values = [item.strip() for item in raw.split(",")]
+    filtered = [value for value in values if value]
+    return tuple(filtered or default)
+
+
 class RequiredSiteVariablesCheck(ComplianceCheck):
     id = "required_site_variables"
     name = "Required site variables"
     description = "Ensure required Mist site variables are defined."
     severity = "error"
 
-    required_keys: Sequence[str] = (
-        "hubradiusserver",
-        "localradiusserver",
-        "siteDNS",
-        "hubDNSserver1",
-        "hubDNSserver2",
-    )
+    def __init__(self, required_keys: Optional[Sequence[str]] = None) -> None:
+        default_keys = _load_site_variable_list("MIST_SITE_VARIABLES", DEFAULT_REQUIRED_SITE_VARIABLES)
+        if required_keys is None:
+            self.required_keys: Tuple[str, ...] = tuple(default_keys)
+        else:
+            self.required_keys = tuple(required_keys)
 
     def run(self, context: SiteContext) -> List[Finding]:
         findings: List[Finding] = []

@@ -8,6 +8,7 @@ from compliance import (
     DeviceNamingConventionCheck,
     DeviceDocumentationCheck,
     SiteAuditRunner,
+    DEFAULT_REQUIRED_SITE_VARIABLES,
 )
 
 
@@ -22,13 +23,10 @@ def test_required_site_variables_check_flags_missing():
     )
     check = RequiredSiteVariablesCheck()
     findings = check.run(ctx)
-    assert {f.message for f in findings} == {
-        "Site variable 'hubradiusserver' is not defined.",
-        "Site variable 'localradiusserver' is not defined.",
-        "Site variable 'siteDNS' is not defined.",
-        "Site variable 'hubDNSserver1' is not defined.",
-        "Site variable 'hubDNSserver2' is not defined.",
+    expected_messages = {
+        f"Site variable '{key}' is not defined." for key in DEFAULT_REQUIRED_SITE_VARIABLES
     }
+    assert {f.message for f in findings} == expected_messages
 
 
 def test_required_site_variables_check_passes_when_present():
@@ -37,11 +35,7 @@ def test_required_site_variables_check_passes_when_present():
         site_name="HQ",
         site={
             "variables": {
-                "hubradiusserver": "1.1.1.1",
-                "localradiusserver": "2.2.2.2",
-                "siteDNS": "dns.example.com",
-                "hubDNSserver1": "10.0.0.53",
-                "hubDNSserver2": "10.0.0.54",
+                key: f"value-{idx}" for idx, key in enumerate(DEFAULT_REQUIRED_SITE_VARIABLES)
             }
         },
         setting={},
@@ -51,6 +45,24 @@ def test_required_site_variables_check_passes_when_present():
     check = RequiredSiteVariablesCheck()
     findings = check.run(ctx)
     assert findings == []
+
+
+def test_required_site_variables_check_respects_env(monkeypatch):
+    monkeypatch.setenv("MIST_SITE_VARIABLES", "foo , bar,baz , ")
+    ctx = SiteContext(
+        site_id="site-1",
+        site_name="HQ",
+        site={"variables": {"foo": "ok"}},
+        setting={},
+        templates=[],
+        devices=[],
+    )
+    check = RequiredSiteVariablesCheck()
+    findings = check.run(ctx)
+    assert {f.message for f in findings} == {
+        "Site variable 'bar' is not defined.",
+        "Site variable 'baz' is not defined.",
+    }
 
 
 def test_lab_template_restriction_check_identifies_non_lab_site():
