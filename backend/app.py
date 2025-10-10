@@ -4,7 +4,7 @@ import tempfile
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Sequence
+from typing import List, Optional, Dict, Any, Sequence, Iterable
 from zoneinfo import ZoneInfo
 from time import perf_counter
 
@@ -366,6 +366,66 @@ def _list_sites(base_url: str, headers: Dict[str, str], org_id: Optional[str] = 
     return items
 
 
+def _collect_candidate_org_ids(*sources: Iterable[Any]) -> List[str]:
+    """Return a list of potential org IDs discovered in the given sources."""
+
+    ids: List[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        if value is None:
+            return
+        text = str(value).strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        ids.append(text)
+
+    for source in sources:
+        if isinstance(source, dict):
+            _add(source.get("org_id"))
+        elif isinstance(source, (list, tuple, set)):
+            for item in source:
+                if isinstance(item, dict):
+                    _add(item.get("org_id"))
+
+    if DEFAULT_ORG_ID:
+        _add(DEFAULT_ORG_ID)
+
+    return ids
+
+
+def _fetch_switch_template_document(
+    base_url: str,
+    headers: Dict[str, str],
+    site_id: str,
+    template_id: str,
+    org_ids: Sequence[str],
+) -> Optional[Dict[str, Any]]:
+    """Fetch a switch template using site and org scoped endpoints."""
+
+    site_doc = _mist_get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/switch_templates/{template_id}",
+        optional=True,
+    )
+    if isinstance(site_doc, dict) and site_doc:
+        return site_doc
+
+    for org_id in org_ids:
+        org_doc = _mist_get_json(
+            base_url,
+            headers,
+            f"/orgs/{org_id}/switch_templates/{template_id}",
+            optional=True,
+        )
+        if isinstance(org_doc, dict) and org_doc:
+            return org_doc
+
+    return None
+
+
 def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) -> SiteContext:
     raw_site = _mist_get_json(base_url, headers, f"/sites/{site_id}")
     site_doc = raw_site if isinstance(raw_site, dict) else {}
@@ -428,6 +488,33 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
         device_list.append(merged)
 
     device_list.extend(anonymous_devices)
+    candidate_org_ids = _collect_candidate_org_ids(site_doc, setting_doc, template_list, device_list)
+
+    if SWITCH_TEMPLATE_ID:
+        template_doc = _fetch_switch_template_document(
+            base_url,
+            headers,
+            site_id,
+            SWITCH_TEMPLATE_ID,
+            candidate_org_ids,
+        )
+        if isinstance(template_doc, dict):
+            enriched_template = dict(template_doc)
+            enriched_template.setdefault("id", SWITCH_TEMPLATE_ID)
+            existing_ids = {
+                str(t.get("id") or t.get("template_id")).strip()
+                for t in template_list
+                if isinstance(t, dict) and (t.get("id") or t.get("template_id"))
+            }
+            if SWITCH_TEMPLATE_ID not in existing_ids:
+                template_list.append(enriched_template)
+            else:
+                for template in template_list:
+                    identifier = str(template.get("id") or template.get("template_id") or "").strip()
+                    if identifier == SWITCH_TEMPLATE_ID:
+                        template.update(enriched_template)
+                        break
+
     return SiteContext(
         site_id=site_id,
         site_name=site_name or site_id,

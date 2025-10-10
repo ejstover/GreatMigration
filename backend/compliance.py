@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -508,6 +509,27 @@ IGNORED_CONFIG_KEYS: Set[str] = {
 }
 
 
+BASE_SWITCH_CONFIG_FIELDS: Sequence[str] = (
+    "ip_config",
+    "stp_config",
+    "dhcp_snooping",
+    "additional_config_cmds",
+    "networks",
+    "optic_port_config",
+    "bgp_config",
+    "routing_policies",
+)
+
+UPLINK_USAGE_HINTS: Set[str] = {"uplink", "uplink_idf", "uplink_mdf", "uplink_core"}
+
+ACCESS_UPLINK_PORTS: Set[str] = {
+    "xe-0/2/0",
+    "xe-0/2/1",
+    "xe-0/2/2",
+    "xe-0/2/3",
+}
+
+
 def _diff_configs(
     expected: Any,
     actual: Any,
@@ -572,6 +594,87 @@ def _diff_configs(
     return []
 
 
+def _extract_base_switch_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return only the core switch configuration sections we want to compare."""
+
+    trimmed: Dict[str, Any] = {}
+    for key in BASE_SWITCH_CONFIG_FIELDS:
+        if key in config:
+            trimmed[key] = copy.deepcopy(config[key])
+    return trimmed
+
+
+def _is_uplink_port(name: str, data: Optional[Dict[str, Any]]) -> bool:
+    if name in ACCESS_UPLINK_PORTS:
+        return True
+    usage = None
+    if isinstance(data, dict):
+        usage = data.get("usage")
+    if isinstance(usage, str):
+        lowered = usage.strip().lower()
+        if lowered in UPLINK_USAGE_HINTS:
+            return True
+        if "uplink" in lowered:
+            return True
+    return False
+
+
+def _filter_port_config_for_role(
+    role: Any,
+    device_ports: Optional[Dict[str, Any]],
+    template_ports: Optional[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    role_text = str(role or "")
+    role_lower = role_text.lower()
+
+    if "vc" in role_lower:
+        return {}, {}
+
+    device_ports = device_ports or {}
+    template_ports = template_ports or {}
+
+    if role_lower == "access":
+        keep: Set[str] = set()
+        for port_name in set(device_ports.keys()) | set(template_ports.keys()):
+            port_data = device_ports.get(port_name)
+            if port_data is None:
+                port_data = template_ports.get(port_name)
+            if _is_uplink_port(port_name, port_data):
+                keep.add(port_name)
+        filtered_template = {k: copy.deepcopy(v) for k, v in template_ports.items() if k in keep}
+        filtered_device = {k: copy.deepcopy(v) for k, v in device_ports.items() if k in keep}
+        return filtered_template, filtered_device
+
+    return (
+        {k: copy.deepcopy(v) for k, v in template_ports.items()},
+        {k: copy.deepcopy(v) for k, v in device_ports.items()},
+    )
+
+
+def _role_scoped_switch_configs(
+    role: Any,
+    template_config: Dict[str, Any],
+    device_config: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    expected_trimmed = _extract_base_switch_config(template_config)
+    actual_trimmed = _extract_base_switch_config(device_config)
+
+    template_ports = template_config.get("port_config") if isinstance(template_config, dict) else None
+    device_ports = device_config.get("port_config") if isinstance(device_config, dict) else None
+
+    filtered_template_ports, filtered_device_ports = _filter_port_config_for_role(
+        role,
+        device_ports if isinstance(device_ports, dict) else None,
+        template_ports if isinstance(template_ports, dict) else None,
+    )
+
+    if filtered_template_ports or filtered_device_ports:
+        expected_trimmed["port_config"] = filtered_template_ports
+        actual_trimmed["port_config"] = filtered_device_ports
+
+    return expected_trimmed, actual_trimmed
+
+
 def _diff_path_port_number(path: str) -> Optional[int]:
     match = re.search(r"(?:port|ports|ge-|xe-|et-).*?(\d+)$", path.lower())
     if match:
@@ -614,8 +717,6 @@ class ConfigurationOverridesCheck(ComplianceCheck):
 
         for device in context.devices:
             if not isinstance(device, dict):
-                continue
-            if not _is_device_online(device):
                 continue
             device_id = str(device.get("id")) if device.get("id") is not None else None
             device_name = _normalize_site_name(device) or device_id or "device"
@@ -660,25 +761,40 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                 port_override_allowed_paths = {entry.path for entry in port_overrides}
 
             template = _resolve_switch_template(device, templates)
-            expected_config = template.config if template else None
-            actual_config = _extract_device_switch_config(device)
-            if expected_config and actual_config:
-                diffs = _diff_configs(
-                    expected_config,
-                    actual_config,
-                    ignore_keys=IGNORED_CONFIG_KEYS,
+            expected_config_raw = template.config if template else None
+            actual_config_raw = _extract_device_switch_config(device)
+            if expected_config_raw and not isinstance(expected_config_raw, dict):
+                expected_config_raw = None
+            actual_config_source: Optional[Dict[str, Any]]
+            if isinstance(actual_config_raw, dict):
+                actual_config_source = actual_config_raw
+            elif isinstance(device, dict):
+                actual_config_source = {k: v for k, v in device.items() if isinstance(k, str)}
+            else:
+                actual_config_source = None
+
+            if expected_config_raw and actual_config_source:
+                filtered_expected, filtered_actual = _role_scoped_switch_configs(
+                    device.get("role"),
+                    expected_config_raw,
+                    actual_config_source,
                 )
+                if filtered_expected or filtered_actual:
+                    diffs = _diff_configs(
+                        filtered_expected,
+                        filtered_actual,
+                        ignore_keys=IGNORED_CONFIG_KEYS,
+                    )
+                else:
+                    diffs = []
+            else:
+                diffs = []
+
+            if diffs:
                 filtered_diffs: List[Dict[str, Any]] = []
                 for diff in diffs:
                     path = diff.get("path") or ""
                     if any(path.startswith(p) for p in port_override_allowed_paths):
-                        continue
-                    port_number = _diff_path_port_number(path)
-                    if (
-                        access_switch
-                        and port_number is not None
-                        and 0 <= port_number <= self.allowed_access_port_max
-                    ):
                         continue
                     filtered_diffs.append(diff)
                 if filtered_diffs:

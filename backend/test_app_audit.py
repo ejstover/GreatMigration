@@ -13,6 +13,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 @pytest.fixture
 def app_module(monkeypatch):
+    monkeypatch.setenv("SWITCH_TEMPLATE_ID", "template-1")
     app = importlib.reload(importlib.import_module("app"))
     monkeypatch.setattr(app, "_load_mist_token", lambda: "token")
     return app
@@ -38,6 +39,10 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
             "extra": "detail",
         },
         "/sites/site-1/devices/dev-2": None,
+        "/sites/site-1/switch_templates/template-1": {
+            "id": "template-1",
+            "switch_config": {"port_config": {"ge-0/0/1": {"usage": "end_user"}}},
+        },
     }
 
     def fake_get(base_url: str, headers: Dict[str, str], path: str, optional: bool = False):
@@ -68,3 +73,7 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
     assert "/sites/site-1/devices?type=switch" in calls
     assert "/sites/site-1/devices/dev-1" in calls
     assert "/sites/site-1/devices/dev-2" in calls
+    assert "/sites/site-1/switch_templates/template-1" in calls
+
+    template_ids = {t.get("id") for t in context.templates if isinstance(t, dict)}
+    assert "template-1" in template_ids

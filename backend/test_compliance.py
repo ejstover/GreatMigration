@@ -126,10 +126,12 @@ def test_configuration_overrides_check_detects_template_differences():
                 "id": "tmpl-1",
                 "name": "Standard",
                 "switch_config": {
-                    "ports": {
-                        "0": {"profile": "ACCESS"},
-                        "48": {"profile": "UPLINK"},
-                    }
+                    "ip_config": {"type": "static", "ip": "10.0.0.2"},
+                    "port_config": {
+                        "ge-0/0/0": {"usage": "end_user"},
+                        "ge-0/0/48": {"usage": "uplink_idf"},
+                        "xe-0/2/1": {"usage": "uplink_idf"},
+                    },
                 },
             }
         ],
@@ -141,10 +143,12 @@ def test_configuration_overrides_check_detects_template_differences():
                 "status": "connected",
                 "switch_template_id": "tmpl-1",
                 "switch_config": {
-                    "ports": {
-                        "0": {"profile": "ACCESS"},
-                        "48": {"profile": "VOICE"},
-                    }
+                    "ip_config": {"type": "static", "ip": "10.0.0.3"},
+                    "port_config": {
+                        "ge-0/0/0": {"usage": "end_user"},
+                        "ge-0/0/48": {"usage": "internet_only"},
+                        "xe-0/2/1": {"usage": "uplink_idf"},
+                    },
                 },
             },
             {
@@ -154,10 +158,27 @@ def test_configuration_overrides_check_detects_template_differences():
                 "status": "connected",
                 "switch_template_id": "tmpl-1",
                 "switch_config": {
-                    "ports": {
-                        "0": {"profile": "VOICE"},
-                        "48": {"profile": "UPLINK"},
-                    }
+                    "ip_config": {"type": "static", "ip": "10.0.0.2"},
+                    "port_config": {
+                        "ge-0/0/0": {"usage": "voice"},
+                        "ge-0/0/48": {"usage": "uplink_idf"},
+                        "xe-0/2/1": {"usage": "uplink_idf"},
+                    },
+                },
+            },
+            {
+                "id": "access2",
+                "name": "Access Edge",
+                "role": "ACCESS",
+                "status": "connected",
+                "switch_template_id": "tmpl-1",
+                "switch_config": {
+                    "ip_config": {"type": "static", "ip": "10.0.0.2"},
+                    "port_config": {
+                        "ge-0/0/0": {"usage": "end_user"},
+                        "ge-0/0/48": {"usage": "uplink_idf"},
+                        "xe-0/2/1": {"usage": "internet_only"},
+                    },
                 },
             },
         ],
@@ -168,11 +189,14 @@ def test_configuration_overrides_check_detects_template_differences():
     dist_findings = [f for f in findings if f.device_id == "dist1" and "differs" in f.message]
     assert dist_findings, "Distribution switch diff should be reported"
 
-    access_findings = [f for f in findings if f.device_id == "access1" and "differs" in f.message]
-    assert not access_findings, "Access switch port overrides within exception should be ignored"
+    access1_findings = [f for f in findings if f.device_id == "access1" and "differs" in f.message]
+    assert not access1_findings, "Access switch non-uplink differences should be ignored"
+
+    access2_findings = [f for f in findings if f.device_id == "access2" and "differs" in f.message]
+    assert access2_findings, "Access uplink differences should be reported"
 
 
-def test_configuration_overrides_check_skips_offline_devices():
+def test_configuration_overrides_check_includes_offline_devices():
     ctx = SiteContext(
         site_id="site-8",
         site_name="Offline Site",
@@ -181,7 +205,10 @@ def test_configuration_overrides_check_skips_offline_devices():
         templates=[
             {
                 "id": "tmpl-1",
-                "switch_config": {"foo": "bar"},
+                "switch_config": {
+                    "ip_config": {"type": "static", "ip": "10.0.0.1"},
+                    "port_config": {"ge-0/0/48": {"usage": "uplink_idf"}},
+                },
             }
         ],
         devices=[
@@ -191,14 +218,54 @@ def test_configuration_overrides_check_skips_offline_devices():
                 "role": "DISTRIBUTION",
                 "status": "offline",
                 "switch_template_id": "tmpl-1",
-                "switch_config": {"foo": "baz"},
+                "switch_config": {
+                    "ip_config": {"type": "static", "ip": "10.0.0.2"},
+                    "port_config": {"ge-0/0/48": {"usage": "internet_only"}},
+                },
                 "config_override": {"foo": "baz"},
             }
         ],
     )
     check = ConfigurationOverridesCheck()
     findings = check.run(ctx)
-    assert findings == []
+
+    assert any(f.device_id == "offline1" and "differs" in f.message for f in findings)
+    assert any(f.device_id == "offline1" and "override" in f.message.lower() for f in findings)
+
+
+def test_configuration_overrides_check_skips_vc_port_differences():
+    ctx = SiteContext(
+        site_id="site-10",
+        site_name="VC Site",
+        site={},
+        setting={},
+        templates=[
+            {
+                "id": "tmpl-1",
+                "switch_config": {
+                    "ip_config": {"type": "static", "ip": "10.1.0.1"},
+                    "port_config": {"ge-0/0/48": {"usage": "uplink_idf"}},
+                },
+            }
+        ],
+        devices=[
+            {
+                "id": "vc1",
+                "name": "VC Stack",
+                "role": "Access-VC-Star",
+                "status": "connected",
+                "switch_template_id": "tmpl-1",
+                "switch_config": {
+                    "ip_config": {"type": "static", "ip": "10.1.0.1"},
+                    "port_config": {"ge-0/0/48": {"usage": "internet_only"}},
+                },
+            }
+        ],
+    )
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+
+    assert not any(f.device_id == "vc1" and "differs" in f.message for f in findings)
 
 
 def test_device_naming_convention_enforces_pattern():
