@@ -685,26 +685,38 @@ class DeviceNamingConventionCheck(ComplianceCheck):
 
 def _collect_device_images(device: Dict[str, Any]) -> List[str]:
     image_keys = ("images", "pictures", "photos", "image_urls", "image")
+    image_url_pattern = re.compile(r"^image\d+_url$", re.IGNORECASE)
     images: List[str] = []
-    for key in image_keys:
-        value = device.get(key)
-        if isinstance(value, list):
-            for item in value:
-                if isinstance(item, str):
-                    text = item.strip()
-                    if text:
-                        images.append(text)
-        elif isinstance(value, dict):
-            for item in value.values():
-                if isinstance(item, str):
-                    text = item.strip()
-                    if text:
-                        images.append(text)
-        elif isinstance(value, str):
+
+    def append_images(value: Any) -> None:
+        if isinstance(value, str):
             text = value.strip()
             if text:
                 images.append(text)
-    return images
+        elif isinstance(value, list):
+            for item in value:
+                append_images(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                append_images(item)
+
+    for key in image_keys:
+        value = device.get(key)
+        if value is not None:
+            append_images(value)
+
+    for key, value in device.items():
+        if isinstance(key, str) and image_url_pattern.match(key):
+            append_images(value)
+
+    # Deduplicate while preserving order
+    seen: Set[str] = set()
+    unique_images: List[str] = []
+    for url in images:
+        if url not in seen:
+            seen.add(url)
+            unique_images.append(url)
+    return unique_images
 
 
 class DeviceImageInventoryCheck(ComplianceCheck):

@@ -260,6 +260,36 @@ def test_device_image_inventory_requires_two_images():
     assert [f.device_id for f in findings] == ["insufficient"]
 
 
+def test_device_image_inventory_handles_numbered_urls():
+    ctx = SiteContext(
+        site_id="site-11",
+        site_name="Camera Site",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "numbered",
+                "name": "NAABCAS5",
+                "type": "switch",
+                "status": "connected",
+                "image1_url": "https://example.com/image1.jpg",
+                "image2_url": " https://example.com/image2.jpg ",
+            },
+            {
+                "id": "single-numbered",
+                "name": "NAABCAS6",
+                "type": "switch",
+                "status": "connected",
+                "image1_url": "https://example.com/only.jpg",
+            },
+        ],
+    )
+    check = DeviceImageInventoryCheck()
+    findings = check.run(ctx)
+    assert [f.device_id for f in findings] == ["single-numbered"]
+
+
 def test_site_audit_runner_summarizes_results():
     contexts = [
         SiteContext(
