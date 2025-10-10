@@ -26,8 +26,10 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
         "/sites/site-1/setting": {"variables": {}},
         "/sites/site-1/networktemplates": [],
         "/sites/site-1/devices": [
-            {"id": "dev-1", "name": "Switch 1", "status": "connected"},
             {"id": "dev-2", "name": "AP 2", "status": "connected"},
+        ],
+        "/sites/site-1/devices?type=switch": [
+            {"id": "dev-1", "name": "Switch 1", "status": "connected"},
         ],
         "/sites/site-1/devices/dev-1": {
             "id": "dev-1",
@@ -46,19 +48,23 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
 
     context = app_module._fetch_site_context("https://example.com/api/v1", {"Authorization": "token"}, "site-1")
 
-    assert [d.get("id") for d in context.devices] == ["dev-1", "dev-2"]
+    assert {d.get("id") for d in context.devices} == {"dev-1", "dev-2"}
 
-    dev1 = context.devices[0]
+    devices_by_id = {d.get("id"): d for d in context.devices if d.get("id")}
+
+    dev1 = devices_by_id["dev-1"]
     # Base fields remain, detail fields are merged, and structured statuses are preserved.
     assert dev1["name"] == "Switch 1"
     assert dev1["status"] == {"state": "online"}
     assert dev1["switch_config"] == {"vlans": [10]}
     assert dev1["extra"] == "detail"
 
-    dev2 = context.devices[1]
+    dev2 = devices_by_id["dev-2"]
     # Device without detail fallback retains base information.
     assert dev2["name"] == "AP 2"
     assert dev2["status"] == "connected"
 
+    assert "/sites/site-1/devices" in calls
+    assert "/sites/site-1/devices?type=switch" in calls
     assert "/sites/site-1/devices/dev-1" in calls
     assert "/sites/site-1/devices/dev-2" in calls

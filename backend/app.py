@@ -376,30 +376,58 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
     templates_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/networktemplates", optional=True)
     template_list = [t for t in templates_doc or [] if isinstance(t, dict)] if isinstance(templates_doc, list) else []
 
-    devices_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/devices", optional=True)
-    device_list: List[Dict[str, Any]] = []
-    if isinstance(devices_doc, list):
-        for device in devices_doc:
-            if not isinstance(device, dict):
+    base_devices_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/devices", optional=True)
+    switch_devices_doc = _mist_get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/devices?type=switch",
+        optional=True,
+    )
+
+    ordered_ids: List[str] = []
+    devices_by_id: Dict[str, Dict[str, Any]] = {}
+    anonymous_devices: List[Dict[str, Any]] = []
+
+    def _ingest_devices(doc: Any) -> None:
+        if not isinstance(doc, list):
+            return
+        for item in doc:
+            if not isinstance(item, dict):
                 continue
-            device_id = device.get("id")
-            detailed_doc: Optional[Dict[str, Any]] = None
+            device_id = item.get("id")
             if isinstance(device_id, str) and device_id:
-                try:
-                    detailed = _mist_get_json(
-                        base_url,
-                        headers,
-                        f"/sites/{site_id}/devices/{device_id}",
-                        optional=True,
-                    )
-                except Exception:
-                    detailed = None
-                if isinstance(detailed, dict):
-                    detailed_doc = detailed
-            merged: Dict[str, Any] = dict(device)
-            if detailed_doc:
-                merged.update({k: v for k, v in detailed_doc.items() if k not in {"id", "site_id"} or v is not None})
-            device_list.append(merged)
+                if device_id not in devices_by_id:
+                    ordered_ids.append(device_id)
+                    devices_by_id[device_id] = dict(item)
+                else:
+                    devices_by_id[device_id].update(item)
+            else:
+                anonymous_devices.append(dict(item))
+
+    _ingest_devices(base_devices_doc)
+    _ingest_devices(switch_devices_doc)
+
+    device_list: List[Dict[str, Any]] = []
+    for device_id in ordered_ids:
+        device = devices_by_id[device_id]
+        detailed_doc: Optional[Dict[str, Any]] = None
+        try:
+            detailed = _mist_get_json(
+                base_url,
+                headers,
+                f"/sites/{site_id}/devices/{device_id}",
+                optional=True,
+            )
+        except Exception:
+            detailed = None
+        if isinstance(detailed, dict):
+            detailed_doc = detailed
+        merged: Dict[str, Any] = dict(device)
+        if detailed_doc:
+            merged.update({k: v for k, v in detailed_doc.items() if k not in {"id", "site_id"} or v is not None})
+        device_list.append(merged)
+
+    device_list.extend(anonymous_devices)
     return SiteContext(
         site_id=site_id,
         site_name=site_name or site_id,
