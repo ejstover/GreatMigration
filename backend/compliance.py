@@ -270,8 +270,12 @@ def _is_switch(device: Dict[str, Any]) -> bool:
         device.get("device_profile_name"),
     )
     for value in type_hints:
-        if isinstance(value, str) and "switch" in value.lower():
-            return True
+        if isinstance(value, str):
+            lowered = value.lower()
+            if "switch" in lowered:
+                return True
+            if lowered in {"access", "distribution", "core"}:
+                return True
     model = device.get("model")
     if isinstance(model, str) and "switch" in model.lower():
         return True
@@ -508,26 +512,7 @@ IGNORED_CONFIG_KEYS: Set[str] = {
     "version",
 }
 
-
-BASE_SWITCH_CONFIG_FIELDS: Sequence[str] = (
-    "ip_config",
-    "stp_config",
-    "dhcp_snooping",
-    "additional_config_cmds",
-    "networks",
-    "optic_port_config",
-    "bgp_config",
-    "routing_policies",
-)
-
-UPLINK_USAGE_HINTS: Set[str] = {"uplink", "uplink_idf", "uplink_mdf", "uplink_core"}
-
-ACCESS_UPLINK_PORTS: Set[str] = {
-    "xe-0/2/0",
-    "xe-0/2/1",
-    "xe-0/2/2",
-    "xe-0/2/3",
-}
+ALLOWED_ADDITIONAL_CONFIG_KEYS: Set[str] = {"image1_url", "image2_url", "image3_url"}
 
 
 def _diff_configs(
@@ -592,87 +577,21 @@ def _diff_configs(
             }
         ]
     return []
-
-
-def _extract_base_switch_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Return only the core switch configuration sections we want to compare."""
-
-    trimmed: Dict[str, Any] = {}
-    for key in BASE_SWITCH_CONFIG_FIELDS:
-        if key in config:
-            trimmed[key] = copy.deepcopy(config[key])
-    return trimmed
-
-
-def _is_uplink_port(name: str, data: Optional[Dict[str, Any]]) -> bool:
-    if name in ACCESS_UPLINK_PORTS:
-        return True
-    usage = None
-    if isinstance(data, dict):
-        usage = data.get("usage")
-    if isinstance(usage, str):
-        lowered = usage.strip().lower()
-        if lowered in UPLINK_USAGE_HINTS:
-            return True
-        if "uplink" in lowered:
-            return True
-    return False
-
-
-def _filter_port_config_for_role(
-    role: Any,
-    device_ports: Optional[Dict[str, Any]],
-    template_ports: Optional[Dict[str, Any]],
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    role_text = str(role or "")
-    role_lower = role_text.lower()
-
-    if "vc" in role_lower:
-        return {}, {}
-
-    device_ports = device_ports or {}
-    template_ports = template_ports or {}
-
-    if role_lower == "access":
-        keep: Set[str] = set()
-        for port_name in set(device_ports.keys()) | set(template_ports.keys()):
-            port_data = device_ports.get(port_name)
-            if port_data is None:
-                port_data = template_ports.get(port_name)
-            if _is_uplink_port(port_name, port_data):
-                keep.add(port_name)
-        filtered_template = {k: copy.deepcopy(v) for k, v in template_ports.items() if k in keep}
-        filtered_device = {k: copy.deepcopy(v) for k, v in device_ports.items() if k in keep}
-        return filtered_template, filtered_device
-
-    return (
-        {k: copy.deepcopy(v) for k, v in template_ports.items()},
-        {k: copy.deepcopy(v) for k, v in device_ports.items()},
-    )
-
-
 def _role_scoped_switch_configs(
     role: Any,
     template_config: Dict[str, Any],
     device_config: Dict[str, Any],
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    expected_trimmed = _extract_base_switch_config(template_config)
-    actual_trimmed = _extract_base_switch_config(device_config)
+) -> Tuple[Dict[str, Any], Dict[str, Any], Any, Any]:
+    expected_trimmed: Dict[str, Any] = copy.deepcopy(template_config)
+    actual_trimmed: Dict[str, Any] = copy.deepcopy(device_config)
 
-    template_ports = template_config.get("port_config") if isinstance(template_config, dict) else None
-    device_ports = device_config.get("port_config") if isinstance(device_config, dict) else None
+    expected_ip = expected_trimmed.pop("ip_config", None)
+    actual_ip = actual_trimmed.pop("ip_config", None)
 
-    filtered_template_ports, filtered_device_ports = _filter_port_config_for_role(
-        role,
-        device_ports if isinstance(device_ports, dict) else None,
-        template_ports if isinstance(template_ports, dict) else None,
-    )
+    expected_trimmed.pop("port_config", None)
+    actual_trimmed.pop("port_config", None)
 
-    if filtered_template_ports or filtered_device_ports:
-        expected_trimmed["port_config"] = filtered_template_ports
-        actual_trimmed["port_config"] = filtered_device_ports
-
-    return expected_trimmed, actual_trimmed
+    return expected_trimmed, actual_trimmed, expected_ip, actual_ip
 
 
 def _diff_path_port_number(path: str) -> Optional[int]:
@@ -689,6 +608,124 @@ def _diff_path_port_number(path: str) -> Optional[int]:
         except ValueError:
             continue
     return None
+
+
+def _evaluate_ip_config(expected: Any, actual: Any) -> List[Dict[str, Any]]:
+    diffs: List[Dict[str, Any]] = []
+
+    if actual is None:
+        diffs.append({
+            "path": "ip_config",
+            "expected": expected or "defined static IP configuration",
+            "actual": actual,
+        })
+        return diffs
+
+    if not isinstance(actual, dict):
+        diffs.append({
+            "path": "ip_config",
+            "expected": "dictionary of IP configuration values",
+            "actual": actual,
+        })
+        return diffs
+
+    expected_type = None
+    expected_network = None
+    if isinstance(expected, dict):
+        expected_type = expected.get("type")
+        expected_network = expected.get("network")
+
+    actual_type = actual.get("type")
+    target_type = expected_type or "static"
+    if actual_type != target_type:
+        diffs.append({
+            "path": "ip_config.type",
+            "expected": target_type,
+            "actual": actual_type,
+        })
+
+    actual_ip = actual.get("ip")
+    if not (isinstance(actual_ip, str) and actual_ip.startswith("10.")):
+        diffs.append({
+            "path": "ip_config.ip",
+            "expected": "address beginning with '10.'",
+            "actual": actual_ip,
+        })
+
+    actual_gateway = actual.get("gateway")
+    if not (isinstance(actual_gateway, str) and actual_gateway.startswith("10.")):
+        diffs.append({
+            "path": "ip_config.gateway",
+            "expected": "gateway beginning with '10.'",
+            "actual": actual_gateway,
+        })
+
+    actual_network = actual.get("network")
+    target_network = expected_network or "IT_Mgmt"
+    if target_network and actual_network != target_network:
+        diffs.append({
+            "path": "ip_config.network",
+            "expected": target_network,
+            "actual": actual_network,
+        })
+
+    if "netmask" not in actual:
+        diffs.append({
+            "path": "ip_config.netmask",
+            "expected": "defined netmask",
+            "actual": actual.get("netmask"),
+        })
+
+    allowed_ip_keys = {"type", "ip", "netmask", "network", "gateway"}
+    for key in sorted(actual.keys()):
+        if key in allowed_ip_keys:
+            continue
+        diffs.append({
+            "path": f"ip_config.{key}",
+            "expected": None,
+            "actual": actual.get(key),
+        })
+
+    return diffs
+
+
+def _collect_standard_device_issues(device: Dict[str, Any]) -> List[Dict[str, Any]]:
+    diffs: List[Dict[str, Any]] = []
+
+    role = device.get("role")
+    if not (isinstance(role, str) and role.strip()):
+        diffs.append({
+            "path": "role",
+            "expected": "non-empty role",
+            "actual": role,
+        })
+
+    map_id = device.get("map_id")
+    if map_id is None:
+        diffs.append({
+            "path": "map_id",
+            "expected": "non-null map identifier",
+            "actual": map_id,
+        })
+
+    st_ip_base = device.get("st_ip_base")
+    if st_ip_base not in (None, ""):
+        diffs.append({
+            "path": "st_ip_base",
+            "expected": "empty string",
+            "actual": st_ip_base,
+        })
+
+    for key in ("evpn_scope", "evpntopo_id", "deviceprofile_id", "bundled_mac"):
+        value = device.get(key)
+        if value not in (None, ""):
+            diffs.append({
+                "path": key,
+                "expected": None,
+                "actual": value,
+            })
+
+    return diffs
 
 
 class ConfigurationOverridesCheck(ComplianceCheck):
@@ -717,6 +754,8 @@ class ConfigurationOverridesCheck(ComplianceCheck):
 
         for device in context.devices:
             if not isinstance(device, dict):
+                continue
+            if not _is_switch(device):
                 continue
             device_id = str(device.get("id")) if device.get("id") is not None else None
             device_name = _normalize_site_name(device) or device_id or "device"
@@ -773,8 +812,16 @@ class ConfigurationOverridesCheck(ComplianceCheck):
             else:
                 actual_config_source = None
 
+            expected_ip_config = None
+            actual_ip_config = None
+
             if expected_config_raw and actual_config_source:
-                filtered_expected, filtered_actual = _role_scoped_switch_configs(
+                (
+                    filtered_expected,
+                    filtered_actual,
+                    expected_ip_config,
+                    actual_ip_config,
+                ) = _role_scoped_switch_configs(
                     device.get("role"),
                     expected_config_raw,
                     actual_config_source,
@@ -783,21 +830,46 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                     diffs = _diff_configs(
                         filtered_expected,
                         filtered_actual,
-                        ignore_keys=IGNORED_CONFIG_KEYS,
+                        ignore_keys=IGNORED_CONFIG_KEYS | ALLOWED_ADDITIONAL_CONFIG_KEYS,
                     )
                 else:
                     diffs = []
             else:
                 diffs = []
 
+            if actual_ip_config is None and isinstance(actual_config_source, dict):
+                actual_ip_config = actual_config_source.get("ip_config")
+            if expected_ip_config is None and isinstance(expected_config_raw, dict):
+                expected_ip_config = expected_config_raw.get("ip_config")
+
+            ip_config_diffs: List[Dict[str, Any]] = []
+            if expected_config_raw or actual_config_source:
+                ip_config_diffs = _evaluate_ip_config(
+                    expected_ip_config if expected_config_raw else None,
+                    actual_ip_config if actual_config_source else None,
+                )
+
+            standard_device_diffs = _collect_standard_device_issues(device)
+
+            combined_diffs = []
             if diffs:
+                combined_diffs.extend(diffs)
+            if ip_config_diffs:
+                combined_diffs.extend(ip_config_diffs)
+            if standard_device_diffs:
+                combined_diffs.extend(standard_device_diffs)
+
+            if combined_diffs:
                 filtered_diffs: List[Dict[str, Any]] = []
-                for diff in diffs:
+                for diff in combined_diffs:
                     path = diff.get("path") or ""
                     if any(path.startswith(p) for p in port_override_allowed_paths):
                         continue
                     filtered_diffs.append(diff)
                 if filtered_diffs:
+                    template_label = None
+                    if template:
+                        template_label = template.name or template.template_id
                     findings.append(
                         Finding(
                             site_id=context.site_id,
@@ -807,7 +879,7 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                             message="Device configuration differs from assigned template.",
                             details={
                                 "diffs": filtered_diffs,
-                                "template": template.name or template.template_id,
+                                **({"template": template_label} if template_label else {}),
                             },
                         )
                     )

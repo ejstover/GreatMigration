@@ -81,20 +81,51 @@ def test_configuration_overrides_check_respects_access_exceptions():
                 "name": "Access Switch",
                 "role": "ACCESS",
                 "status": "connected",
+                "map_id": "map-access1",
                 "port_overrides": [{"port_id": "ge-0/0/10", "profile": "Voice"}],
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.0.0.10",
+                        "gateway": "10.0.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    }
+                },
             },
             {
                 "id": "dist1",
                 "name": "Distribution Switch",
                 "role": "DISTRIBUTION",
                 "status": "connected",
+                "map_id": "map-dist1",
                 "port_overrides": [{"port_id": "ge-0/0/48", "profile": "Uplink"}],
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.0.1.10",
+                        "gateway": "10.0.1.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    }
+                },
             },
             {
                 "id": "cfg1",
                 "name": "Custom Switch",
                 "status": "connected",
+                "type": "switch",
+                "map_id": "map-cfg1",
                 "config_override": {"foo": "bar"},
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.0.2.10",
+                        "gateway": "10.0.2.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    }
+                },
             },
         ],
     )
@@ -126,11 +157,12 @@ def test_configuration_overrides_check_detects_template_differences():
                 "id": "tmpl-1",
                 "name": "Standard",
                 "switch_config": {
-                    "ip_config": {"type": "static", "ip": "10.0.0.2"},
-                    "port_config": {
-                        "ge-0/0/0": {"usage": "end_user"},
-                        "ge-0/0/48": {"usage": "uplink_idf"},
-                        "xe-0/2/1": {"usage": "uplink_idf"},
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.0.0.2",
+                        "gateway": "10.0.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
                     },
                 },
             }
@@ -141,14 +173,17 @@ def test_configuration_overrides_check_detects_template_differences():
                 "name": "Distribution",
                 "role": "DISTRIBUTION",
                 "status": "connected",
+                "map_id": "map-dist1",
                 "switch_template_id": "tmpl-1",
                 "switch_config": {
-                    "ip_config": {"type": "static", "ip": "10.0.0.3"},
-                    "port_config": {
-                        "ge-0/0/0": {"usage": "end_user"},
-                        "ge-0/0/48": {"usage": "internet_only"},
-                        "xe-0/2/1": {"usage": "uplink_idf"},
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.0.0.3",
+                        "gateway": "10.0.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
                     },
+                    "dhcp_snooping": {"enabled": True},
                 },
             },
             {
@@ -156,9 +191,16 @@ def test_configuration_overrides_check_detects_template_differences():
                 "name": "Access",
                 "role": "ACCESS",
                 "status": "connected",
+                "map_id": "map-access1",
                 "switch_template_id": "tmpl-1",
                 "switch_config": {
-                    "ip_config": {"type": "static", "ip": "10.0.0.2"},
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.0.0.2",
+                        "gateway": "10.0.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    },
                     "port_config": {
                         "ge-0/0/0": {"usage": "voice"},
                         "ge-0/0/48": {"usage": "uplink_idf"},
@@ -171,9 +213,16 @@ def test_configuration_overrides_check_detects_template_differences():
                 "name": "Access Edge",
                 "role": "ACCESS",
                 "status": "connected",
+                "map_id": "map-access2",
                 "switch_template_id": "tmpl-1",
                 "switch_config": {
-                    "ip_config": {"type": "static", "ip": "10.0.0.2"},
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "192.168.0.2",
+                        "gateway": "192.168.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    },
                     "port_config": {
                         "ge-0/0/0": {"usage": "end_user"},
                         "ge-0/0/48": {"usage": "uplink_idf"},
@@ -186,14 +235,19 @@ def test_configuration_overrides_check_detects_template_differences():
     check = ConfigurationOverridesCheck()
     findings = check.run(ctx)
 
-    dist_findings = [f for f in findings if f.device_id == "dist1" and "differs" in f.message]
-    assert dist_findings, "Distribution switch diff should be reported"
+    dist_findings = [
+        f
+        for f in findings
+        if f.device_id == "dist1"
+        and any("dhcp" in (diff.get("path") or "") for diff in (f.details or {}).get("diffs", []))
+    ]
+    assert dist_findings, "Distribution switch dhcp_snooping override should be reported"
 
     access1_findings = [f for f in findings if f.device_id == "access1" and "differs" in f.message]
     assert not access1_findings, "Access switch non-uplink differences should be ignored"
 
     access2_findings = [f for f in findings if f.device_id == "access2" and "differs" in f.message]
-    assert access2_findings, "Access uplink differences should be reported"
+    assert access2_findings, "Access switch IP violations should be reported"
 
 
 def test_configuration_overrides_check_includes_offline_devices():
@@ -231,6 +285,67 @@ def test_configuration_overrides_check_includes_offline_devices():
 
     assert any(f.device_id == "offline1" and "differs" in f.message for f in findings)
     assert any(f.device_id == "offline1" and "override" in f.message.lower() for f in findings)
+
+
+def test_configuration_overrides_check_flags_map_and_ip_exceptions():
+    ctx = SiteContext(
+        site_id="site-standard",
+        site_name="Standard Site",
+        site={},
+        setting={},
+        templates=[
+            {
+                "id": "tmpl-1",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.1.0.2",
+                        "gateway": "10.1.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    }
+                },
+            }
+        ],
+        devices=[
+            {
+                "id": "sw1",
+                "name": "Switch One",
+                "status": "connected",
+                "type": "switch",
+                "map_id": None,
+                "st_ip_base": "10.1.0.0/24",
+                "evpn_scope": "fabric",
+                "switch_template_id": "tmpl-1",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.1.0.5",
+                        "gateway": "10.1.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                        "dns": ["10.1.0.10"],
+                    }
+                },
+            }
+        ],
+    )
+
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+
+    assert findings, "Expected configuration override findings to be reported"
+
+    paths = {
+        diff.get("path")
+        for finding in findings
+        for diff in (finding.details or {}).get("diffs", [])
+    }
+
+    assert "map_id" in paths
+    assert "st_ip_base" in paths
+    assert "evpn_scope" in paths
+    assert "ip_config.dns" in paths
 
 
 def test_configuration_overrides_check_skips_vc_port_differences():

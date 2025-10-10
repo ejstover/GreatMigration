@@ -301,6 +301,24 @@
           header.className = 'flex flex-wrap items-center justify-between gap-3';
           const title = document.createElement('div');
           title.innerHTML = `<h3 class="text-lg font-semibold">${check.name || 'Check'}</h3><p class="text-sm text-slate-500 dark:text-slate-400">${check.description || ''}</p>`;
+          if (check.id === 'configuration_overrides') {
+            const heading = title.querySelector('h3');
+            if (heading) {
+              const tip = document.createElement('span');
+              tip.className = 'ml-2 inline-flex items-center text-xs text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 cursor-help';
+              tip.setAttribute('title', 'Local switch configuration overrides the assigned template. Additional fields are surfaced as exceptions.');
+              tip.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-10.5a.75.75 0 10-1.5 0v.75a.75.75 0 001.5 0V7.5zm0 3a.75.75 0 10-1.5 0v3a.75.75 0 001.5 0v-3z" clip-rule="evenodd" />
+                </svg>
+              `;
+              const sr = document.createElement('span');
+              sr.className = 'sr-only';
+              sr.textContent = 'Local configuration overrides template';
+              tip.appendChild(sr);
+              heading.appendChild(tip);
+            }
+          }
           const findings = Array.isArray(check.findings) ? check.findings : [];
           const badgeSeverity = findings.length ? check.severity : 'success';
           const badge = createSeverityBadge(badgeSeverity);
