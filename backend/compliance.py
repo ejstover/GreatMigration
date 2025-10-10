@@ -710,14 +710,6 @@ def _collect_standard_device_issues(device: Dict[str, Any]) -> List[Dict[str, An
             "actual": role,
         })
 
-    map_id = device.get("map_id")
-    if map_id is None:
-        diffs.append({
-            "path": "map_id",
-            "expected": "non-null map identifier",
-            "actual": map_id,
-        })
-
     st_ip_base = device.get("st_ip_base")
     if st_ip_base not in (None, ""):
         diffs.append({
@@ -908,10 +900,10 @@ class ConfigurationOverridesCheck(ComplianceCheck):
 class DeviceNamingConventionCheck(ComplianceCheck):
     id = "device_naming_convention"
     name = "Device naming convention"
-    description = "Ensure switch names follow the region-site-role numbering convention."
+    description = "Ensure switch names follow the region-site-location-role numbering convention."
     severity = "warning"
 
-    name_pattern = re.compile(r"^(NA|LA|EU|AP)[A-Z]{3}(AS|CS|WS)\d+$")
+    name_pattern = re.compile(r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDF|IDF\d+)(AS|CS|WS)\d+$")
 
     def run(self, context: SiteContext) -> List[Finding]:
         findings: List[Finding] = []
@@ -932,7 +924,7 @@ class DeviceNamingConventionCheck(ComplianceCheck):
                         site_name=context.site_name,
                         device_id=device_id,
                         device_name=device_name or device_id or "device",
-                        message="Switch name does not match required convention (e.g., NAWHQAS1).",
+                        message="Switch name does not match required convention (e.g., NACHIMDFWS1 or NACHIIDF1AS3).",
                         details={"expected_pattern": self.name_pattern.pattern},
                     )
                 )
@@ -975,10 +967,10 @@ def _collect_device_images(device: Dict[str, Any]) -> List[str]:
     return unique_images
 
 
-class DeviceImageInventoryCheck(ComplianceCheck):
-    id = "device_image_inventory"
-    name = "Device image inventory"
-    description = "Ensure each device has at least two reference images."
+class DeviceDocumentationCheck(ComplianceCheck):
+    id = "device_documentation"
+    name = "Device documentation"
+    description = "Ensure devices are mapped to floorplans and have required reference images."
     severity = "warning"
 
     minimum_images: int = 2
@@ -990,6 +982,17 @@ class DeviceImageInventoryCheck(ComplianceCheck):
                 continue
             device_id = str(device.get("id")) if device.get("id") is not None else None
             device_name = _normalize_site_name(device) or device_id or "device"
+            map_id = device.get("map_id")
+            if not map_id:
+                findings.append(
+                    Finding(
+                        site_id=context.site_id,
+                        site_name=context.site_name,
+                        device_id=device_id,
+                        device_name=device_name,
+                        message="Device not assigned to any floorplan.",
+                    )
+                )
             images = _collect_device_images(device)
             if len(images) < self.minimum_images:
                 findings.append(
@@ -998,8 +1001,9 @@ class DeviceImageInventoryCheck(ComplianceCheck):
                         site_name=context.site_name,
                         device_id=device_id,
                         device_name=device_name,
-                        message="Device does not have the required number of images.",
-                        details={"count": len(images), "minimum": self.minimum_images},
+                        message=(
+                            f"Required images not present (found {len(images)} of {self.minimum_images})."
+                        ),
                     )
                 )
         return findings
@@ -1041,7 +1045,7 @@ DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
     LabTemplateRestrictionCheck(),
     ConfigurationOverridesCheck(),
     DeviceNamingConventionCheck(),
-    DeviceImageInventoryCheck(),
+    DeviceDocumentationCheck(),
 )
 
 

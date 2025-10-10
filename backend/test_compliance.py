@@ -6,7 +6,7 @@ from compliance import (
     LabTemplateRestrictionCheck,
     ConfigurationOverridesCheck,
     DeviceNamingConventionCheck,
-    DeviceImageInventoryCheck,
+    DeviceDocumentationCheck,
     SiteAuditRunner,
 )
 
@@ -342,7 +342,7 @@ def test_configuration_overrides_check_flags_map_and_ip_exceptions():
         for diff in (finding.details or {}).get("diffs", [])
     }
 
-    assert "map_id" in paths
+    assert "map_id" not in paths
     assert "st_ip_base" in paths
     assert "evpn_scope" in paths
     assert "ip_config.dns" in paths
@@ -507,11 +507,11 @@ def test_device_naming_convention_enforces_pattern():
         setting={},
         templates=[],
         devices=[
-            {"id": "good1", "name": "NAABCAS1", "type": "switch", "status": "connected"},
-            {"id": "bad1", "name": "NaABCAS2", "type": "switch", "status": "connected"},
-            {"id": "bad2", "name": "", "type": "switch", "status": "connected"},
+            {"id": "good1", "name": "NAABCMDFAS1", "type": "switch", "status": "connected"},
+            {"id": "bad1", "name": "NaABCMDFAS2", "type": "switch", "status": "connected"},
+            {"id": "bad2", "name": "NAABCIDFAS3", "type": "switch", "status": "connected"},
             {"id": "ignore1", "name": "ap-1", "type": "ap", "status": "connected"},
-            {"id": "offline", "name": "NAABCCS1", "type": "switch", "status": "offline"},
+            {"id": "offline", "name": "NAABCIDF1CS4", "type": "switch", "status": "offline"},
         ],
     )
     check = DeviceNamingConventionCheck()
@@ -522,7 +522,7 @@ def test_device_naming_convention_enforces_pattern():
         assert finding.details and "expected_pattern" in finding.details
 
 
-def test_device_image_inventory_requires_two_images():
+def test_device_documentation_reports_missing_items():
     ctx = SiteContext(
         site_id="site-10",
         site_name="Image Site",
@@ -531,34 +531,39 @@ def test_device_image_inventory_requires_two_images():
         templates=[],
         devices=[
             {
-                "id": "enough",
-                "name": "NAABCAS1",
+                "id": "complete",
+                "name": "NAABCMDFAS1",
                 "type": "switch",
                 "status": "connected",
+                "map_id": "map-1",
                 "images": ["img1", "img2"],
             },
             {
-                "id": "insufficient",
-                "name": "NAABCAS2",
+                "id": "no-images",
+                "name": "NAABCMDFAS2",
                 "type": "switch",
                 "status": "connected",
+                "map_id": "map-2",
                 "pictures": ["img1"],
             },
             {
-                "id": "offline",
-                "name": "NAABCAS3",
+                "id": "no-map",
+                "name": "NAABCIDF1AS3",
                 "type": "switch",
                 "status": "offline",
-                "images": [],
+                "images": ["img1", "img2"],
             },
         ],
     )
-    check = DeviceImageInventoryCheck()
+    check = DeviceDocumentationCheck()
     findings = check.run(ctx)
-    assert [f.device_id for f in findings] == ["insufficient", "offline"]
+    assert {(f.device_id, f.message) for f in findings} == {
+        ("no-images", "Required images not present (found 1 of 2)."),
+        ("no-map", "Device not assigned to any floorplan."),
+    }
 
 
-def test_device_image_inventory_handles_numbered_urls():
+def test_device_documentation_handles_numbered_urls():
     ctx = SiteContext(
         site_id="site-11",
         site_name="Camera Site",
@@ -568,27 +573,29 @@ def test_device_image_inventory_handles_numbered_urls():
         devices=[
             {
                 "id": "numbered",
-                "name": "NAABCAS5",
+                "name": "NAABCMDFAS5",
                 "type": "switch",
                 "status": "connected",
+                "map_id": "map-5",
                 "image1_url": "https://example.com/image1.jpg",
                 "image2_url": " https://example.com/image2.jpg ",
             },
             {
                 "id": "single-numbered",
-                "name": "NAABCAS6",
+                "name": "NAABCMDFAS6",
                 "type": "switch",
                 "status": "connected",
+                "map_id": "map-6",
                 "image1_url": "https://example.com/only.jpg",
             },
         ],
     )
-    check = DeviceImageInventoryCheck()
+    check = DeviceDocumentationCheck()
     findings = check.run(ctx)
     assert [f.device_id for f in findings] == ["single-numbered"]
 
 
-def test_device_image_inventory_handles_nested_status_dicts():
+def test_device_documentation_handles_nested_status_dicts():
     ctx = SiteContext(
         site_id="site-12",
         site_name="Nested Status",
@@ -598,26 +605,31 @@ def test_device_image_inventory_handles_nested_status_dicts():
         devices=[
             {
                 "id": "nested",
-                "name": "NAABCAS7",
+                "name": "NAABCMDFAS7",
                 "type": "switch",
                 "status": {"status": "connected", "uptime": 12345},
+                "map_id": "map-7",
             },
             {
                 "id": "offline-nested",
-                "name": "NAABCAS8",
+                "name": "NAABCMDFAS8",
                 "type": "switch",
                 "status": {"status": "offline"},
+                "map_id": "map-8",
             },
         ],
     )
-    check = DeviceImageInventoryCheck()
+    check = DeviceDocumentationCheck()
     findings = check.run(ctx)
-    assert [f.device_id for f in findings] == ["nested", "offline-nested"]
+    assert {(f.device_id, f.message) for f in findings} == {
+        ("nested", "Required images not present (found 0 of 2)."),
+        ("offline-nested", "Required images not present (found 0 of 2)."),
+    }
 
 
 
 
-def test_device_image_inventory_handles_status_strings_with_suffix():
+def test_device_documentation_handles_status_strings_with_suffix():
     ctx = SiteContext(
         site_id="site-13",
         site_name="Status Strings",
@@ -627,24 +639,29 @@ def test_device_image_inventory_handles_status_strings_with_suffix():
         devices=[
             {
                 "id": "suffix",
-                "name": "NAABCAS9",
+                "name": "NAABCMDFAS9",
                 "type": "switch",
                 "status": "Connected (wired)",
+                "map_id": "map-9",
             },
             {
                 "id": "offline-suffix",
-                "name": "NAABCAS10",
+                "name": "NAABCMDFAS10",
                 "type": "switch",
                 "status": "Disconnected",
+                "map_id": "map-10",
             },
         ],
     )
-    check = DeviceImageInventoryCheck()
+    check = DeviceDocumentationCheck()
     findings = check.run(ctx)
-    assert [f.device_id for f in findings] == ["suffix", "offline-suffix"]
+    assert {(f.device_id, f.message) for f in findings} == {
+        ("suffix", "Required images not present (found 0 of 2)."),
+        ("offline-suffix", "Required images not present (found 0 of 2)."),
+    }
 
 
-def test_device_image_inventory_handles_deeply_nested_status_structures():
+def test_device_documentation_handles_deeply_nested_status_structures():
     ctx = SiteContext(
         site_id="site-14",
         site_name="Nested Structures",
@@ -654,7 +671,7 @@ def test_device_image_inventory_handles_deeply_nested_status_structures():
         devices=[
             {
                 "id": "deep-nested",
-                "name": "NAABCAS11",
+                "name": "NAABCMDFAS11",
                 "type": "switch",
                 "status": {
                     "wired": {
@@ -665,12 +682,15 @@ def test_device_image_inventory_handles_deeply_nested_status_structures():
                         ],
                     }
                 },
+                "map_id": "map-11",
             },
         ],
     )
-    check = DeviceImageInventoryCheck()
+    check = DeviceDocumentationCheck()
     findings = check.run(ctx)
-    assert [f.device_id for f in findings] == ["deep-nested"]
+    assert {(f.device_id, f.message) for f in findings} == {
+        ("deep-nested", "Required images not present (found 0 of 2)."),
+    }
 
 
 def test_site_audit_runner_summarizes_results():
