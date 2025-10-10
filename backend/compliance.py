@@ -928,9 +928,21 @@ DEFAULT_SWITCH_NAME_PATTERN = (
 )
 
 
+def _strip_pattern_wrappers(value: str) -> str:
+    """Remove optional r"..." or quoted wrappers from an env-sourced pattern."""
+
+    if len(value) >= 3 and value[0] in {"r", "R"} and value[1] in {'"', "'"} and value[-1] == value[1]:
+        return value[2:-1]
+    if len(value) >= 2 and value[0] in {'"', "'"} and value[-1] == value[0]:
+        return value[1:-1]
+    return value
+
+
 def _load_pattern_from_env(var_name: str, default: Optional[str]) -> Optional[re.Pattern[str]]:
     raw = os.getenv(var_name)
     candidate = (raw or "").strip()
+    if candidate:
+        candidate = _strip_pattern_wrappers(candidate)
     if not candidate:
         candidate = default or ""
     if not candidate:

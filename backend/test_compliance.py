@@ -558,6 +558,24 @@ def test_device_naming_convention_respects_custom_patterns():
     }
 
 
+@pytest.mark.parametrize(
+    "env_value",
+    [
+        'r"^SW-\\d+$"',
+        '"^SW-\\d+$"',
+        "'^SW-\\d+$'",
+    ],
+)
+def test_env_pattern_loader_strips_wrappers(monkeypatch, env_value):
+    monkeypatch.setenv("SWITCH_NAME_REGEX_PATTERN", env_value)
+    from compliance import _load_pattern_from_env
+
+    pattern = _load_pattern_from_env("SWITCH_NAME_REGEX_PATTERN", None)
+    assert pattern is not None
+    assert pattern.pattern == r"^SW-\d+$"
+    assert pattern.fullmatch("SW-1")
+
+
 def test_device_documentation_reports_missing_items():
     ctx = SiteContext(
         site_id="site-10",
