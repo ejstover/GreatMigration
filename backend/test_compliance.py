@@ -317,6 +317,64 @@ def test_device_image_inventory_handles_nested_status_dicts():
     assert [f.device_id for f in findings] == ["nested"]
 
 
+
+
+def test_device_image_inventory_handles_status_strings_with_suffix():
+    ctx = SiteContext(
+        site_id="site-13",
+        site_name="Status Strings",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "suffix",
+                "name": "NAABCAS9",
+                "type": "switch",
+                "status": "Connected (wired)",
+            },
+            {
+                "id": "offline-suffix",
+                "name": "NAABCAS10",
+                "type": "switch",
+                "status": "Disconnected",
+            },
+        ],
+    )
+    check = DeviceImageInventoryCheck()
+    findings = check.run(ctx)
+    assert [f.device_id for f in findings] == ["suffix"]
+
+
+def test_device_image_inventory_handles_deeply_nested_status_structures():
+    ctx = SiteContext(
+        site_id="site-14",
+        site_name="Nested Structures",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "deep-nested",
+                "name": "NAABCAS11",
+                "type": "switch",
+                "status": {
+                    "wired": {
+                        "details": {"state": "Connected"},
+                        "history": [
+                            {"state": "offline"},
+                            {"state": "connected"},
+                        ],
+                    }
+                },
+            },
+        ],
+    )
+    check = DeviceImageInventoryCheck()
+    findings = check.run(ctx)
+    assert [f.device_id for f in findings] == ["deep-nested"]
+
+
 def test_site_audit_runner_summarizes_results():
     contexts = [
         SiteContext(

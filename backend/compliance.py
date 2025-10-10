@@ -277,36 +277,83 @@ def _is_switch(device: Dict[str, Any]) -> bool:
     return False
 
 
+
 def _is_device_online(device: Dict[str, Any]) -> bool:
     """Return True when the device appears to be online/connected."""
 
-    online_strings = {"connected", "online", "up", "ready"}
+    online_tokens = ("connected", "online", "up", "ready")
+    offline_tokens = ("disconnected", "offline", "down", "not connected", "not-connected")
 
-    def value_is_online(value: Any) -> bool:
+    def interpret_status_value(value: Any) -> Optional[bool]:
         if isinstance(value, bool):
             return value
+        if isinstance(value, (int, float)):
+            if value == 1:
+                return True
+            if value == 0:
+                return False
+            return None
         if isinstance(value, str):
-            return value.lower() in online_strings
-        return False
+            lower = value.strip().lower()
+            if not lower:
+                return None
+            for token in offline_tokens:
+                if token in lower:
+                    return False
+            for token in online_tokens:
+                if re.search(rf"\b{re.escape(token)}\b", lower):
+                    return True
+            return None
+        return None
 
-    status = device.get("status")
-    if value_is_online(status):
-        return True
-    if isinstance(status, dict):
-        for key in ("state", "status", "connection", "connection_state"):
-            nested_value = status.get(key)
-            if value_is_online(nested_value):
+    def iter_status_values(value: Any):
+        stack: List[Any] = [value]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                stack.extend(current.values())
+            elif isinstance(current, (list, tuple, set)):
+                stack.extend(current)
+            else:
+                yield current
+
+    candidates: List[Any] = []
+    primary_status = device.get("status")
+    if primary_status is not None:
+        candidates.append(primary_status)
+    for key in (
+        "connection_state",
+        "connection",
+        "connectivity",
+        "device_status",
+        "mgmt_connection",
+        "management_connection",
+        "oper_status",
+        "operational_status",
+        "state",
+        "link_state",
+        "online",
+        "connected",
+        "ready",
+        "up",
+        "is_online",
+    ):
+        if key in device:
+            candidates.append(device.get(key))
+
+    for key, value in device.items():
+        if isinstance(key, str):
+            lowered = key.lower()
+            if lowered.endswith("_status") or lowered.endswith("_state"):
+                candidates.append(value)
+
+    for candidate in candidates:
+        for value in iter_status_values(candidate):
+            result = interpret_status_value(value)
+            if result is True:
                 return True
-        for nested_value in status.values():
-            if value_is_online(nested_value):
-                return True
-    for key in ("connected", "online", "is_online", "up", "ready"):
-        if value_is_online(device.get(key)):
-            return True
-    connection_state = device.get("connection_state")
-    if value_is_online(connection_state):
-        return True
     return False
+
 
 
 def _extract_device_switch_config(device: Dict[str, Any]) -> Optional[Dict[str, Any]]:
