@@ -967,6 +967,26 @@ ENV_SWITCH_NAME_PATTERN = _load_pattern_from_env("SWITCH_NAME_REGEX_PATTERN", DE
 ENV_AP_NAME_PATTERN = _load_pattern_from_env("AP_NAME_REGEX_PATTERN", None)
 
 
+def _load_positive_int_from_env(var_name: str, default: int) -> int:
+    raw = os.getenv(var_name)
+    if raw is None:
+        return default
+    candidate = raw.strip()
+    if not candidate:
+        return default
+    try:
+        value = int(candidate)
+        if value < 0:
+            return default
+        return value
+    except ValueError:
+        return default
+
+
+ENV_SWITCH_IMAGE_REQUIREMENT = _load_positive_int_from_env("SW_NUM_IMG", 2)
+ENV_AP_IMAGE_REQUIREMENT = _load_positive_int_from_env("AP_NUM_IMG", 2)
+
+
 class DeviceNamingConventionCheck(ComplianceCheck):
     id = "device_naming_convention"
     name = "Device naming convention"
@@ -1068,7 +1088,23 @@ class DeviceDocumentationCheck(ComplianceCheck):
     description = "Ensure devices are mapped to floorplans and have required reference images."
     severity = "warning"
 
-    minimum_images: int = 2
+    def __init__(
+        self,
+        *,
+        switch_min_images: Optional[int] = None,
+        ap_min_images: Optional[int] = None,
+        default_min_images: int = 2,
+    ) -> None:
+        def _sanitize(value: Optional[int], fallback: int) -> int:
+            if value is None:
+                return max(fallback, 0)
+            if value < 0:
+                return max(fallback, 0)
+            return value
+
+        self.switch_min_images = _sanitize(switch_min_images, ENV_SWITCH_IMAGE_REQUIREMENT)
+        self.ap_min_images = _sanitize(ap_min_images, ENV_AP_IMAGE_REQUIREMENT)
+        self.default_min_images = _sanitize(default_min_images, 2)
 
     def run(self, context: SiteContext) -> List[Finding]:
         findings: List[Finding] = []
@@ -1089,7 +1125,16 @@ class DeviceDocumentationCheck(ComplianceCheck):
                     )
                 )
             images = _collect_device_images(device)
-            if len(images) < self.minimum_images:
+            required_images = self.default_min_images
+            if _is_switch(device):
+                required_images = self.switch_min_images
+            elif _is_access_point(device):
+                required_images = self.ap_min_images
+
+            if required_images <= 0:
+                continue
+
+            if len(images) < required_images:
                 findings.append(
                     Finding(
                         site_id=context.site_id,
@@ -1097,7 +1142,7 @@ class DeviceDocumentationCheck(ComplianceCheck):
                         device_id=device_id,
                         device_name=device_name,
                         message=(
-                            f"Required images not present (found {len(images)} of {self.minimum_images})."
+                            f"Required images not present (found {len(images)} of {required_images})."
                         ),
                     )
                 )

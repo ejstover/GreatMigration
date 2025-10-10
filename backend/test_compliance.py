@@ -729,6 +729,37 @@ def test_device_documentation_handles_deeply_nested_status_structures():
     }
 
 
+def test_device_documentation_respects_per_type_requirements():
+    ctx = SiteContext(
+        site_id="site-15",
+        site_name="Mixed Types",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "switch-images",
+                "name": "NAABCMDFAS12",
+                "type": "switch",
+                "map_id": "map-12",
+                "images": ["img1", "img2"],
+            },
+            {
+                "id": "ap-images",
+                "name": "NAABCIDF1AP1",
+                "type": "ap",
+                "map_id": "map-13",
+                "images": ["img1"],
+            },
+        ],
+    )
+    check = DeviceDocumentationCheck(switch_min_images=3, ap_min_images=1)
+    findings = {(f.device_id, f.message) for f in check.run(ctx)}
+    assert findings == {
+        ("switch-images", "Required images not present (found 2 of 3)."),
+    }
+
+
 def test_site_audit_runner_summarizes_results():
     contexts = [
         SiteContext(

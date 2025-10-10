@@ -47,6 +47,7 @@ The script prompts for a Mist token, Mist Org ID (Optional), Switch Template ID 
   * For **LDAP** auth: uncomment `AUTH_METHOD=ldap` and configure `LDAP_SERVER_URL`, `LDAP_SEARCH_BASE`, `LDAP_BIND_TEMPLATE`, `PUSH_GROUP_DN`, `LDAP_SERVICE_DN`, and `LDAP_SERVICE_PASSWORD` [LDAP Login Screen](screenshots/ldap.png). When `PUSH_GROUP_DN` is set, only members of that group may sign in with push rights. Optionally set `READONLY_GROUP_DN` (semicolon/newline separated) to admit read-only users—these accounts can upload files and run conversions but remain locked in Test mode and are blocked from live pushes on the backend. Provide multiple directory scopes by setting `LDAP_SEARCH_BASES` (or separating entries in `LDAP_SEARCH_BASE`) with semicolons or newlines.
    * Optional defaults: `MIST_BASE_URL`, `MIST_ORG_ID`, `SWITCH_TEMPLATE_ID`, `HELP_URL`
    * Naming overrides: set `SWITCH_NAME_REGEX_PATTERN` and `AP_NAME_REGEX_PATTERN` to customize compliance naming checks
+   * Device documentation: configure `SW_NUM_IMG` and `AP_NUM_IMG` to enforce the required photo counts for switches and access points
    * Device type sources: `NETBOX_DT_URL` (community library) and `NETBOX_LOCAL_DT` for additional models
 4. (Optional) copy `backend/port_rules.sample.json` to `backend/port_rules.json` to maintain custom port mappings outside version control
 5. Start the server with `uvicorn app:app --app-dir backend --reload`
@@ -94,7 +95,7 @@ Evaluate Mist site configuration against a growing catalog of policy checks.
 2. **Run audit** – launches the checks and returns an aggregated report.
 3. **Results** – cards summarise each check, highlighting affected sites, devices, and override details. Site-level errors (for example, sites that couldn’t be queried) appear in a banner above the results.
 
-Current checks include required site variables, enforcing that the “Test - Standard Template” only applies to lab sites, and flagging configuration overrides outside the approved access-switch exception (ports 0–47). The backend architecture makes it straightforward to add future checks. Override the enforced naming rules by setting `SWITCH_NAME_REGEX_PATTERN` and `AP_NAME_REGEX_PATTERN` in `backend/.env` before starting the server.
+Current checks include required site variables, enforcing that the “Test - Standard Template” only applies to lab sites, and flagging configuration overrides outside the approved access-switch exception (ports 0–47). The backend architecture makes it straightforward to add future checks. Override the enforced naming rules by setting `SWITCH_NAME_REGEX_PATTERN` and `AP_NAME_REGEX_PATTERN` in `backend/.env` before starting the server, and adjust required photo counts with `SW_NUM_IMG` and `AP_NUM_IMG`.
 
 ## Config Conversion
 
