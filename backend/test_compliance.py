@@ -5,6 +5,8 @@ from compliance import (
     RequiredSiteVariablesCheck,
     LabTemplateRestrictionCheck,
     ConfigurationOverridesCheck,
+    DeviceNamingConventionCheck,
+    DeviceImageInventoryCheck,
     SiteAuditRunner,
 )
 
@@ -78,17 +80,20 @@ def test_configuration_overrides_check_respects_access_exceptions():
                 "id": "access1",
                 "name": "Access Switch",
                 "role": "ACCESS",
+                "status": "connected",
                 "port_overrides": [{"port_id": "ge-0/0/10", "profile": "Voice"}],
             },
             {
                 "id": "dist1",
                 "name": "Distribution Switch",
                 "role": "DISTRIBUTION",
+                "status": "connected",
                 "port_overrides": [{"port_id": "ge-0/0/48", "profile": "Uplink"}],
             },
             {
                 "id": "cfg1",
                 "name": "Custom Switch",
+                "status": "connected",
                 "config_override": {"foo": "bar"},
             },
         ],
@@ -108,6 +113,151 @@ def test_configuration_overrides_check_respects_access_exceptions():
 
     # Direct config override should be reported
     assert any(f.device_id == "cfg1" for f in findings)
+
+
+def test_configuration_overrides_check_detects_template_differences():
+    ctx = SiteContext(
+        site_id="site-7",
+        site_name="Template Site",
+        site={},
+        setting={},
+        templates=[
+            {
+                "id": "tmpl-1",
+                "name": "Standard",
+                "switch_config": {
+                    "ports": {
+                        "0": {"profile": "ACCESS"},
+                        "48": {"profile": "UPLINK"},
+                    }
+                },
+            }
+        ],
+        devices=[
+            {
+                "id": "dist1",
+                "name": "Distribution",
+                "role": "DISTRIBUTION",
+                "status": "connected",
+                "switch_template_id": "tmpl-1",
+                "switch_config": {
+                    "ports": {
+                        "0": {"profile": "ACCESS"},
+                        "48": {"profile": "VOICE"},
+                    }
+                },
+            },
+            {
+                "id": "access1",
+                "name": "Access",
+                "role": "ACCESS",
+                "status": "connected",
+                "switch_template_id": "tmpl-1",
+                "switch_config": {
+                    "ports": {
+                        "0": {"profile": "VOICE"},
+                        "48": {"profile": "UPLINK"},
+                    }
+                },
+            },
+        ],
+    )
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+
+    dist_findings = [f for f in findings if f.device_id == "dist1" and "differs" in f.message]
+    assert dist_findings, "Distribution switch diff should be reported"
+
+    access_findings = [f for f in findings if f.device_id == "access1" and "differs" in f.message]
+    assert not access_findings, "Access switch port overrides within exception should be ignored"
+
+
+def test_configuration_overrides_check_skips_offline_devices():
+    ctx = SiteContext(
+        site_id="site-8",
+        site_name="Offline Site",
+        site={},
+        setting={},
+        templates=[
+            {
+                "id": "tmpl-1",
+                "switch_config": {"foo": "bar"},
+            }
+        ],
+        devices=[
+            {
+                "id": "offline1",
+                "name": "Offline Switch",
+                "role": "DISTRIBUTION",
+                "status": "offline",
+                "switch_template_id": "tmpl-1",
+                "switch_config": {"foo": "baz"},
+                "config_override": {"foo": "baz"},
+            }
+        ],
+    )
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+    assert findings == []
+
+
+def test_device_naming_convention_enforces_pattern():
+    ctx = SiteContext(
+        site_id="site-9",
+        site_name="Naming Site",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "good1", "name": "NAABCAS1", "type": "switch", "status": "connected"},
+            {"id": "bad1", "name": "NaABCAS2", "type": "switch", "status": "connected"},
+            {"id": "bad2", "name": "", "type": "switch", "status": "connected"},
+            {"id": "ignore1", "name": "ap-1", "type": "ap", "status": "connected"},
+            {"id": "offline", "name": "NAABCCS1", "type": "switch", "status": "offline"},
+        ],
+    )
+    check = DeviceNamingConventionCheck()
+    findings = check.run(ctx)
+    ids = {f.device_id for f in findings}
+    assert ids == {"bad1", "bad2"}
+    for finding in findings:
+        assert finding.details and "expected_pattern" in finding.details
+
+
+def test_device_image_inventory_requires_two_images():
+    ctx = SiteContext(
+        site_id="site-10",
+        site_name="Image Site",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "enough",
+                "name": "NAABCAS1",
+                "type": "switch",
+                "status": "connected",
+                "images": ["img1", "img2"],
+            },
+            {
+                "id": "insufficient",
+                "name": "NAABCAS2",
+                "type": "switch",
+                "status": "connected",
+                "pictures": ["img1"],
+            },
+            {
+                "id": "offline",
+                "name": "NAABCAS3",
+                "type": "switch",
+                "status": "offline",
+                "images": [],
+            },
+        ],
+    )
+    check = DeviceImageInventoryCheck()
+    findings = check.run(ctx)
+    assert [f.device_id for f in findings] == ["insufficient"]
 
 
 def test_site_audit_runner_summarizes_results():

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 
 @dataclass
@@ -256,6 +257,285 @@ def _is_access_switch(device: Dict[str, Any]) -> bool:
     return False
 
 
+def _is_switch(device: Dict[str, Any]) -> bool:
+    """Best-effort heuristic to determine whether a device is a switch."""
+
+    type_hints: Sequence[Any] = (
+        device.get("type"),
+        device.get("device_type"),
+        device.get("category"),
+        device.get("role"),
+        device.get("device_profile"),
+        device.get("device_profile_name"),
+    )
+    for value in type_hints:
+        if isinstance(value, str) and "switch" in value.lower():
+            return True
+    model = device.get("model")
+    if isinstance(model, str) and "switch" in model.lower():
+        return True
+    return False
+
+
+def _is_device_online(device: Dict[str, Any]) -> bool:
+    """Return True when the device appears to be online/connected."""
+
+    status = device.get("status")
+    if isinstance(status, str):
+        if status.lower() in {"connected", "online", "up", "ready"}:
+            return True
+    elif isinstance(status, dict):
+        state = status.get("state") if isinstance(status.get("state"), str) else None
+        if state and state.lower() in {"connected", "online", "up", "ready"}:
+            return True
+        for key in ("connected", "online", "up", "ready"):
+            value = status.get(key)
+            if isinstance(value, bool) and value:
+                return True
+    for key in ("connected", "online", "is_online", "up", "ready"):
+        value = device.get(key)
+        if isinstance(value, bool) and value:
+            return True
+        if isinstance(value, str) and value.lower() in {"connected", "online", "up", "ready"}:
+            return True
+    connection_state = device.get("connection_state")
+    if isinstance(connection_state, str) and connection_state.lower() in {"connected", "online"}:
+        return True
+    return False
+
+
+def _extract_device_switch_config(device: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    keys = (
+        "switch_config",
+        "config",
+        "configuration",
+        "switch",
+        "device_config",
+    )
+    for key in keys:
+        value = device.get(key)
+        if isinstance(value, dict):
+            return value
+    for key in ("data", "details", "template"):
+        nested = device.get(key)
+        if isinstance(nested, dict):
+            value = _extract_device_switch_config(nested)
+            if value is not None:
+                return value
+    return None
+
+
+def _extract_switch_template_config(container: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    keys = (
+        "switch_config",
+        "config",
+        "configuration",
+        "switch",
+        "device_config",
+    )
+    for key in keys:
+        value = container.get(key)
+        if isinstance(value, dict):
+            return value
+    for key in ("template", "data", "definition"):
+        nested = container.get(key)
+        if isinstance(nested, dict):
+            value = _extract_switch_template_config(nested)
+            if value is not None:
+                return value
+    return None
+
+
+@dataclass
+class SwitchTemplateInfo:
+    template_id: Optional[str]
+    name: Optional[str]
+    config: Dict[str, Any]
+
+
+def _gather_switch_templates(context: SiteContext) -> List[SwitchTemplateInfo]:
+    templates: List[SwitchTemplateInfo] = []
+    containers: List[Dict[str, Any]] = []
+
+    if isinstance(context.setting, dict):
+        containers.append(context.setting)
+    containers.extend([tpl for tpl in context.templates if isinstance(tpl, dict)])
+
+    seen: Set[Tuple[Optional[str], Optional[str]]] = set()
+    for container in containers:
+        config = _extract_switch_template_config(container)
+        if not config:
+            continue
+        template_id = None
+        for key in ("template_id", "id", "networktemplate_id", "switch_template_id"):
+            value = container.get(key)
+            if value is None:
+                continue
+            template_id = str(value)
+            break
+        name = None
+        for key in ("name", "template_name", "networktemplate_name"):
+            value = container.get(key)
+            if isinstance(value, str) and value.strip():
+                name = value
+                break
+        identity = (template_id, name)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        templates.append(SwitchTemplateInfo(template_id=template_id, name=name, config=config))
+    return templates
+
+
+def _candidate_template_identifiers(device: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    id_candidates: List[str] = []
+    name_candidates: List[str] = []
+    for key in (
+        "switch_template_id",
+        "template_id",
+        "networktemplate_id",
+        "network_template_id",
+        "device_template_id",
+    ):
+        value = device.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            id_candidates.append(text)
+    for key in (
+        "switch_template",
+        "switch_template_name",
+        "template",
+        "template_name",
+        "networktemplate_name",
+    ):
+        value = device.get(key)
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                name_candidates.append(text)
+    return id_candidates, name_candidates
+
+
+def _resolve_switch_template(
+    device: Dict[str, Any], templates: Sequence[SwitchTemplateInfo]
+) -> Optional[SwitchTemplateInfo]:
+    if not templates:
+        return None
+    id_candidates, name_candidates = _candidate_template_identifiers(device)
+    for candidate in id_candidates:
+        for template in templates:
+            if template.template_id and template.template_id == candidate:
+                return template
+    for candidate in name_candidates:
+        for template in templates:
+            if template.name and template.name == candidate:
+                return template
+    if len(templates) == 1:
+        return templates[0]
+    return None
+
+
+IGNORED_CONFIG_KEYS: Set[str] = {
+    "id",
+    "uuid",
+    "mac",
+    "serial",
+    "last_modified",
+    "modified",
+    "updated",
+    "updated_at",
+    "updated_time",
+    "created",
+    "created_at",
+    "created_time",
+    "last_seen",
+    "timestamp",
+    "version",
+}
+
+
+def _diff_configs(
+    expected: Any,
+    actual: Any,
+    path: str = "",
+    *,
+    ignore_keys: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    ignore_keys = ignore_keys or set()
+
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        diffs: List[Dict[str, Any]] = []
+        for key, exp_value in expected.items():
+            if key in ignore_keys:
+                continue
+            new_path = f"{path}.{key}" if path else str(key)
+            if key not in actual:
+                diffs.append({"path": new_path, "expected": exp_value, "actual": None})
+                continue
+            diffs.extend(
+                _diff_configs(
+                    exp_value,
+                    actual[key],
+                    new_path,
+                    ignore_keys=ignore_keys,
+                )
+            )
+        for key, act_value in actual.items():
+            if key in ignore_keys:
+                continue
+            if key in expected:
+                continue
+            new_path = f"{path}.{key}" if path else str(key)
+            diffs.append({"path": new_path, "expected": None, "actual": act_value})
+        return diffs
+    if isinstance(expected, list) and isinstance(actual, list):
+        diffs: List[Dict[str, Any]] = []
+        length = max(len(expected), len(actual))
+        for idx in range(length):
+            new_path = f"{path}[{idx}]" if path else f"[{idx}]"
+            if idx >= len(expected):
+                diffs.append({"path": new_path, "expected": None, "actual": actual[idx]})
+            elif idx >= len(actual):
+                diffs.append({"path": new_path, "expected": expected[idx], "actual": None})
+            else:
+                diffs.extend(
+                    _diff_configs(
+                        expected[idx],
+                        actual[idx],
+                        new_path,
+                        ignore_keys=ignore_keys,
+                    )
+                )
+        return diffs
+    if expected != actual:
+        return [
+            {
+                "path": path or ".",
+                "expected": expected,
+                "actual": actual,
+            }
+        ]
+    return []
+
+
+def _diff_path_port_number(path: str) -> Optional[int]:
+    match = re.search(r"(?:port|ports|ge-|xe-|et-).*?(\d+)$", path.lower())
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+    tokens = re.findall(r"(\d+)", path)
+    for token in reversed(tokens):
+        try:
+            return int(token)
+        except ValueError:
+            continue
+    return None
+
+
 class ConfigurationOverridesCheck(ComplianceCheck):
     id = "configuration_overrides"
     name = "Configuration overrides"
@@ -278,8 +558,12 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                 )
             )
 
+        templates = _gather_switch_templates(context)
+
         for device in context.devices:
             if not isinstance(device, dict):
+                continue
+            if not _is_device_online(device):
                 continue
             device_id = str(device.get("id")) if device.get("id") is not None else None
             device_name = _normalize_site_name(device) or device_id or "device"
@@ -300,28 +584,158 @@ class ConfigurationOverridesCheck(ComplianceCheck):
 
             # Port overrides with exception logic
             port_overrides = _collect_port_overrides(device)
-            if not port_overrides:
-                continue
             access_switch = _is_access_switch(device)
-            for entry in port_overrides:
-                if access_switch and entry.port_number is not None and 0 <= entry.port_number <= self.allowed_access_port_max:
-                    continue
+            port_override_allowed_paths: Set[str] = set()
+            if port_overrides:
+                for entry in port_overrides:
+                    if access_switch and entry.port_number is not None and 0 <= entry.port_number <= self.allowed_access_port_max:
+                        continue
+                    findings.append(
+                        Finding(
+                            site_id=context.site_id,
+                            site_name=context.site_name,
+                            device_id=device_id,
+                            device_name=device_name,
+                            message="Device port override detected.",
+                            details={
+                                "path": entry.path,
+                                "port": entry.port_label,
+                                "port_number": entry.port_number,
+                                "access_switch": access_switch,
+                            },
+                        )
+                    )
+                port_override_allowed_paths = {entry.path for entry in port_overrides}
+
+            template = _resolve_switch_template(device, templates)
+            expected_config = template.config if template else None
+            actual_config = _extract_device_switch_config(device)
+            if expected_config and actual_config:
+                diffs = _diff_configs(
+                    expected_config,
+                    actual_config,
+                    ignore_keys=IGNORED_CONFIG_KEYS,
+                )
+                filtered_diffs: List[Dict[str, Any]] = []
+                for diff in diffs:
+                    path = diff.get("path") or ""
+                    if any(path.startswith(p) for p in port_override_allowed_paths):
+                        continue
+                    port_number = _diff_path_port_number(path)
+                    if (
+                        access_switch
+                        and port_number is not None
+                        and 0 <= port_number <= self.allowed_access_port_max
+                    ):
+                        continue
+                    filtered_diffs.append(diff)
+                if filtered_diffs:
+                    findings.append(
+                        Finding(
+                            site_id=context.site_id,
+                            site_name=context.site_name,
+                            device_id=device_id,
+                            device_name=device_name,
+                            message="Device configuration differs from assigned template.",
+                            details={
+                                "diffs": filtered_diffs,
+                                "template": template.name or template.template_id,
+                            },
+                        )
+                    )
+
+        return findings
+
+
+class DeviceNamingConventionCheck(ComplianceCheck):
+    id = "device_naming_convention"
+    name = "Device naming convention"
+    description = "Ensure switch names follow the region-site-role numbering convention."
+    severity = "warning"
+
+    name_pattern = re.compile(r"^(NA|LA|EU|AP)[A-Z]{3}(AS|CS|WS)\d+$")
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        findings: List[Finding] = []
+        for device in context.devices:
+            if not isinstance(device, dict):
+                continue
+            if not _is_switch(device):
+                continue
+            if not _is_device_online(device):
+                continue
+            device_id = str(device.get("id")) if device.get("id") is not None else None
+            device_name = (
+                (device.get("name") or device.get("hostname") or device.get("device_name") or "")
+                .strip()
+            )
+            if not device_name or not self.name_pattern.fullmatch(device_name):
+                findings.append(
+                    Finding(
+                        site_id=context.site_id,
+                        site_name=context.site_name,
+                        device_id=device_id,
+                        device_name=device_name or device_id or "device",
+                        message="Switch name does not match required convention (e.g., NAWHQAS1).",
+                        details={"expected_pattern": self.name_pattern.pattern},
+                    )
+                )
+        return findings
+
+
+def _collect_device_images(device: Dict[str, Any]) -> List[str]:
+    image_keys = ("images", "pictures", "photos", "image_urls", "image")
+    images: List[str] = []
+    for key in image_keys:
+        value = device.get(key)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str):
+                    text = item.strip()
+                    if text:
+                        images.append(text)
+        elif isinstance(value, dict):
+            for item in value.values():
+                if isinstance(item, str):
+                    text = item.strip()
+                    if text:
+                        images.append(text)
+        elif isinstance(value, str):
+            text = value.strip()
+            if text:
+                images.append(text)
+    return images
+
+
+class DeviceImageInventoryCheck(ComplianceCheck):
+    id = "device_image_inventory"
+    name = "Device image inventory"
+    description = "Ensure each connected device has at least two reference images."
+    severity = "warning"
+
+    minimum_images: int = 2
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        findings: List[Finding] = []
+        for device in context.devices:
+            if not isinstance(device, dict):
+                continue
+            if not _is_device_online(device):
+                continue
+            device_id = str(device.get("id")) if device.get("id") is not None else None
+            device_name = _normalize_site_name(device) or device_id or "device"
+            images = _collect_device_images(device)
+            if len(images) < self.minimum_images:
                 findings.append(
                     Finding(
                         site_id=context.site_id,
                         site_name=context.site_name,
                         device_id=device_id,
                         device_name=device_name,
-                        message="Device port override detected.",
-                        details={
-                            "path": entry.path,
-                            "port": entry.port_label,
-                            "port_number": entry.port_number,
-                            "access_switch": access_switch,
-                        },
+                        message="Device does not have the required number of images.",
+                        details={"count": len(images), "minimum": self.minimum_images},
                     )
                 )
-
         return findings
 
 
@@ -360,6 +774,8 @@ DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
     RequiredSiteVariablesCheck(),
     LabTemplateRestrictionCheck(),
     ConfigurationOverridesCheck(),
+    DeviceNamingConventionCheck(),
+    DeviceImageInventoryCheck(),
 )
 
 
