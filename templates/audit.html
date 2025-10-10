@@ -273,15 +273,27 @@
           resultsContainer.appendChild(errorBox);
         }
 
+        const formatCount = (value) => {
+          const num = typeof value === 'number' ? value : Number(value);
+          return Number.isFinite(num) ? num : 0;
+        };
+        const startedDisplay = data.started_at ? new Date(data.started_at).toLocaleString() : '—';
+        const totalSites = formatCount(data.total_sites);
+        const totalDevices = formatCount(data.total_devices);
+        const totalFindings = formatCount(data.total_findings);
+        const durationDisplay = data.duration_ms != null ? `${formatCount(data.duration_ms)} ms` : '—';
+
         const meta = document.createElement('div');
         meta.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6';
         meta.innerHTML = `
           <h3 class="text-lg font-semibold mb-2">Audit summary</h3>
-          <dl class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
-            <div><dt class="text-slate-500 dark:text-slate-400">Sites audited</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${data.total_sites || 0}</dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Started</dt><dd>${data.started_at ? new Date(data.started_at).toLocaleString() : '—'}</dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Duration</dt><dd>${data.duration_ms != null ? `${data.duration_ms} ms` : '—'}</dd></div>
+          <dl class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+            <div><dt class="text-slate-500 dark:text-slate-400">Started</dt><dd>${startedDisplay}</dd></div>
+            <div><dt class="text-slate-500 dark:text-slate-400">Sites audited</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalSites.toLocaleString()}</dd></div>
+            <div><dt class="text-slate-500 dark:text-slate-400">Devices audited</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalDevices.toLocaleString()}</dd></div>
+            <div><dt class="text-slate-500 dark:text-slate-400">Issues identified</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalFindings.toLocaleString()}</dd></div>
           </dl>
+          <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">Duration: ${durationDisplay}</p>
         `;
         resultsContainer.appendChild(meta);
 

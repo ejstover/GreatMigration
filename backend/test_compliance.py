@@ -794,7 +794,7 @@ def test_site_audit_runner_summarizes_results():
             },
             setting={},
             templates=[],
-            devices=[],
+            devices=[{"id": "dev-1"}, {"id": "dev-2"}],
         ),
         SiteContext(
             site_id="site-6",
@@ -802,12 +802,14 @@ def test_site_audit_runner_summarizes_results():
             site={"variables": {"hubradiusserver": "1.1.1.1"}},
             setting={},
             templates=[],
-            devices=[],
+            devices=[{"id": "dev-3"}],
         ),
     ]
     runner = SiteAuditRunner([RequiredSiteVariablesCheck()])
     result = runner.run(contexts)
     assert result["total_sites"] == 2
+    assert result["total_devices"] == 3
+    assert result["total_findings"] == 4
     checks = result["checks"]
     assert len(checks) == 1
     check = checks[0]

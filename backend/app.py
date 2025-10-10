@@ -979,6 +979,8 @@ def api_audit_run(
             "ok": True,
             "checks": audit_result.get("checks", []),
             "total_sites": audit_result.get("total_sites", 0),
+            "total_devices": audit_result.get("total_devices", 0),
+            "total_findings": audit_result.get("total_findings", 0),
             "errors": errors,
             "sites": [
                 {
@@ -994,10 +996,14 @@ def api_audit_run(
         }
 
         action_logger.info(
-            "user=%s action=audit_run sites=%s errors=%s",
+            "user=%s action=audit_run sites=%s devices=%s issues=%s errors=%s started=%s duration_ms=%s",
             _request_user_label(request),
             len(unique_site_ids),
+            summary["total_devices"],
+            summary["total_findings"],
             len(errors),
+            summary["started_at"],
+            duration_ms,
         )
 
         return summary

@@ -1170,10 +1170,17 @@ class SiteAuditRunner:
     def run(self, contexts: Sequence[SiteContext]) -> Dict[str, Any]:
         results: List[Dict[str, Any]] = []
         total_sites = len(contexts)
+        total_devices = 0
+        for context in contexts:
+            devices = context.devices
+            if isinstance(devices, Sequence) and not isinstance(devices, (str, bytes)):
+                total_devices += len(devices)
+        total_findings = 0
         for check in self.checks:
             check_findings: List[Finding] = []
             for context in contexts:
                 check_findings.extend(check.run(context))
+            total_findings += len(check_findings)
             failing_site_ids = sorted({finding.site_id for finding in check_findings})
             results.append(
                 {
@@ -1189,6 +1196,8 @@ class SiteAuditRunner:
         return {
             "checks": results,
             "total_sites": total_sites,
+            "total_devices": total_devices,
+            "total_findings": total_findings,
         }
 
 
