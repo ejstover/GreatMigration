@@ -589,6 +589,27 @@ def test_env_pattern_loader_handles_double_backslashes(monkeypatch):
     assert pattern.fullmatch("NACHIIDF1AS3")
 
 
+def test_device_naming_convention_reports_sanitized_env_pattern(monkeypatch):
+    monkeypatch.setenv("SWITCH_NAME_REGEX_PATTERN", 'r"^SW-\\d+$"')
+    from compliance import _load_pattern_from_env, DeviceNamingConventionCheck, SiteContext
+
+    pattern = _load_pattern_from_env("SWITCH_NAME_REGEX_PATTERN", None)
+    assert pattern is not None
+
+    ctx = SiteContext(
+        site_id="site-env",
+        site_name="Env Pattern",
+        site={},
+        setting={},
+        templates=[],
+        devices=[{"id": "bad", "name": "BAD", "type": "switch"}],
+    )
+    check = DeviceNamingConventionCheck(switch_pattern=pattern)
+    findings = check.run(ctx)
+    assert len(findings) == 1
+    assert findings[0].details["expected_pattern"] == r"^SW-\d+$"
+
+
 def test_device_documentation_reports_missing_items():
     ctx = SiteContext(
         site_id="site-10",

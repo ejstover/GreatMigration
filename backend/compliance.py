@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import os
 import re
@@ -939,11 +940,25 @@ def _strip_pattern_wrappers(value: str) -> str:
     return value
 
 
+def _literal_eval_pattern(value: str) -> Optional[str]:
+    """Attempt to evaluate quoted patterns such as r"^...$" into plain strings."""
+
+    try:
+        evaluated = ast.literal_eval(value)
+    except (ValueError, SyntaxError):
+        return None
+    return evaluated if isinstance(evaluated, str) else None
+
+
 def _load_pattern_from_env(var_name: str, default: Optional[str]) -> Optional[re.Pattern[str]]:
     raw = os.getenv(var_name)
     candidate = (raw or "").strip()
     if candidate:
-        candidate = _strip_pattern_wrappers(candidate)
+        evaluated = _literal_eval_pattern(candidate)
+        if evaluated is not None:
+            candidate = evaluated
+        else:
+            candidate = _strip_pattern_wrappers(candidate)
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
