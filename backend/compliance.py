@@ -982,11 +982,7 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                     filtered_diffs.append(diff)
                 if filtered_diffs:
                     actions: Optional[List[Dict[str, Any]]] = None
-                    if (
-                        prod_template_applied
-                        and dns_variables_defined
-                        and device_id
-                    ):
+                    if device_id:
                         dns_diff = next(
                             (
                                 diff
@@ -1022,6 +1018,14 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                                                 "device_id": device_id,
                                                 "device_name": device_name,
                                                 "dns_values": dns_values,
+                                                "prechecks": {
+                                                    "template_applied": bool(
+                                                        prod_template_applied
+                                                    ),
+                                                    "dns_variables_defined": bool(
+                                                        dns_variables_defined
+                                                    ),
+                                                },
                                             },
                                         }
                                     ]

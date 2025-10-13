@@ -476,9 +476,14 @@ def test_configuration_overrides_check_includes_dns_fix_action():
     assert action["id"] == CLEAR_DNS_OVERRIDE_ACTION_ID
     assert action["devices"] == [{"site_id": "site-dns", "device_id": "sw-dns"}]
     assert action["metadata"]["dns_values"] == ["10.45.170.17", "10.48.178.1"]
+    prechecks = action["metadata"].get("prechecks")
+    assert prechecks == {
+        "template_applied": True,
+        "dns_variables_defined": True,
+    }
 
 
-def test_configuration_overrides_check_requires_prereqs_for_dns_fix():
+def test_configuration_overrides_check_reports_prereq_status_when_missing():
     ctx = SiteContext(
         site_id="site-missing",
         site_name="Missing Prereqs",
@@ -520,7 +525,13 @@ def test_configuration_overrides_check_requires_prereqs_for_dns_fix():
 
     device_findings = [f for f in findings if f.device_id == "sw-noaction"]
     assert device_findings, "Finding should still be reported"
-    assert not any(f.actions for f in device_findings), "Actions should not be suggested without prerequisites"
+    actions = [action for finding in device_findings for action in (finding.actions or [])]
+    assert actions, "Expected remediation action even when prerequisites missing"
+    prechecks = actions[0]["metadata"].get("prechecks")
+    assert prechecks == {
+        "template_applied": False,
+        "dns_variables_defined": False,
+    }
 
 
 def test_configuration_overrides_check_skips_vc_port_differences():
