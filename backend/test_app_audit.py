@@ -102,5 +102,12 @@ def test_load_site_history_parses_breakdown(tmp_path):
     assert history["West Chicago"].issues_total == 51
     assert history["West Chicago"].devices_total == 30
     assert history["West Chicago"].run_count == 1
+    assert history["West Chicago"].last_audit_at == datetime(2025, 10, 13, 8, 5, 38, 905000)
+    assert len(history["West Chicago"].runs) == 1
+    assert history["West Chicago"].runs[0].issues == 51
+    assert history["West Chicago"].runs[0].devices == 30
+    west_dict = history["West Chicago"].as_dict()
+    assert west_dict["runs"][0]["issues"] == 51
+    assert west_dict["runs"][0]["devices"] == 30
     assert history["Wahpeton"].issues_total == 1
     assert history["Unknown"].run_count == 0
