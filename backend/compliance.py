@@ -121,6 +121,14 @@ def _load_site_variable_list(var_name: str, default: Sequence[str]) -> Tuple[str
     return tuple(filtered or default)
 
 
+def _load_version_list_from_env(var_name: str) -> Tuple[str, ...]:
+    raw = os.getenv(var_name)
+    if raw is None:
+        return ()
+    values = [item.strip() for item in raw.split(",")]
+    return tuple(value for value in values if value)
+
+
 class RequiredSiteVariablesCheck(ComplianceCheck):
     id = "required_site_variables"
     name = "Required site variables"
@@ -519,6 +527,26 @@ def _is_access_point(device: Dict[str, Any]) -> bool:
     if isinstance(model, str) and "ap" in model.lower():
         return True
     return False
+
+
+def _extract_firmware_version(device: Mapping[str, Any]) -> str:
+    """Return a firmware version string from a device payload when possible."""
+
+    candidates: Sequence[Any] = (
+        device.get("firmware_version"),
+        device.get("version"),
+        device.get("ap_fw_version"),
+        device.get("sw_version"),
+    )
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    details = device.get("details")
+    if isinstance(details, Mapping):
+        nested = details.get("version")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+    return ""
 
 
 def _is_device_online(device: Dict[str, Any]) -> bool:
@@ -1443,6 +1471,105 @@ ENV_SWITCH_IMAGE_REQUIREMENT = _load_positive_int_from_env("SW_NUM_IMG", 2)
 ENV_AP_IMAGE_REQUIREMENT = _load_positive_int_from_env("AP_NUM_IMG", 2)
 
 
+class FirmwareManagementCheck(ComplianceCheck):
+    id = "firmware_management"
+    name = "Firmware Management"
+    description = "Ensure switches and access points run approved firmware versions."
+    severity = "warning"
+
+    def __init__(
+        self,
+        allowed_switch_versions: Optional[Sequence[str]] = None,
+        allowed_ap_versions: Optional[Sequence[str]] = None,
+    ) -> None:
+        if allowed_switch_versions is None:
+            allowed_switch_versions = _load_version_list_from_env("STD_SW_VER")
+        if allowed_ap_versions is None:
+            allowed_ap_versions = _load_version_list_from_env("STD_AP_VER")
+        self.allowed_switch_versions: Tuple[str, ...] = tuple(allowed_switch_versions or ())
+        self.allowed_ap_versions: Tuple[str, ...] = tuple(allowed_ap_versions or ())
+        self._allowed_switch_set = {value for value in self.allowed_switch_versions}
+        self._allowed_ap_set = {value for value in self.allowed_ap_versions}
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        if not self.allowed_switch_versions and not self.allowed_ap_versions:
+            return []
+
+        findings: List[Finding] = []
+        for device in context.devices:
+            if not isinstance(device, Mapping):
+                continue
+
+            device_dict = device if isinstance(device, dict) else dict(device)
+
+            device_type: Optional[str] = None
+            allowed_versions: Tuple[str, ...]
+            allowed_set: Set[str]
+
+            if self.allowed_switch_versions and _is_switch(device_dict):
+                device_type = "Switch"
+                allowed_versions = self.allowed_switch_versions
+                allowed_set = self._allowed_switch_set
+            elif self.allowed_ap_versions and _is_access_point(device_dict):
+                device_type = "Access point"
+                allowed_versions = self.allowed_ap_versions
+                allowed_set = self._allowed_ap_set
+            else:
+                continue
+
+            version = _extract_firmware_version(device_dict) or ""
+            is_allowed = bool(version) and version in allowed_set
+            if is_allowed:
+                continue
+
+            device_id = str(device_dict.get("id")) if device_dict.get("id") is not None else None
+            name_candidates: Sequence[Any] = (
+                device_dict.get("name"),
+                device_dict.get("hostname"),
+                device_dict.get("device_name"),
+                device_dict.get("mac"),
+                device_id,
+            )
+            device_name = next(
+                (str(value).strip() for value in name_candidates if isinstance(value, str) and value.strip()),
+                None,
+            )
+            if not device_name:
+                device_name = device_id or device_type or "device"
+
+            allowed_text = ", ".join(allowed_versions)
+            if version:
+                message = (
+                    f"{device_type} '{device_name}' is running firmware version '{version}' "
+                    f"which is not in the approved list ({allowed_text})."
+                )
+            else:
+                message = (
+                    f"{device_type} '{device_name}' does not report a firmware version. "
+                    f"Approved versions: {allowed_text}."
+                )
+
+            details = {
+                "device_type": device_type,
+                "model": device_dict.get("model"),
+                "version": version or None,
+                "allowed_versions": list(allowed_versions),
+            }
+
+            findings.append(
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    device_id=device_id,
+                    device_name=device_name,
+                    message=message,
+                    details=details,
+                )
+            )
+
+        return findings
+
+
 class DeviceNamingConventionCheck(ComplianceCheck):
     id = "device_naming_convention"
     name = "Device naming convention"
@@ -1671,6 +1798,7 @@ class SiteAuditRunner:
             site_devices[context.site_id] = count
         total_findings = 0
         site_findings: Dict[str, int] = {context.site_id: 0 for context in contexts}
+        total_quick_fix_issues = 0
         for check in self.checks:
             check.prepare_run()
             check_findings: List[Finding] = []
@@ -1681,6 +1809,18 @@ class SiteAuditRunner:
                     site_findings_for_check
                 )
             total_findings += len(check_findings)
+            for finding in check_findings:
+                actions = finding.actions or []
+                for action in actions:
+                    if not isinstance(action, Mapping):
+                        continue
+                    label_value = action.get("button_label")
+                    if label_value is None:
+                        continue
+                    label_text = str(label_value).strip().lower()
+                    if label_text == "1 click fix now":
+                        total_quick_fix_issues += 1
+                        break
             failing_site_ids = sorted({finding.site_id for finding in check_findings})
             actions = check.suggest_actions(contexts, check_findings) or []
             results.append(
@@ -1700,6 +1840,7 @@ class SiteAuditRunner:
             "total_sites": total_sites,
             "total_devices": total_devices,
             "total_findings": total_findings,
+            "total_quick_fix_issues": total_quick_fix_issues,
             "site_findings": site_findings,
             "site_devices": site_devices,
         }
@@ -1709,6 +1850,7 @@ DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
     RequiredSiteVariablesCheck(),
     SwitchTemplateConfigurationCheck(),
     ConfigurationOverridesCheck(),
+    FirmwareManagementCheck(),
     DeviceNamingConventionCheck(),
     DeviceDocumentationCheck(),
 )

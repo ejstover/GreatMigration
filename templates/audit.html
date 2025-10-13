@@ -481,6 +481,16 @@
         return badge;
       }
 
+      function createGuideLink(href, label) {
+        const link = document.createElement('a');
+        link.href = href;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.className = 'text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50';
+        link.textContent = label;
+        return link;
+      }
+
       function renderFindings(list, severity) {
         if (!list.length) {
           const ok = document.createElement('div');
@@ -582,17 +592,19 @@
         const totalSites = formatCount(data.total_sites);
         const totalDevices = formatCount(data.total_devices);
         const totalFindings = formatCount(data.total_findings);
+        const totalQuickFixes = formatCount(data.total_quick_fix_issues);
         const durationDisplay = data.duration_ms != null ? `${formatCount(data.duration_ms)} ms` : '—';
 
         const meta = document.createElement('div');
         meta.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6';
         meta.innerHTML = `
           <h3 class="text-lg font-semibold mb-2">Audit summary</h3>
-          <dl class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+          <dl class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-sm">
             <div><dt class="text-slate-500 dark:text-slate-400">Started</dt><dd>${startedDisplay}</dd></div>
             <div><dt class="text-slate-500 dark:text-slate-400">Sites audited</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalSites.toLocaleString()}</dd></div>
             <div><dt class="text-slate-500 dark:text-slate-400">Devices audited</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalDevices.toLocaleString()}</dd></div>
             <div><dt class="text-slate-500 dark:text-slate-400">Issues identified</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalFindings.toLocaleString()}</dd></div>
+            <div><dt class="text-slate-500 dark:text-slate-400">1 Click Fix Now issues</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalQuickFixes.toLocaleString()}</dd></div>
           </dl>
           <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">Duration: ${durationDisplay}</p>
         `;
@@ -647,8 +659,21 @@
           controls.className = 'flex items-center gap-2';
           controls.appendChild(badge);
 
+          let customControlsHandled = false;
+          if (check.id === 'firmware_management') {
+            customControlsHandled = true;
+            controls.appendChild(createGuideLink(
+              'https://www.juniper.net/documentation/us/en/software/mist/mist-wireless/topics/task/ap-firmware-upgrade-manual.html',
+              'AP firmware upgrade guide'
+            ));
+            controls.appendChild(createGuideLink(
+              'https://www.juniper.net/documentation/us/en/software/mist/mist-wired/topics/topic-map/switch-upgrade-map.html',
+              'Switch upgrade guide'
+            ));
+          }
+
           const actions = Array.isArray(check.actions) ? check.actions : [];
-          if (canUseFixes && actions.length) {
+          if (!customControlsHandled && canUseFixes && actions.length) {
             actions.forEach(action => {
               if (!action) {
                 return;

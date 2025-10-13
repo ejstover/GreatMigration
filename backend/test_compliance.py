@@ -2,9 +2,12 @@ import pytest
 
 from compliance import (
     SiteContext,
+    Finding,
+    ComplianceCheck,
     RequiredSiteVariablesCheck,
     SwitchTemplateConfigurationCheck,
     ConfigurationOverridesCheck,
+    FirmwareManagementCheck,
     DeviceNamingConventionCheck,
     DeviceDocumentationCheck,
     SiteAuditRunner,
@@ -346,6 +349,75 @@ def test_configuration_overrides_check_detects_template_differences():
 
     access2_findings = [f for f in findings if f.device_id == "access2" and "differs" in f.message]
     assert access2_findings, "Access switch IP violations should be reported"
+
+
+def test_firmware_management_check_flags_unapproved_versions(monkeypatch):
+    monkeypatch.setenv("STD_SW_VER", "20.4R3-S4,22.1R1")
+    monkeypatch.setenv("STD_AP_VER", "16.0.2")
+
+    ctx = SiteContext(
+        site_id="site-fw",
+        site_name="Firmware Site",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-1", "name": "Switch 1", "type": "switch", "firmware_version": "20.1R1"},
+            {"id": "ap-1", "name": "AP-1", "type": "ap", "version": "15.0.0"},
+            {"id": "ap-2", "name": "AP-2", "type": "ap", "version": "16.0.2"},
+        ],
+    )
+
+    check = FirmwareManagementCheck()
+    findings = check.run(ctx)
+
+    assert len(findings) == 2
+    messages = {finding.message for finding in findings}
+    assert any("Switch 'Switch 1'" in message for message in messages)
+    assert any("AP-1" in message and "15.0.0" in message for message in messages)
+    for finding in findings:
+        assert finding.details
+        assert finding.details.get("allowed_versions")
+
+
+def test_firmware_management_check_allows_approved_versions(monkeypatch):
+    monkeypatch.setenv("STD_SW_VER", "20.4R3-S4")
+    monkeypatch.setenv("STD_AP_VER", "16.0.2")
+
+    ctx = SiteContext(
+        site_id="site-fw-pass",
+        site_name="Firmware Pass",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-pass", "name": "Switch Pass", "type": "switch", "firmware_version": "20.4R3-S4"},
+            {"id": "ap-pass", "name": "AP Pass", "type": "ap", "version": "16.0.2"},
+        ],
+    )
+
+    check = FirmwareManagementCheck()
+    assert check.run(ctx) == []
+
+
+def test_firmware_management_check_skips_when_unconfigured(monkeypatch):
+    monkeypatch.delenv("STD_SW_VER", raising=False)
+    monkeypatch.delenv("STD_AP_VER", raising=False)
+
+    ctx = SiteContext(
+        site_id="site-fw-empty",
+        site_name="Firmware Empty",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-empty", "name": "Switch Empty", "type": "switch", "firmware_version": "18.4R1"},
+            {"id": "ap-empty", "name": "AP Empty", "type": "ap", "version": "12.0.0"},
+        ],
+    )
+
+    check = FirmwareManagementCheck()
+    assert check.run(ctx) == []
 
 
 def test_configuration_overrides_check_includes_offline_devices():
@@ -1216,6 +1288,7 @@ def test_site_audit_runner_summarizes_results():
     assert result["total_sites"] == 2
     assert result["total_devices"] == 3
     assert result["total_findings"] == 4
+    assert result["total_quick_fix_issues"] == 0
     assert result["site_findings"] == {"site-5": 0, "site-6": 4}
     assert result["site_devices"] == {"site-5": 2, "site-6": 1}
     checks = result["checks"]
@@ -1224,3 +1297,49 @@ def test_site_audit_runner_summarizes_results():
     assert check["failing_sites"] == ["site-6"]
     assert check["passing_sites"] == 1
     assert check.get("actions") == []
+
+
+def test_site_audit_runner_counts_quick_fix_findings():
+    contexts = [
+        SiteContext(
+            site_id="site-quick-1",
+            site_name="Quick 1",
+            site={},
+            setting={},
+            templates=[],
+            devices=[],
+        ),
+        SiteContext(
+            site_id="site-quick-2",
+            site_name="Quick 2",
+            site={},
+            setting={},
+            templates=[],
+            devices=[],
+        ),
+    ]
+
+    class QuickFixCheck(ComplianceCheck):
+        id = "quick-fix"
+        name = "Quick fix"
+
+        def run(self, context: SiteContext):
+            return [
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    message="Auto-remediation available.",
+                    actions=[
+                        {
+                            "id": "quick-fix-action",
+                            "button_label": "1 Click Fix Now",
+                        }
+                    ],
+                )
+            ]
+
+    runner = SiteAuditRunner([QuickFixCheck()])
+    result = runner.run(contexts)
+
+    assert result["total_findings"] == 2
+    assert result["total_quick_fix_issues"] == 2
