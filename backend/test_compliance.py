@@ -5,11 +5,39 @@ from compliance import (
     RequiredSiteVariablesCheck,
     SwitchTemplateConfigurationCheck,
     ConfigurationOverridesCheck,
+    FirmwareManagementCheck,
     DeviceNamingConventionCheck,
     DeviceDocumentationCheck,
     SiteAuditRunner,
     DEFAULT_REQUIRED_SITE_VARIABLES,
+    DNS_OVERRIDE_TEMPLATE_NAME,
+    DNS_OVERRIDE_LAB_TEMPLATE_NAME,
+    DNS_OVERRIDE_PROD_TEMPLATE_IDS,
+    DNS_OVERRIDE_LAB_TEMPLATE_IDS,
+    DNS_OVERRIDE_REQUIRED_VAR_GROUPS,
+    DNS_OVERRIDE_REQUIRED_VARS,
 )
+from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
+
+
+def _format_dns_label_group(options):
+    values = [opt for opt in options if isinstance(opt, str) and opt]
+    if not values:
+        return ""
+    if len(values) == 1:
+        return values[0]
+    if len(values) == 2:
+        return f"{values[0]} or {values[1]}"
+    return ", ".join(values[:-1]) + f", or {values[-1]}"
+
+
+def _expected_dns_labels():
+    labels = []
+    for group in DNS_OVERRIDE_REQUIRED_VAR_GROUPS:
+        label = _format_dns_label_group(group)
+        if label:
+            labels.append(label)
+    return labels
 
 
 def test_required_site_variables_check_flags_missing():
@@ -321,6 +349,75 @@ def test_configuration_overrides_check_detects_template_differences():
     assert access2_findings, "Access switch IP violations should be reported"
 
 
+def test_firmware_management_check_flags_unapproved_versions(monkeypatch):
+    monkeypatch.setenv("STD_SW_VER", "20.4R3-S4,22.1R1")
+    monkeypatch.setenv("STD_AP_VER", "16.0.2")
+
+    ctx = SiteContext(
+        site_id="site-fw",
+        site_name="Firmware Site",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-1", "name": "Switch 1", "type": "switch", "firmware_version": "20.1R1"},
+            {"id": "ap-1", "name": "AP-1", "type": "ap", "version": "15.0.0"},
+            {"id": "ap-2", "name": "AP-2", "type": "ap", "version": "16.0.2"},
+        ],
+    )
+
+    check = FirmwareManagementCheck()
+    findings = check.run(ctx)
+
+    assert len(findings) == 2
+    messages = {finding.message for finding in findings}
+    assert any("Switch 'Switch 1'" in message for message in messages)
+    assert any("AP-1" in message and "15.0.0" in message for message in messages)
+    for finding in findings:
+        assert finding.details
+        assert finding.details.get("allowed_versions")
+
+
+def test_firmware_management_check_allows_approved_versions(monkeypatch):
+    monkeypatch.setenv("STD_SW_VER", "20.4R3-S4")
+    monkeypatch.setenv("STD_AP_VER", "16.0.2")
+
+    ctx = SiteContext(
+        site_id="site-fw-pass",
+        site_name="Firmware Pass",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-pass", "name": "Switch Pass", "type": "switch", "firmware_version": "20.4R3-S4"},
+            {"id": "ap-pass", "name": "AP Pass", "type": "ap", "version": "16.0.2"},
+        ],
+    )
+
+    check = FirmwareManagementCheck()
+    assert check.run(ctx) == []
+
+
+def test_firmware_management_check_skips_when_unconfigured(monkeypatch):
+    monkeypatch.delenv("STD_SW_VER", raising=False)
+    monkeypatch.delenv("STD_AP_VER", raising=False)
+
+    ctx = SiteContext(
+        site_id="site-fw-empty",
+        site_name="Firmware Empty",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-empty", "name": "Switch Empty", "type": "switch", "firmware_version": "18.4R1"},
+            {"id": "ap-empty", "name": "AP Empty", "type": "ap", "version": "12.0.0"},
+        ],
+    )
+
+    check = FirmwareManagementCheck()
+    assert check.run(ctx) == []
+
+
 def test_configuration_overrides_check_includes_offline_devices():
     ctx = SiteContext(
         site_id="site-8",
@@ -419,6 +516,211 @@ def test_configuration_overrides_check_flags_map_and_ip_exceptions():
     assert "ip_config.dns" in paths
 
 
+def test_configuration_overrides_check_includes_dns_fix_action():
+    ctx = SiteContext(
+        site_id="site-dns",
+        site_name="DNS Site",
+        site={
+            "variables": {
+                "siteDNS": "dns.example.com",
+                "hubDNSserver1": "10.10.10.1",
+                "hubDNSserver2": "10.10.10.2",
+            },
+            "networktemplate_name": "Prod - Standard Template",
+        },
+        setting={},
+        templates=[
+            {
+                "name": "Prod - Standard Template",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.1.0.2",
+                        "gateway": "10.1.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    }
+                },
+            }
+        ],
+        devices=[
+            {
+                "id": "sw-dns",
+                "name": "Switch DNS",
+                "type": "switch",
+                "template_id": DNS_OVERRIDE_PROD_TEMPLATE_IDS[0],
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.1.0.5",
+                        "gateway": "10.1.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                        "dns": ["10.45.170.17", "10.48.178.1"],
+                    }
+                },
+            }
+        ],
+    )
+
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+
+    device_findings = [f for f in findings if f.device_id == "sw-dns" and f.actions]
+    assert device_findings, "Expected DNS override finding with remediation action"
+
+    action = device_findings[0].actions[0]
+    assert action["id"] == CLEAR_DNS_OVERRIDE_ACTION_ID
+    assert action["devices"] == [{"site_id": "site-dns", "device_id": "sw-dns"}]
+    assert action["metadata"]["dns_values"] == ["10.45.170.17", "10.48.178.1"]
+    prechecks = action["metadata"].get("prechecks")
+    expected_prechecks = {
+        "can_run": True,
+        "site_type": "production",
+        "template_applied": True,
+        "template_name": DNS_OVERRIDE_TEMPLATE_NAME,
+        "allowed_template_names": [DNS_OVERRIDE_TEMPLATE_NAME],
+        "allowed_template_ids": list(DNS_OVERRIDE_PROD_TEMPLATE_IDS),
+        "device_template_id": DNS_OVERRIDE_PROD_TEMPLATE_IDS[0],
+        "dns_variables_defined": True,
+        "required_dns_variables": _expected_dns_labels(),
+        "missing_dns_variables": [],
+        "messages": [],
+    }
+    assert prechecks == expected_prechecks
+
+
+def test_configuration_overrides_check_reports_prereq_status_when_missing():
+    ctx = SiteContext(
+        site_id="site-missing",
+        site_name="Missing Prereqs",
+        site={"variables": {"siteDNS": "dns.example.com"}},
+        setting={},
+        templates=[
+            {
+                "name": "Alternate Template",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.1.0.2",
+                        "gateway": "10.1.0.1",
+                        "netmask": "255.255.255.0",
+                    }
+                },
+            }
+        ],
+        devices=[
+            {
+                "id": "sw-noaction",
+                "name": "Switch No Action",
+                "type": "switch",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.1.0.5",
+                        "gateway": "10.1.0.1",
+                        "netmask": "255.255.255.0",
+                        "dns": ["10.45.170.17"],
+                    }
+                },
+            }
+        ],
+    )
+
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+
+    device_findings = [f for f in findings if f.device_id == "sw-noaction"]
+    assert device_findings, "Finding should still be reported"
+    actions = [action for finding in device_findings for action in (finding.actions or [])]
+    assert actions, "Expected remediation action even when prerequisites missing"
+    prechecks = actions[0]["metadata"].get("prechecks")
+    expected_prechecks = {
+        "can_run": False,
+        "site_type": "production",
+        "template_applied": False,
+        "template_name": DNS_OVERRIDE_TEMPLATE_NAME,
+        "allowed_template_names": [DNS_OVERRIDE_TEMPLATE_NAME],
+        "allowed_template_ids": list(DNS_OVERRIDE_PROD_TEMPLATE_IDS),
+        "device_template_id": None,
+        "dns_variables_defined": False,
+        "required_dns_variables": _expected_dns_labels(),
+        "missing_dns_variables": ["hubDNSserver1", "hubDNSserver2"],
+        "messages": [
+            "Apply 'Prod - Standard Template' template to this site.",
+            "Define site DNS variables: hubDNSserver1, hubDNSserver2.",
+        ],
+    }
+    assert prechecks == expected_prechecks
+
+
+def test_configuration_overrides_check_allows_lab_template_precheck():
+    ctx = SiteContext(
+        site_id="site-lab",
+        site_name="Automation Lab",
+        site={
+            "variables": {
+                "siteDNS": "10.10.10.10",
+                "hubDNSserver1": "10.10.10.11",
+                "hubDNSserver2": "10.10.10.12",
+            }
+        },
+        setting={},
+        templates=[
+            {
+                "id": DNS_OVERRIDE_LAB_TEMPLATE_IDS[0],
+                "name": DNS_OVERRIDE_LAB_TEMPLATE_NAME,
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.2.0.2",
+                        "gateway": "10.2.0.1",
+                        "netmask": "255.255.255.0",
+                    }
+                },
+            }
+        ],
+        devices=[
+            {
+                "id": "lab-sw",
+                "name": "Lab Switch",
+                "type": "switch",
+                "template_id": DNS_OVERRIDE_LAB_TEMPLATE_IDS[0],
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.2.0.5",
+                        "gateway": "10.2.0.1",
+                        "netmask": "255.255.255.0",
+                        "dns": ["9.9.9.9"],
+                    }
+                },
+            }
+        ],
+    )
+
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+
+    device_findings = [f for f in findings if f.device_id == "lab-sw" and f.actions]
+    assert device_findings, "Expected remediation action for lab site"
+
+    action = device_findings[0].actions[0]
+    prechecks = action["metadata"].get("prechecks")
+    assert prechecks["can_run"] is True
+    assert prechecks["site_type"] == "lab"
+    assert prechecks["template_applied"] is True
+    assert DNS_OVERRIDE_LAB_TEMPLATE_NAME in prechecks["allowed_template_names"]
+    assert DNS_OVERRIDE_TEMPLATE_NAME in prechecks["allowed_template_names"]
+    expected_allowed_ids = sorted(set(DNS_OVERRIDE_LAB_TEMPLATE_IDS + DNS_OVERRIDE_PROD_TEMPLATE_IDS))
+    assert sorted(prechecks["allowed_template_ids"]) == expected_allowed_ids
+    assert prechecks["device_template_id"] == DNS_OVERRIDE_LAB_TEMPLATE_IDS[0]
+    assert prechecks["dns_variables_defined"] is True
+    assert prechecks["required_dns_variables"] == _expected_dns_labels()
+    assert prechecks["missing_dns_variables"] == []
+    assert prechecks["messages"] == []
+
+
 def test_configuration_overrides_check_skips_vc_port_differences():
     ctx = SiteContext(
         site_id="site-10",
@@ -502,6 +804,8 @@ def test_configuration_overrides_check_allows_wan_mgmt_and_oob_blocks():
                         "ip": "10.20.20.20",
                         "gateway": "10.20.20.1",
                         "netmask": "255.255.255.0",
+                        "use_mgmt_vrf": True,
+                        "use_mgmt_vrf_for_host_out": False,
                     },
                 },
             }
@@ -570,6 +874,61 @@ def test_configuration_overrides_check_flags_unexpected_wan_fields():
     )
 
 
+def test_configuration_overrides_check_flags_invalid_wan_oob_config():
+    ctx = SiteContext(
+        site_id="site-12b",
+        site_name="WAN Site Invalid OOB",
+        site={},
+        setting={},
+        templates=[
+            {
+                "id": "tmpl-1",
+                "name": "Standard",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.0.0.2",
+                        "gateway": "10.0.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    }
+                },
+            }
+        ],
+        devices=[
+            {
+                "id": "wan3",
+                "name": "WAN Switch Invalid",
+                "role": "WAN",
+                "status": "connected",
+                "switch_template_id": "tmpl-1",
+                "switch_config": {
+                    "oob_ip_config": {
+                        "type": "dhcp",
+                        "ip": "",
+                        "gateway": None,
+                        "netmask": "",
+                        "use_mgmt_vrf": False,
+                        "use_mgmt_vrf_for_host_out": True,
+                    }
+                },
+            }
+        ],
+    )
+
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+    wan_findings = [f for f in findings if f.device_id == "wan3"]
+    assert wan_findings, "WAN device with invalid OOB config should be flagged"
+    diff_paths = {
+        diff.get("path")
+        for finding in wan_findings
+        for diff in (finding.details or {}).get("diffs", [])
+    }
+    assert "oob_ip_config.type" in diff_paths
+    assert "oob_ip_config.use_mgmt_vrf" in diff_paths
+    assert "oob_ip_config.use_mgmt_vrf_for_host_out" in diff_paths
+
 def test_device_naming_convention_enforces_pattern():
     ctx = SiteContext(
         site_id="site-9",
@@ -589,7 +948,7 @@ def test_device_naming_convention_enforces_pattern():
     check = DeviceNamingConventionCheck()
     findings = check.run(ctx)
     ids = {f.device_id for f in findings}
-    assert ids == {"bad1", "bad2"}
+    assert ids == {"bad1", "bad2", "ignore1"}
     for finding in findings:
         assert finding.details and "expected_pattern" in finding.details
 
@@ -614,6 +973,31 @@ def test_device_naming_convention_respects_custom_patterns():
         ("switch-bad", r"^SW-\d+$"),
         ("ap-bad", r"^AP-\d+$"),
     }
+
+
+def test_device_naming_convention_provides_ap_fix_action():
+    ctx = SiteContext(
+        site_id="site-9c",
+        site_name="Naming Site Actions",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "ap-1", "name": "BadAP", "type": "ap", "status": "connected"},
+            {"id": "switch-1", "name": "NAABCMDFAS1", "type": "switch", "status": "connected"},
+        ],
+    )
+    check = DeviceNamingConventionCheck()
+    check.prepare_run()
+    findings = check.run(ctx)
+    assert {f.device_id for f in findings} == {"ap-1"}
+    assert findings[0].actions, "Expected per-device action"
+    action = findings[0].actions[0]
+    assert action["id"] == AP_RENAME_ACTION_ID
+    assert action["site_ids"] == ["site-9c"]
+    assert action["devices"] == [{"site_id": "site-9c", "device_id": "ap-1"}]
+    actions = check.suggest_actions([ctx], findings)
+    assert actions == []
 
 
 @pytest.mark.parametrize(
@@ -909,3 +1293,4 @@ def test_site_audit_runner_summarizes_results():
     check = checks[0]
     assert check["failing_sites"] == ["site-6"]
     assert check["passing_sites"] == 1
+    assert check.get("actions") == []

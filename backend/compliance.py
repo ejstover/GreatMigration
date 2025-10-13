@@ -8,7 +8,9 @@ import os
 import re
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+
+from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
 
 
 @dataclass
@@ -34,6 +36,7 @@ class Finding:
     device_id: Optional[str] = None
     device_name: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
+    actions: Optional[List[Dict[str, Any]]] = None
 
     def as_dict(self, default_severity: str) -> Dict[str, Any]:
         data: Dict[str, Any] = {
@@ -48,6 +51,8 @@ class Finding:
             data["device_name"] = self.device_name
         if self.details is not None:
             data["details"] = self.details
+        if self.actions:
+            data["actions"] = self.actions
         return data
 
 
@@ -59,8 +64,19 @@ class ComplianceCheck:
     description: str = ""
     severity: str = "warning"
 
+    def prepare_run(self) -> None:  # pragma: no cover - hook
+        """Reset any stateful data prior to executing across all sites."""
+
     def run(self, context: SiteContext) -> List[Finding]:  # pragma: no cover - interface
         raise NotImplementedError
+
+    def suggest_actions(
+        self,
+        contexts: Sequence[SiteContext],
+        findings: Sequence[Finding],
+    ) -> List[Dict[str, Any]]:  # pragma: no cover - hook
+        """Return optional auto-remediation actions for the given findings."""
+        return []
 
 
 def _normalize_site_name(site: Dict[str, Any]) -> str:
@@ -103,6 +119,14 @@ def _load_site_variable_list(var_name: str, default: Sequence[str]) -> Tuple[str
     values = [item.strip() for item in raw.split(",")]
     filtered = [value for value in values if value]
     return tuple(filtered or default)
+
+
+def _load_version_list_from_env(var_name: str) -> Tuple[str, ...]:
+    raw = os.getenv(var_name)
+    if raw is None:
+        return ()
+    values = [item.strip() for item in raw.split(",")]
+    return tuple(value for value in values if value)
 
 
 class RequiredSiteVariablesCheck(ComplianceCheck):
@@ -150,6 +174,147 @@ def _collect_template_names(context: SiteContext) -> Set[str]:
             if isinstance(value, str) and value.strip():
                 names.add(value)
     return names
+
+
+def _collect_template_ids(context: SiteContext) -> Set[str]:
+    ids: Set[str] = set()
+    for container in (context.site, context.setting):
+        if not isinstance(container, dict):
+            continue
+        for key in (
+            "networktemplate_id",
+            "network_template_id",
+            "template_id",
+            "switch_template_id",
+        ):
+            value = container.get(key)
+            if isinstance(value, str) and value.strip():
+                ids.add(value)
+    for tmpl in context.templates:
+        if not isinstance(tmpl, dict):
+            continue
+        for key in ("id", "template_id"):
+            value = tmpl.get(key)
+            if isinstance(value, str) and value.strip():
+                ids.add(value)
+    return ids
+
+
+def _resolve_device_template_id(device: Mapping[str, Any]) -> Optional[str]:
+    for key in ("template_id", "switch_template_id"):
+        value = device.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _site_is_lab(site_name: Optional[str]) -> bool:
+    if not site_name:
+        return False
+    return "lab" in site_name.lower()
+
+
+def _format_dns_var_group_label(options: Sequence[str]) -> str:
+    labels = [opt for opt in options if isinstance(opt, str) and opt]
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} or {labels[1]}"
+    return ", ".join(labels[:-1]) + f", or {labels[-1]}"
+
+
+def _evaluate_dns_variable_groups(variables: Mapping[str, Any]) -> Tuple[bool, List[str]]:
+    missing: List[str] = []
+    for group in DNS_OVERRIDE_REQUIRED_VAR_GROUPS:
+        if not any(_has_value(variables.get(name)) for name in group):
+            label = _format_dns_var_group_label(group)
+            if label:
+                missing.append(label)
+    return (not missing, missing)
+
+
+def _expected_template_details(site_name: Optional[str]) -> Dict[str, Any]:
+    is_lab = _site_is_lab(site_name)
+    if is_lab:
+        allowed_names = [
+            name
+            for name in (
+                DNS_OVERRIDE_LAB_TEMPLATE_NAME,
+                DNS_OVERRIDE_TEMPLATE_NAME,
+            )
+            if isinstance(name, str) and name
+        ]
+        allowed_ids: Tuple[str, ...] = tuple(
+            dict.fromkeys(
+                value
+                for value in (
+                    *(DNS_OVERRIDE_LAB_TEMPLATE_IDS or ()),
+                    *(DNS_OVERRIDE_PROD_TEMPLATE_IDS or ()),
+                )
+                if isinstance(value, str) and value
+            )
+        )
+        preferred = DNS_OVERRIDE_LAB_TEMPLATE_NAME or (allowed_names[0] if allowed_names else "")
+    else:
+        allowed_names = [
+            name
+            for name in (
+                DNS_OVERRIDE_TEMPLATE_NAME,
+            )
+            if isinstance(name, str) and name
+        ]
+        allowed_ids = tuple(
+            dict.fromkeys(
+                value
+                for value in (DNS_OVERRIDE_PROD_TEMPLATE_IDS or ())
+                if isinstance(value, str) and value
+            )
+        )
+        preferred = DNS_OVERRIDE_TEMPLATE_NAME
+    return {
+        "site_type": "lab" if is_lab else "production",
+        "allowed_template_names": tuple(allowed_names),
+        "allowed_template_ids": allowed_ids,
+        "preferred_template_name": preferred,
+    }
+
+
+def _template_matches_requirements(
+    template_names: Set[str],
+    template_ids: Set[str],
+    allowed_names: Sequence[str],
+    allowed_ids: Sequence[str],
+    device_template_id: Optional[str],
+) -> bool:
+    normalized_allowed_names = {name for name in allowed_names if isinstance(name, str) and name}
+    normalized_allowed_ids = {tid for tid in allowed_ids if isinstance(tid, str) and tid}
+
+    if device_template_id:
+        value = device_template_id.strip()
+        if value and value in normalized_allowed_ids:
+            return True
+
+    if normalized_allowed_ids and template_ids.intersection(normalized_allowed_ids):
+        return True
+
+    if normalized_allowed_names and template_names.intersection(normalized_allowed_names):
+        return True
+
+    return False
+
+
+def _format_template_precheck_message(allowed_names: Sequence[str]) -> str:
+    filtered = [name for name in allowed_names if isinstance(name, str) and name]
+    if not filtered:
+        return "Required switch template is not applied to this site."
+    if len(filtered) == 1:
+        return f"Apply '{filtered[0]}' template to this site."
+    if len(filtered) == 2:
+        return f"Apply '{filtered[0]}' or '{filtered[1]}' template to this site."
+    joined = ", ".join(f"'{name}'" for name in filtered[:-1])
+    return f"Apply one of these templates to this site: {joined}, or '{filtered[-1]}'."
 
 
 class SwitchTemplateConfigurationCheck(ComplianceCheck):
@@ -362,6 +527,26 @@ def _is_access_point(device: Dict[str, Any]) -> bool:
     if isinstance(model, str) and "ap" in model.lower():
         return True
     return False
+
+
+def _extract_firmware_version(device: Mapping[str, Any]) -> str:
+    """Return a firmware version string from a device payload when possible."""
+
+    candidates: Sequence[Any] = (
+        device.get("firmware_version"),
+        device.get("version"),
+        device.get("ap_fw_version"),
+        device.get("sw_version"),
+    )
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    details = device.get("details")
+    if isinstance(details, Mapping):
+        nested = details.get("version")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+    return ""
 
 
 def _is_device_online(device: Dict[str, Any]) -> bool:
@@ -668,6 +853,83 @@ def _diff_configs(
             }
         ]
     return []
+
+
+def _evaluate_wan_oob_ip_config(actual: Any) -> List[Dict[str, Any]]:
+    diffs: List[Dict[str, Any]] = []
+
+    def _make_diff(path: str, expected: Any, value: Any) -> Dict[str, Any]:
+        diff: Dict[str, Any] = {
+            "path": path,
+            "expected": expected,
+            "actual": value,
+            "wan_oob_validation": True,
+        }
+        return diff
+
+    if actual is None:
+        diffs.append(
+            _make_diff(
+                "oob_ip_config",
+                "defined static out-of-band management configuration",
+                actual,
+            )
+        )
+        return diffs
+
+    if not isinstance(actual, dict):
+        diffs.append(
+            _make_diff(
+                "oob_ip_config",
+                "dictionary of out-of-band management configuration values",
+                actual,
+            )
+        )
+        return diffs
+
+    type_value = actual.get("type") or actual.get("ip_assignment")
+    type_normalized = str(type_value).strip().lower() if isinstance(type_value, (str, bytes)) else None
+    if type_normalized != "static":
+        diffs.append(
+            _make_diff(
+                "oob_ip_config.type",
+                "static",
+                type_value,
+            )
+        )
+
+    for key in ("ip", "netmask", "gateway"):
+        value = actual.get(key)
+        if not (isinstance(value, str) and value.strip()):
+            diffs.append(
+                _make_diff(
+                    f"oob_ip_config.{key}",
+                    "defined value",
+                    value,
+                )
+            )
+
+    use_mgmt_vrf = actual.get("use_mgmt_vrf")
+    if use_mgmt_vrf is not True:
+        diffs.append(
+            _make_diff(
+                "oob_ip_config.use_mgmt_vrf",
+                True,
+                use_mgmt_vrf,
+            )
+        )
+
+    use_mgmt_host_out = actual.get("use_mgmt_vrf_for_host_out")
+    if use_mgmt_host_out is not False:
+        diffs.append(
+            _make_diff(
+                "oob_ip_config.use_mgmt_vrf_for_host_out",
+                False,
+                use_mgmt_host_out,
+            )
+        )
+
+    return diffs
 def _role_scoped_switch_configs(
     role: Any,
     template_config: Dict[str, Any],
@@ -833,6 +1095,24 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                 )
             )
 
+        template_names = _collect_template_names(context)
+        template_ids = _collect_template_ids(context)
+        site_variables = _collect_site_variables(context)
+        template_details = _expected_template_details(context.site_name)
+        allowed_template_names: Sequence[str] = template_details["allowed_template_names"]
+        allowed_template_ids: Sequence[str] = template_details["allowed_template_ids"]
+        site_type_label: str = template_details["site_type"]
+        preferred_template_name: str = template_details["preferred_template_name"]
+        required_dns_labels = [
+            label
+            for label in (
+                _format_dns_var_group_label(group)
+                for group in DNS_OVERRIDE_REQUIRED_VAR_GROUPS
+            )
+            if label
+        ]
+        dns_variables_defined, missing_dns_labels = _evaluate_dns_variable_groups(site_variables)
+
         templates = _gather_switch_templates(context)
 
         for device in context.devices:
@@ -901,6 +1181,12 @@ class ConfigurationOverridesCheck(ComplianceCheck):
             expected_ip_config = None
             actual_ip_config = None
 
+            actual_oob_config = None
+            if isinstance(actual_config_source, dict):
+                actual_oob_config = actual_config_source.get("oob_ip_config")
+            if actual_oob_config is None and isinstance(device, dict):
+                actual_oob_config = device.get("oob_ip_config")
+
             if expected_config_raw and actual_config_source:
                 (
                     filtered_expected,
@@ -929,11 +1215,15 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                 expected_ip_config = expected_config_raw.get("ip_config")
 
             ip_config_diffs: List[Dict[str, Any]] = []
+            wan_oob_diffs: List[Dict[str, Any]] = []
             if expected_config_raw or actual_config_source:
                 ip_config_diffs = _evaluate_ip_config(
                     expected_ip_config if expected_config_raw else None,
                     actual_ip_config if actual_config_source else None,
                 )
+            if is_wan_role:
+                wan_oob_diffs = _evaluate_wan_oob_ip_config(actual_oob_config)
+                ip_config_diffs = []
 
             standard_device_diffs = _collect_standard_device_issues(device)
 
@@ -945,19 +1235,107 @@ class ConfigurationOverridesCheck(ComplianceCheck):
             if standard_device_diffs:
                 combined_diffs.extend(standard_device_diffs)
 
+            if wan_oob_diffs:
+                combined_diffs.extend(wan_oob_diffs)
+
             if combined_diffs:
                 filtered_diffs: List[Dict[str, Any]] = []
                 for diff in combined_diffs:
                     path = diff.get("path") or ""
                     normalized_path = path.lower()
-                    if is_wan_role and any(
-                        normalized_path.startswith(prefix) for prefix in WAN_ALLOWED_CONFIG_PATH_PREFIXES
+                    if is_wan_role and not diff.get("wan_oob_validation") and any(
+                        normalized_path.startswith(prefix)
+                        for prefix in WAN_ALLOWED_CONFIG_PATH_PREFIXES
                     ):
                         continue
                     if any(path.startswith(p) for p in port_override_allowed_paths):
                         continue
                     filtered_diffs.append(diff)
                 if filtered_diffs:
+                    actions: Optional[List[Dict[str, Any]]] = None
+                    if device_id:
+                        dns_diff = next(
+                            (
+                                diff
+                                for diff in filtered_diffs
+                                if isinstance(diff, dict)
+                                and (diff.get("path") or "").lower() == "ip_config.dns"
+                            ),
+                            None,
+                        )
+                        if dns_diff is not None:
+                            actual_dns = dns_diff.get("actual") if isinstance(dns_diff, dict) else None
+                            expected_dns = dns_diff.get("expected") if isinstance(dns_diff, dict) else None
+                            if expected_dns in (None, [], (), "") and isinstance(actual_dns, list):
+                                dns_values = [
+                                    str(value).strip()
+                                    for value in actual_dns
+                                    if isinstance(value, (str, bytes)) and str(value).strip()
+                                ]
+                                if dns_values:
+                                    device_template_id = _resolve_device_template_id(device)
+                                    template_precheck_ok = _template_matches_requirements(
+                                        template_names,
+                                        template_ids,
+                                        allowed_template_names,
+                                        allowed_template_ids,
+                                        device_template_id,
+                                    )
+                                    precheck_messages: List[str] = []
+                                    if not template_precheck_ok:
+                                        precheck_messages.append(
+                                            _format_template_precheck_message(allowed_template_names)
+                                        )
+                                    if not dns_variables_defined:
+                                        if missing_dns_labels:
+                                            precheck_messages.append(
+                                                f"Define site DNS variables: {', '.join(missing_dns_labels)}."
+                                            )
+                                        else:
+                                            precheck_messages.append(
+                                                "Required site DNS variables are missing."
+                                            )
+                                    can_run = template_precheck_ok and dns_variables_defined
+                                    actions = [
+                                        {
+                                            "id": CLEAR_DNS_OVERRIDE_ACTION_ID,
+                                            "label": "Clear DNS override",
+                                            "button_label": "1 Click Fix Now",
+                                            "site_ids": [context.site_id],
+                                            "devices": [
+                                                {
+                                                    "site_id": context.site_id,
+                                                    "device_id": device_id,
+                                                }
+                                            ],
+                                            "metadata": {
+                                                "device_id": device_id,
+                                                "device_name": device_name,
+                                                "dns_values": dns_values,
+                                                "prechecks": {
+                                                    "can_run": can_run,
+                                                    "site_type": site_type_label,
+                                                    "template_applied": bool(
+                                                        template_precheck_ok
+                                                    ),
+                                                    "template_name": preferred_template_name,
+                                                    "allowed_template_names": list(
+                                                        allowed_template_names
+                                                    ),
+                                                    "allowed_template_ids": list(
+                                                        allowed_template_ids
+                                                    ),
+                                                    "device_template_id": device_template_id,
+                                                    "dns_variables_defined": bool(
+                                                        dns_variables_defined
+                                                    ),
+                                                    "required_dns_variables": required_dns_labels,
+                                                    "missing_dns_variables": missing_dns_labels,
+                                                    "messages": precheck_messages,
+                                                },
+                                            },
+                                        }
+                                    ]
                     template_label = None
                     if template:
                         template_label = template.name or template.template_id
@@ -972,6 +1350,7 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                                 "diffs": filtered_diffs,
                                 **({"template": template_label} if template_label else {}),
                             },
+                            actions=actions,
                         )
                     )
 
@@ -981,6 +1360,24 @@ class ConfigurationOverridesCheck(ComplianceCheck):
 DEFAULT_SWITCH_NAME_PATTERN = (
     r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDFSPARE|MDF(AS|CS|WS)\d+|IDF\d+(AS|CS|WS)\d+)$"
 )
+
+DEFAULT_AP_NAME_PATTERN = r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDF|IDF\d+)AP\d+$"
+
+
+DNS_OVERRIDE_TEMPLATE_NAME = "Prod - Standard Template"
+DNS_OVERRIDE_LAB_TEMPLATE_NAME = "Test - Standard Template"
+DNS_OVERRIDE_PROD_TEMPLATE_IDS: Tuple[str, ...] = (
+    "35413d62-89d5-45f7-a5dd-9d7e2ed31a23",
+)
+DNS_OVERRIDE_LAB_TEMPLATE_IDS: Tuple[str, ...] = (
+    "40928180-ea55-48c5-9055-f34c1fe1033a",
+)
+DNS_OVERRIDE_REQUIRED_VAR_GROUPS: Tuple[Tuple[str, ...], ...] = (
+    ("siteDNS", "siteDNSserver"),
+    ("hubDNSserver1",),
+    ("hubDNSserver2",),
+)
+DNS_OVERRIDE_REQUIRED_VARS: Tuple[str, ...] = tuple(group[0] for group in DNS_OVERRIDE_REQUIRED_VAR_GROUPS)
 
 
 def _strip_pattern_wrappers(value: str) -> str:
@@ -1051,7 +1448,7 @@ def _ensure_pattern(
 
 
 ENV_SWITCH_NAME_PATTERN = _load_pattern_from_env("SWITCH_NAME_REGEX_PATTERN", DEFAULT_SWITCH_NAME_PATTERN)
-ENV_AP_NAME_PATTERN = _load_pattern_from_env("AP_NAME_REGEX_PATTERN", None)
+ENV_AP_NAME_PATTERN = _load_pattern_from_env("AP_NAME_REGEX_PATTERN", DEFAULT_AP_NAME_PATTERN)
 
 
 def _load_positive_int_from_env(var_name: str, default: int) -> int:
@@ -1074,6 +1471,105 @@ ENV_SWITCH_IMAGE_REQUIREMENT = _load_positive_int_from_env("SW_NUM_IMG", 2)
 ENV_AP_IMAGE_REQUIREMENT = _load_positive_int_from_env("AP_NUM_IMG", 2)
 
 
+class FirmwareManagementCheck(ComplianceCheck):
+    id = "firmware_management"
+    name = "Firmware Management"
+    description = "Ensure switches and access points run approved firmware versions."
+    severity = "warning"
+
+    def __init__(
+        self,
+        allowed_switch_versions: Optional[Sequence[str]] = None,
+        allowed_ap_versions: Optional[Sequence[str]] = None,
+    ) -> None:
+        if allowed_switch_versions is None:
+            allowed_switch_versions = _load_version_list_from_env("STD_SW_VER")
+        if allowed_ap_versions is None:
+            allowed_ap_versions = _load_version_list_from_env("STD_AP_VER")
+        self.allowed_switch_versions: Tuple[str, ...] = tuple(allowed_switch_versions or ())
+        self.allowed_ap_versions: Tuple[str, ...] = tuple(allowed_ap_versions or ())
+        self._allowed_switch_set = {value for value in self.allowed_switch_versions}
+        self._allowed_ap_set = {value for value in self.allowed_ap_versions}
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        if not self.allowed_switch_versions and not self.allowed_ap_versions:
+            return []
+
+        findings: List[Finding] = []
+        for device in context.devices:
+            if not isinstance(device, Mapping):
+                continue
+
+            device_dict = device if isinstance(device, dict) else dict(device)
+
+            device_type: Optional[str] = None
+            allowed_versions: Tuple[str, ...]
+            allowed_set: Set[str]
+
+            if self.allowed_switch_versions and _is_switch(device_dict):
+                device_type = "Switch"
+                allowed_versions = self.allowed_switch_versions
+                allowed_set = self._allowed_switch_set
+            elif self.allowed_ap_versions and _is_access_point(device_dict):
+                device_type = "Access point"
+                allowed_versions = self.allowed_ap_versions
+                allowed_set = self._allowed_ap_set
+            else:
+                continue
+
+            version = _extract_firmware_version(device_dict) or ""
+            is_allowed = bool(version) and version in allowed_set
+            if is_allowed:
+                continue
+
+            device_id = str(device_dict.get("id")) if device_dict.get("id") is not None else None
+            name_candidates: Sequence[Any] = (
+                device_dict.get("name"),
+                device_dict.get("hostname"),
+                device_dict.get("device_name"),
+                device_dict.get("mac"),
+                device_id,
+            )
+            device_name = next(
+                (str(value).strip() for value in name_candidates if isinstance(value, str) and value.strip()),
+                None,
+            )
+            if not device_name:
+                device_name = device_id or device_type or "device"
+
+            allowed_text = ", ".join(allowed_versions)
+            if version:
+                message = (
+                    f"{device_type} '{device_name}' is running firmware version '{version}' "
+                    f"which is not in the approved list ({allowed_text})."
+                )
+            else:
+                message = (
+                    f"{device_type} '{device_name}' does not report a firmware version. "
+                    f"Approved versions: {allowed_text}."
+                )
+
+            details = {
+                "device_type": device_type,
+                "model": device_dict.get("model"),
+                "version": version or None,
+                "allowed_versions": list(allowed_versions),
+            }
+
+            findings.append(
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    device_id=device_id,
+                    device_name=device_name,
+                    message=message,
+                    details=details,
+                )
+            )
+
+        return findings
+
+
 class DeviceNamingConventionCheck(ComplianceCheck):
     id = "device_naming_convention"
     name = "Device naming convention"
@@ -1087,6 +1583,18 @@ class DeviceNamingConventionCheck(ComplianceCheck):
     ) -> None:
         self.switch_pattern = _ensure_pattern(switch_pattern, ENV_SWITCH_NAME_PATTERN)
         self.ap_pattern = _ensure_pattern(ap_pattern, ENV_AP_NAME_PATTERN)
+        self.prepare_run()
+
+    def prepare_run(self) -> None:
+        self._ap_issue_counts: Dict[str, int] = {}
+        self._ap_issue_sites: Dict[str, str] = {}
+
+    def _register_ap_issue(self, context: SiteContext, device_name: str) -> None:
+        site_id = context.site_id
+        self._ap_issue_counts[site_id] = self._ap_issue_counts.get(site_id, 0) + 1
+        if site_id not in self._ap_issue_sites:
+            label = context.site_name or site_id
+            self._ap_issue_sites[site_id] = label
 
     def run(self, context: SiteContext) -> List[Finding]:
         findings: List[Finding] = []
@@ -1096,12 +1604,14 @@ class DeviceNamingConventionCheck(ComplianceCheck):
 
             pattern: Optional[re.Pattern[str]] = None
             label = "Device"
+            is_ap = False
             if _is_switch(device):
                 pattern = self.switch_pattern
                 label = "Switch"
             elif _is_access_point(device):
                 pattern = self.ap_pattern
                 label = "Access point"
+                is_ap = True
 
             if pattern is None:
                 continue
@@ -1120,6 +1630,27 @@ class DeviceNamingConventionCheck(ComplianceCheck):
                 else:
                     message = f"{label} name does not match required convention."
 
+                actions: Optional[List[Dict[str, Any]]] = None
+                if is_ap and device_id and self.ap_pattern:
+                    actions = [
+                        {
+                            "id": AP_RENAME_ACTION_ID,
+                            "label": "Rename access point",
+                            "button_label": "1 Click Fix Now",
+                            "site_ids": [context.site_id],
+                            "devices": [
+                                {
+                                    "site_id": context.site_id,
+                                    "device_id": device_id,
+                                }
+                            ],
+                            "metadata": {
+                                "device_id": device_id,
+                                "current_name": device_name or "",
+                                "expected_pattern": self.ap_pattern.pattern,
+                            },
+                        }
+                    ]
                 findings.append(
                     Finding(
                         site_id=context.site_id,
@@ -1128,9 +1659,19 @@ class DeviceNamingConventionCheck(ComplianceCheck):
                         device_name=device_name or device_id or "device",
                         message=message,
                         details={"expected_pattern": pattern.pattern},
+                        actions=actions,
                     )
                 )
+                if is_ap:
+                    self._register_ap_issue(context, device_name or (device_id or ""))
         return findings
+
+    def suggest_actions(
+        self,
+        contexts: Sequence[SiteContext],
+        findings: Sequence[Finding],
+    ) -> List[Dict[str, Any]]:
+        return []
 
 
 def _collect_device_images(device: Dict[str, Any]) -> List[str]:
@@ -1258,6 +1799,7 @@ class SiteAuditRunner:
         total_findings = 0
         site_findings: Dict[str, int] = {context.site_id: 0 for context in contexts}
         for check in self.checks:
+            check.prepare_run()
             check_findings: List[Finding] = []
             for context in contexts:
                 site_findings_for_check = check.run(context)
@@ -1267,6 +1809,7 @@ class SiteAuditRunner:
                 )
             total_findings += len(check_findings)
             failing_site_ids = sorted({finding.site_id for finding in check_findings})
+            actions = check.suggest_actions(contexts, check_findings) or []
             results.append(
                 {
                     "id": check.id,
@@ -1276,6 +1819,7 @@ class SiteAuditRunner:
                     "findings": [finding.as_dict(check.severity) for finding in check_findings],
                     "failing_sites": failing_site_ids,
                     "passing_sites": max(total_sites - len(failing_site_ids), 0),
+                    "actions": actions,
                 }
             )
         return {
@@ -1292,6 +1836,7 @@ DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
     RequiredSiteVariablesCheck(),
     SwitchTemplateConfigurationCheck(),
     ConfigurationOverridesCheck(),
+    FirmwareManagementCheck(),
     DeviceNamingConventionCheck(),
     DeviceDocumentationCheck(),
 )

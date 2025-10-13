@@ -92,6 +92,7 @@
 
       const userGreeting = document.getElementById('user_greeting');
       const logoutBtn = document.getElementById('logout_btn');
+      let canUseFixes = false;
       fetch('/me').then(res => {
         if (!res.ok) throw new Error('not authed');
         return res.json();
@@ -99,6 +100,7 @@
         const user = data.user || {};
         const name = user.name || 'there';
         const readOnly = Boolean(user.read_only);
+        canUseFixes = Boolean(user.can_push);
         const suffix = readOnly ? ' (read-only)' : '';
         userGreeting.textContent = `Hey ${name}!${suffix}`;
         userGreeting.classList.remove('hidden');
@@ -203,6 +205,268 @@
         auditStatus.className = `text-sm ${isError ? 'text-rose-500 dark:text-rose-300' : 'text-slate-600 dark:text-slate-300'}`;
       }
 
+      function ensureActionStatusElement(button) {
+        if (!button) return null;
+        if (button._actionStatusElement && button._actionStatusElement.isConnected) {
+          return button._actionStatusElement;
+        }
+        const parent = button.parentElement;
+        if (parent) {
+          const candidate = parent.querySelector(':scope > span[data-role="action-status"]');
+          if (candidate) {
+            button._actionStatusElement = candidate;
+            return candidate;
+          }
+        }
+        return null;
+      }
+
+      function applyActionStatus(button, message, isError = false) {
+        const el = ensureActionStatusElement(button);
+        if (!el) return;
+        el.classList.remove('text-emerald-600', 'dark:text-emerald-300', 'text-slate-500', 'dark:text-slate-300', 'text-rose-600', 'dark:text-rose-300');
+        const text = typeof message === 'string' ? message.trim() : '';
+        if (text) {
+          el.textContent = text;
+          if (isError) {
+            el.classList.add('text-rose-600', 'dark:text-rose-300');
+          } else {
+            el.classList.add('text-slate-500', 'dark:text-slate-300');
+          }
+          el.classList.remove('hidden');
+        } else {
+          el.textContent = '';
+          el.classList.add('hidden');
+        }
+      }
+
+      function setInitialActionStatus(button, message, isError = false) {
+        if (!button) return;
+        button._initialActionStatus = {
+          message: typeof message === 'string' ? message : '',
+          isError: Boolean(isError),
+        };
+        applyActionStatus(button, button._initialActionStatus.message, button._initialActionStatus.isError);
+      }
+
+      function resetActionStatus(button) {
+        if (!button) return;
+        const initial = button._initialActionStatus || { message: '', isError: false };
+        applyActionStatus(button, initial.message, initial.isError);
+      }
+
+      function evaluateActionPrechecks(action) {
+        const result = { messages: [], canRun: true };
+        if (!action || typeof action !== 'object') {
+          return result;
+        }
+        const metadata = action.metadata;
+        if (!metadata || typeof metadata !== 'object') {
+          return result;
+        }
+        const prechecks = metadata.prechecks;
+        if (!prechecks || typeof prechecks !== 'object') {
+          return result;
+        }
+
+        if (prechecks.can_run === false) {
+          result.canRun = false;
+        }
+        if (prechecks.template_applied === false) {
+          result.canRun = false;
+        }
+        if (prechecks.dns_variables_defined === false) {
+          result.canRun = false;
+        }
+
+        const baseMessages = Array.isArray(prechecks.messages)
+          ? prechecks.messages.filter(msg => typeof msg === 'string' && msg.trim())
+          : [];
+        if (baseMessages.length) {
+          result.messages = baseMessages.map(msg => msg.trim());
+          return result;
+        }
+
+        const allowedTemplateNames = Array.isArray(prechecks.allowed_template_names)
+          ? prechecks.allowed_template_names.filter(name => typeof name === 'string' && name.trim())
+          : [];
+        const templateName = typeof prechecks.template_name === 'string' && prechecks.template_name.trim()
+          ? prechecks.template_name.trim()
+          : null;
+        if (prechecks.template_applied === false) {
+          if (allowedTemplateNames.length === 1) {
+            result.messages.push(`Apply '${allowedTemplateNames[0]}' template to this site.`);
+          } else if (allowedTemplateNames.length > 1) {
+            const last = allowedTemplateNames[allowedTemplateNames.length - 1];
+            const rest = allowedTemplateNames.slice(0, -1).map(name => `'${name}'`).join(', ');
+            result.messages.push(`Apply one of these templates to this site: ${rest ? rest + ', ' : ''}'${last}'.`);
+          } else if (templateName) {
+            result.messages.push(`Apply '${templateName}' template to this site.`);
+          } else {
+            result.messages.push('Required switch template is not applied to this site.');
+          }
+        }
+
+        if (prechecks.dns_variables_defined === false) {
+          const missing = Array.isArray(prechecks.missing_dns_variables)
+            ? prechecks.missing_dns_variables.filter(value => typeof value === 'string' && value.trim())
+            : [];
+          if (missing.length) {
+            result.messages.push(`Define site DNS variables: ${missing.join(', ')}.`);
+          } else {
+            const required = Array.isArray(prechecks.required_dns_variables)
+              ? prechecks.required_dns_variables.filter(value => typeof value === 'string' && value.trim())
+              : [];
+            if (required.length) {
+              result.messages.push(`Define site DNS variables: ${required.join(', ')}.`);
+            } else {
+              result.messages.push('Required site DNS variables are missing.');
+            }
+          }
+        }
+
+        if (!result.messages.length && result.canRun === false) {
+          result.messages.push('This 1 Click Fix cannot run until the prerequisites are met.');
+        }
+
+        return result;
+      }
+
+      async function runOneClickFix(action, button) {
+        if (!action || !action.id) {
+          showStatus('Unable to start 1 Click Fix (missing action id).', true);
+          return;
+        }
+        const deviceTargets = Array.isArray(action.devices)
+          ? action.devices.filter(item => item && item.site_id && item.device_id)
+          : [];
+        const deviceIdSet = new Set(deviceTargets.map(item => String(item.device_id)).filter(Boolean));
+        let siteIds = Array.isArray(action.site_ids)
+          ? action.site_ids.filter(siteId => typeof siteId === 'string' && siteId)
+          : [];
+        if (!siteIds.length && deviceTargets.length) {
+          siteIds = Array.from(new Set(deviceTargets.map(item => item.site_id).filter(Boolean)));
+        }
+        if (!siteIds.length) {
+          showStatus('No sites are eligible for this 1 Click Fix.', true);
+          return;
+        }
+
+        const originalLabel = button ? button.textContent : '';
+        const originalDisabled = button ? button.disabled : false;
+        if (button) {
+          resetActionStatus(button);
+          button.disabled = true;
+          button.textContent = 'Running…';
+        }
+        showStatus('Running 1 Click Fix…');
+
+        try {
+          const response = await fetch('/api/audit/fix', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action_id: action.id,
+              site_ids: siteIds,
+              devices: deviceTargets,
+            }),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ok) {
+            const message = (data && (data.error || data.message)) || '1 Click Fix failed.';
+            showStatus(message, true);
+            if (button) {
+              applyActionStatus(button, message, true);
+            }
+            return;
+          }
+
+          const totals = data.totals || {};
+          const updated = Number.isFinite(totals.updated)
+            ? totals.updated
+            : (Number.isFinite(totals.renamed) ? totals.renamed : 0);
+          const failed = Number.isFinite(totals.failed) ? totals.failed : 0;
+          const siteCount = Number.isFinite(totals.sites) ? totals.sites : siteIds.length;
+          const summaryDetails = [];
+          const summaryText = typeof totals.summary === 'string' ? totals.summary.trim() : '';
+          if (summaryText) {
+            summaryDetails.push(summaryText);
+          } else if (updated) {
+            summaryDetails.push(`Updated ${updated} device${updated === 1 ? '' : 's'}`);
+          } else {
+            summaryDetails.push('No changes were required');
+          }
+          summaryDetails.push(`across ${siteCount} site${siteCount === 1 ? '' : 's'}`);
+          if (failed) {
+            summaryDetails.push(`(${failed} device${failed === 1 ? '' : 's'} could not be updated)`);
+          }
+          showStatus(`1 Click Fix completed: ${summaryDetails.join(' ')}.`, false);
+
+          if (button) {
+            const results = Array.isArray(data.results) ? data.results : [];
+            const siteIdSet = new Set(siteIds.map(siteId => String(siteId)));
+            const errorMessages = [];
+            const infoMessages = [];
+            results.forEach(summary => {
+              if (!summary || typeof summary !== 'object') {
+                return;
+              }
+              const summarySiteId = summary.site_id != null ? String(summary.site_id) : null;
+              if (!summarySiteId || !siteIdSet.has(summarySiteId)) {
+                return;
+              }
+              const summaryErrors = Array.isArray(summary.errors) ? summary.errors : [];
+              summaryErrors.forEach(err => {
+                if (err && typeof err.reason === 'string' && err.reason.trim()) {
+                  errorMessages.push(err.reason.trim());
+                }
+              });
+              if (summaryErrors.length) {
+                return;
+              }
+              if (!deviceIdSet.size) {
+                return;
+              }
+              const changes = Array.isArray(summary.changes) ? summary.changes : [];
+              changes.forEach(change => {
+                if (!change || typeof change !== 'object') {
+                  return;
+                }
+                const deviceId = change.device_id != null ? String(change.device_id) : null;
+                if (!deviceId || !deviceIdSet.has(deviceId)) {
+                  return;
+                }
+                const reason = typeof change.reason === 'string' ? change.reason.trim() : '';
+                if (reason) {
+                  infoMessages.push(reason);
+                }
+              });
+            });
+            if (errorMessages.length) {
+              const uniqueErrors = Array.from(new Set(errorMessages));
+              applyActionStatus(button, uniqueErrors.join(' '), true);
+            } else if (infoMessages.length) {
+              const uniqueInfo = Array.from(new Set(infoMessages));
+              applyActionStatus(button, uniqueInfo.join(' '), false);
+            } else {
+              resetActionStatus(button);
+            }
+          }
+        } catch (error) {
+          console.error('1 Click Fix error', error);
+          showStatus('1 Click Fix failed due to a network error.', true);
+          if (button) {
+            applyActionStatus(button, '1 Click Fix failed due to a network error.', true);
+          }
+        } finally {
+          if (button) {
+            const shouldRemainDisabled = button._precheckCanRun === false ? true : originalDisabled;
+            button.disabled = shouldRemainDisabled;
+            button.textContent = originalLabel || action.button_label || '1 Click Fix Now';
+          }
+        }
+      }
+
       function createSeverityBadge(severity) {
         const badge = document.createElement('span');
         const severityKey = (severity || '').toLowerCase();
@@ -215,6 +479,16 @@
         badge.className = `px-2 py-0.5 text-xs font-medium rounded-full ${map[severityKey] || map.warning}`;
         badge.textContent = severityKey ? severityKey.charAt(0).toUpperCase() + severityKey.slice(1) : 'Warning';
         return badge;
+      }
+
+      function createGuideLink(href, label) {
+        const link = document.createElement('a');
+        link.href = href;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.className = 'text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50';
+        link.textContent = label;
+        return link;
       }
 
       function renderFindings(list, severity) {
@@ -243,6 +517,43 @@
           message.textContent = finding.message;
           item.appendChild(title);
           item.appendChild(message);
+          const findingActions = Array.isArray(finding.actions) ? finding.actions : [];
+          if (canUseFixes && findingActions.length) {
+            const actionBar = document.createElement('div');
+            actionBar.className = 'mt-2 flex flex-wrap items-center gap-2';
+            findingActions.forEach(action => {
+              if (!action) {
+                return;
+              }
+              const wrapper = document.createElement('div');
+              wrapper.className = 'flex items-center gap-2';
+              const button = document.createElement('button');
+              button.type = 'button';
+              button.className = 'text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
+              button.textContent = action.button_label || '1 Click Fix Now';
+              button.addEventListener('click', () => runOneClickFix(action, button));
+              const status = document.createElement('span');
+              status.className = 'text-xs font-medium hidden whitespace-normal';
+              status.setAttribute('data-role', 'action-status');
+              wrapper.appendChild(button);
+              wrapper.appendChild(status);
+              button._actionStatusElement = status;
+              const precheckState = evaluateActionPrechecks(action);
+              if (precheckState.messages.length) {
+                setInitialActionStatus(button, precheckState.messages.join(' '), !precheckState.canRun);
+              } else {
+                setInitialActionStatus(button, '', false);
+              }
+              button._precheckCanRun = precheckState.canRun;
+              if (!precheckState.canRun) {
+                button.disabled = true;
+              }
+              actionBar.appendChild(wrapper);
+            });
+            if (actionBar.childElementCount) {
+              item.appendChild(actionBar);
+            }
+          }
           if (finding.details && typeof finding.details === 'object') {
             const details = document.createElement('pre');
             details.className = 'mt-2 text-xs bg-slate-100 dark:bg-slate-900/80 text-slate-700 dark:text-slate-300 rounded p-2 overflow-x-auto';
@@ -342,8 +653,65 @@
           const findings = Array.isArray(check.findings) ? check.findings : [];
           const badgeSeverity = findings.length ? check.severity : 'success';
           const badge = createSeverityBadge(badgeSeverity);
+          const controls = document.createElement('div');
+          controls.className = 'flex items-center gap-2';
+          controls.appendChild(badge);
+
+          let customControlsHandled = false;
+          if (check.id === 'firmware_management') {
+            customControlsHandled = true;
+            controls.appendChild(createGuideLink(
+              'https://www.juniper.net/documentation/us/en/software/mist/mist-wireless/topics/task/ap-firmware-upgrade-manual.html',
+              'AP firmware upgrade guide'
+            ));
+            controls.appendChild(createGuideLink(
+              'https://www.juniper.net/documentation/us/en/software/mist/mist-wired/topics/topic-map/switch-upgrade-map.html',
+              'Switch upgrade guide'
+            ));
+          }
+
+          const actions = Array.isArray(check.actions) ? check.actions : [];
+          if (!customControlsHandled && canUseFixes && actions.length) {
+            actions.forEach(action => {
+              if (!action) {
+                return;
+              }
+              if (Array.isArray(action.devices) && action.devices.length) {
+                return;
+              }
+              const siteIds = Array.isArray(action.site_ids) ? action.site_ids : [];
+              if (!siteIds.length) {
+                return;
+              }
+              const wrapper = document.createElement('div');
+              wrapper.className = 'flex items-center gap-2';
+              const button = document.createElement('button');
+              button.type = 'button';
+              button.className = 'text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
+              button.textContent = action.button_label || '1 Click Fix Now';
+              button.addEventListener('click', () => runOneClickFix(action, button));
+              const status = document.createElement('span');
+              status.className = 'text-xs font-medium hidden whitespace-normal';
+              status.setAttribute('data-role', 'action-status');
+              wrapper.appendChild(button);
+              wrapper.appendChild(status);
+              button._actionStatusElement = status;
+              const precheckState = evaluateActionPrechecks(action);
+              if (precheckState.messages.length) {
+                setInitialActionStatus(button, precheckState.messages.join(' '), !precheckState.canRun);
+              } else {
+                setInitialActionStatus(button, '', false);
+              }
+              button._precheckCanRun = precheckState.canRun;
+              if (!precheckState.canRun) {
+                button.disabled = true;
+              }
+              controls.appendChild(wrapper);
+            });
+          }
+
           header.appendChild(title);
-          header.appendChild(badge);
+          header.appendChild(controls);
             card.appendChild(header);
 
             const stats = document.createElement('div');

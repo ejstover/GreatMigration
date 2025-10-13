@@ -4,7 +4,7 @@ import tempfile
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Sequence, Iterable
+from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set
 from zoneinfo import ZoneInfo
 from time import perf_counter
 
@@ -44,6 +44,8 @@ from translate_showtech import (
 import ssh_collect
 from fpdf import FPDF
 from compliance import SiteAuditRunner, SiteContext, build_default_runner
+from audit_fixes import execute_audit_action
+from audit_actions import AP_RENAME_ACTION_ID
 from audit_history import load_site_history
 
 APP_TITLE = "Switch Port Config Frontend"
@@ -539,6 +541,18 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
         f"/sites/{site_id}/devices?type=switch",
         optional=True,
     )
+    switch_stats_doc = _mist_get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/stats/devices?type=switch&limit=1000",
+        optional=True,
+    )
+    ap_stats_doc = _mist_get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/stats/devices?type=ap&limit=1000",
+        optional=True,
+    )
 
     ordered_ids: List[str] = []
     devices_by_id: Dict[str, Dict[str, Any]] = {}
@@ -563,6 +577,66 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
     _ingest_devices(base_devices_doc)
     _ingest_devices(switch_devices_doc)
 
+    def _normalize_mac(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value).strip().lower()
+
+    def _iter_stats(doc: Any):
+        if isinstance(doc, list):
+            for item in doc:
+                if isinstance(item, dict):
+                    yield item
+            return
+        if isinstance(doc, dict):
+            containers = [doc.get(key) for key in ("results", "items", "data", "devices")]
+            emitted = False
+            for container in containers:
+                if isinstance(container, list):
+                    for item in container:
+                        if isinstance(item, dict):
+                            emitted = True
+                            yield item
+            if not emitted and doc:
+                yield doc
+
+    stats_payloads: List[Dict[str, Any]] = []
+    stats_by_id: Dict[str, Dict[str, Any]] = {}
+    stats_by_mac: Dict[str, Dict[str, Any]] = {}
+
+    def _register_stats_item(item: Dict[str, Any]) -> None:
+        item_copy = dict(item)
+        stats_payloads.append(item_copy)
+        for key in ("id", "device_id"):
+            identifier = item.get(key)
+            if isinstance(identifier, str) and identifier.strip():
+                stats_by_id.setdefault(identifier.strip(), item_copy)
+        mac = _normalize_mac(item.get("mac"))
+        if mac:
+            stats_by_mac.setdefault(mac, item_copy)
+
+    for stats_doc in (switch_stats_doc, ap_stats_doc):
+        if stats_doc is None:
+            continue
+        for stats_item in _iter_stats(stats_doc):
+            _register_stats_item(stats_item)
+
+    consumed_stats: Set[int] = set()
+
+    def _claim_stats(device: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        stats: Optional[Dict[str, Any]] = None
+        device_id = device.get("id")
+        if isinstance(device_id, str) and device_id.strip():
+            stats = stats_by_id.get(device_id.strip())
+        if stats is None:
+            mac = _normalize_mac(device.get("mac"))
+            if mac:
+                stats = stats_by_mac.get(mac)
+        if stats is not None and id(stats) not in consumed_stats:
+            consumed_stats.add(id(stats))
+            return stats
+        return None
+
     device_list: List[Dict[str, Any]] = []
     for device_id in ordered_ids:
         device = devices_by_id[device_id]
@@ -581,9 +655,19 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
         merged: Dict[str, Any] = dict(device)
         if detailed_doc:
             merged.update({k: v for k, v in detailed_doc.items() if k not in {"id", "site_id"} or v is not None})
+        stats_doc = _claim_stats(merged)
+        if stats_doc:
+            merged.update({k: v for k, v in stats_doc.items() if v is not None})
         device_list.append(merged)
 
     device_list.extend(anonymous_devices)
+    for stats_doc in stats_payloads:
+        if id(stats_doc) in consumed_stats:
+            continue
+        extra_device = dict(stats_doc)
+        if not extra_device.get("id") and isinstance(extra_device.get("device_id"), str):
+            extra_device.setdefault("id", extra_device["device_id"])
+        device_list.append(extra_device)
     candidate_org_ids = _collect_candidate_org_ids(site_doc, setting_doc, template_list, device_list)
 
     if SWITCH_TEMPLATE_ID:
@@ -1186,6 +1270,124 @@ def api_audit_run(
             exc,
         )
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/api/audit/fix")
+def api_audit_fix(
+    request: Request,
+    payload: Dict[str, Any] = Body(...),
+    base_url: str = DEFAULT_BASE_URL,
+):
+    try:
+        _ensure_push_allowed(request, dry_run=False)
+
+        action_id = str(payload.get("action_id") or "").strip()
+        if not action_id:
+            raise ValueError("action_id is required")
+
+        site_ids_raw = payload.get("site_ids") or []
+        if site_ids_raw and not isinstance(site_ids_raw, list):
+            raise ValueError("site_ids must be provided as a list")
+
+        site_ids: List[str] = []
+        for sid in site_ids_raw:
+            if sid is None:
+                continue
+            text = str(sid).strip()
+            if text:
+                site_ids.append(text)
+
+        devices_raw = payload.get("devices") or []
+        device_map: Dict[str, List[str]] = {}
+        if devices_raw:
+            if not isinstance(devices_raw, list):
+                raise ValueError("devices must be provided as a list")
+            for entry in devices_raw:
+                if not isinstance(entry, dict):
+                    continue
+                site_id_raw = entry.get("site_id")
+                device_id_raw = entry.get("device_id")
+                site_id = str(site_id_raw).strip() if site_id_raw is not None else ""
+                device_id = str(device_id_raw).strip() if device_id_raw is not None else ""
+                if not site_id or not device_id:
+                    continue
+                device_map.setdefault(site_id, []).append(device_id)
+                if site_id not in site_ids:
+                    site_ids.append(site_id)
+
+        if not site_ids:
+            raise ValueError("Provide at least one site identifier.")
+
+        # Deduplicate device identifiers per site while preserving order
+        if device_map:
+            for site_id, devices in list(device_map.items()):
+                seen: set[str] = set()
+                deduped: List[str] = []
+                for device_id in devices:
+                    if device_id not in seen:
+                        seen.add(device_id)
+                        deduped.append(device_id)
+                device_map[site_id] = deduped
+
+        dry_run = bool(payload.get("dry_run", False))
+        pause_default = 0.2 if action_id == AP_RENAME_ACTION_ID else 0.1
+        pause_value = payload.get("pause")
+        try:
+            pause = float(pause_value)
+            if pause < 0:
+                pause = 0.0
+        except (TypeError, ValueError):
+            pause = pause_default
+
+        token = _load_mist_token()
+        base_url = base_url.rstrip("/")
+        result = execute_audit_action(
+            action_id,
+            base_url,
+            token,
+            site_ids,
+            dry_run=dry_run,
+            pause=pause,
+            device_map=device_map if device_map else None,
+        )
+
+        totals = result.get("totals", {}) if isinstance(result, dict) else {}
+        updated_total = totals.get("updated")
+        if not isinstance(updated_total, (int, float)):
+            updated_total = totals.get("renamed", 0)
+        action_logger.info(
+            "user=%s action=audit_fix fix_id=%s dry_run=%s sites=%s updated=%s failed=%s",
+            _request_user_label(request),
+            action_id,
+            dry_run,
+            totals.get("sites", 0),
+            updated_total,
+            totals.get("failed", 0),
+        )
+        return result
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except requests.HTTPError as exc:
+        response = exc.response
+        status = response.status_code if response is not None else 500
+        try:
+            detail = response.json() if response is not None else None
+        except Exception:
+            detail = response.text if response is not None else None
+        action_logger.error(
+            "user=%s action=audit_fix status=%s error=%s",
+            _request_user_label(request),
+            status,
+            detail or str(exc),
+        )
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=status)
+    except Exception as exc:
+        action_logger.exception(
+            "user=%s action=audit_fix error=%s",
+            _request_user_label(request),
+            exc,
+        )
+        return JSONResponse({"ok": False, "error": "Unexpected remediation failure."}, status_code=500)
 
 
 @app.post("/api/convert")
