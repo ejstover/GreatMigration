@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 import requests
 
@@ -180,6 +180,7 @@ def _summarize_site(
     *,
     dry_run: bool,
     pause: float,
+    limit_device_ids: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     site_name = _fetch_site_name(base_url, headers, site_id)
     devices = _list_site_aps(base_url, headers, site_id)
@@ -198,6 +199,10 @@ def _summarize_site(
         "errors": [],
     }
 
+    normalized_limit: Optional[Set[str]] = None
+    if limit_device_ids is not None:
+        normalized_limit = {str(device_id) for device_id in limit_device_ids if str(device_id).strip()}
+
     for device in devices:
         if not isinstance(device, dict):
             continue
@@ -212,6 +217,8 @@ def _summarize_site(
                     "reason": "Device record missing identifier.",
                 }
             )
+            continue
+        if normalized_limit is not None and device_id not in normalized_limit:
             continue
         current_name = (device.get("name") or "").strip() or None
         if not _needs_rename(current_name):
@@ -285,6 +292,7 @@ def execute_audit_action(
     *,
     dry_run: bool = False,
     pause: float = 0.2,
+    device_map: Optional[Mapping[str, Sequence[str]]] = None,
 ) -> Dict[str, Any]:
     if action_id != AP_RENAME_ACTION_ID:
         raise ValueError(f"Unsupported action_id: {action_id}")
@@ -296,12 +304,18 @@ def execute_audit_action(
     totals = {"renamed": 0, "skipped": 0, "failed": 0}
     for site_id in normalized_site_ids:
         try:
+            limit_ids: Optional[Set[str]] = None
+            if device_map is not None:
+                device_ids = device_map.get(site_id)
+                if device_ids:
+                    limit_ids = {str(device_id) for device_id in device_ids if str(device_id).strip()}
             summary = _summarize_site(
                 base_url,
                 headers,
                 site_id,
                 dry_run=dry_run,
                 pause=pause,
+                limit_device_ids=limit_ids,
             )
         except requests.HTTPError as exc:
             results.append(

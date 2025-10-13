@@ -210,7 +210,16 @@
           showStatus('Unable to start 1 Click Fix (missing action id).', true);
           return;
         }
-        if (!Array.isArray(action.site_ids) || !action.site_ids.length) {
+        const deviceTargets = Array.isArray(action.devices)
+          ? action.devices.filter(item => item && item.site_id && item.device_id)
+          : [];
+        let siteIds = Array.isArray(action.site_ids)
+          ? action.site_ids.filter(siteId => typeof siteId === 'string' && siteId)
+          : [];
+        if (!siteIds.length && deviceTargets.length) {
+          siteIds = Array.from(new Set(deviceTargets.map(item => item.site_id).filter(Boolean)));
+        }
+        if (!siteIds.length) {
           showStatus('No sites are eligible for this 1 Click Fix.', true);
           return;
         }
@@ -228,7 +237,8 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               action_id: action.id,
-              site_ids: action.site_ids,
+              site_ids: siteIds,
+              devices: deviceTargets,
             }),
           });
           const data = await response.json().catch(() => ({}));
@@ -241,7 +251,7 @@
           const totals = data.totals || {};
           const renamed = Number.isFinite(totals.renamed) ? totals.renamed : 0;
           const failed = Number.isFinite(totals.failed) ? totals.failed : 0;
-          const siteCount = Number.isFinite(totals.sites) ? totals.sites : action.site_ids.length;
+          const siteCount = Number.isFinite(totals.sites) ? totals.sites : siteIds.length;
           const summaryParts = [
             `Renamed ${renamed} device${renamed === 1 ? '' : 's'}`,
             `across ${siteCount} site${siteCount === 1 ? '' : 's'}`,
@@ -301,6 +311,25 @@
           message.textContent = finding.message;
           item.appendChild(title);
           item.appendChild(message);
+          const findingActions = Array.isArray(finding.actions) ? finding.actions : [];
+          if (canUseFixes && findingActions.length) {
+            const actionBar = document.createElement('div');
+            actionBar.className = 'mt-2 flex flex-wrap items-center gap-2';
+            findingActions.forEach(action => {
+              if (!action) {
+                return;
+              }
+              const button = document.createElement('button');
+              button.type = 'button';
+              button.className = 'text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
+              button.textContent = action.button_label || '1 Click Fix Now';
+              button.addEventListener('click', () => runOneClickFix(action, button));
+              actionBar.appendChild(button);
+            });
+            if (actionBar.childElementCount) {
+              item.appendChild(actionBar);
+            }
+          }
           if (finding.details && typeof finding.details === 'object') {
             const details = document.createElement('pre');
             details.className = 'mt-2 text-xs bg-slate-100 dark:bg-slate-900/80 text-slate-700 dark:text-slate-300 rounded p-2 overflow-x-auto';
@@ -407,7 +436,14 @@
           const actions = Array.isArray(check.actions) ? check.actions : [];
           if (canUseFixes && actions.length) {
             actions.forEach(action => {
-              if (!action || !Array.isArray(action.site_ids) || !action.site_ids.length) {
+              if (!action) {
+                return;
+              }
+              if (Array.isArray(action.devices) && action.devices.length) {
+                return;
+              }
+              const siteIds = Array.isArray(action.site_ids) ? action.site_ids : [];
+              if (!siteIds.length) {
                 return;
               }
               const button = document.createElement('button');

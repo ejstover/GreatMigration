@@ -1214,8 +1214,38 @@ def api_audit_fix(
             text = str(sid).strip()
             if text:
                 site_ids.append(text)
+
+        devices_raw = payload.get("devices") or []
+        device_map: Dict[str, List[str]] = {}
+        if devices_raw:
+            if not isinstance(devices_raw, list):
+                raise ValueError("devices must be provided as a list")
+            for entry in devices_raw:
+                if not isinstance(entry, dict):
+                    continue
+                site_id_raw = entry.get("site_id")
+                device_id_raw = entry.get("device_id")
+                site_id = str(site_id_raw).strip() if site_id_raw is not None else ""
+                device_id = str(device_id_raw).strip() if device_id_raw is not None else ""
+                if not site_id or not device_id:
+                    continue
+                device_map.setdefault(site_id, []).append(device_id)
+                if site_id not in site_ids:
+                    site_ids.append(site_id)
+
         if not site_ids:
             raise ValueError("Provide at least one site identifier.")
+
+        # Deduplicate device identifiers per site while preserving order
+        if device_map:
+            for site_id, devices in list(device_map.items()):
+                seen: set[str] = set()
+                deduped: List[str] = []
+                for device_id in devices:
+                    if device_id not in seen:
+                        seen.add(device_id)
+                        deduped.append(device_id)
+                device_map[site_id] = deduped
 
         dry_run = bool(payload.get("dry_run", False))
         pause_default = 0.2 if action_id == AP_RENAME_ACTION_ID else 0.1
@@ -1236,6 +1266,7 @@ def api_audit_fix(
             site_ids,
             dry_run=dry_run,
             pause=pause,
+            device_map=device_map if device_map else None,
         )
 
         totals = result.get("totals", {}) if isinstance(result, dict) else {}

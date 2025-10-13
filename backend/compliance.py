@@ -36,6 +36,7 @@ class Finding:
     device_id: Optional[str] = None
     device_name: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
+    actions: Optional[List[Dict[str, Any]]] = None
 
     def as_dict(self, default_severity: str) -> Dict[str, Any]:
         data: Dict[str, Any] = {
@@ -50,6 +51,8 @@ class Finding:
             data["device_name"] = self.device_name
         if self.details is not None:
             data["details"] = self.details
+        if self.actions:
+            data["actions"] = self.actions
         return data
 
 
@@ -1149,6 +1152,27 @@ class DeviceNamingConventionCheck(ComplianceCheck):
                 else:
                     message = f"{label} name does not match required convention."
 
+                actions: Optional[List[Dict[str, Any]]] = None
+                if is_ap and device_id and self.ap_pattern:
+                    actions = [
+                        {
+                            "id": AP_RENAME_ACTION_ID,
+                            "label": "Rename access point",
+                            "button_label": "1 Click Fix Now",
+                            "site_ids": [context.site_id],
+                            "devices": [
+                                {
+                                    "site_id": context.site_id,
+                                    "device_id": device_id,
+                                }
+                            ],
+                            "metadata": {
+                                "device_id": device_id,
+                                "current_name": device_name or "",
+                                "expected_pattern": self.ap_pattern.pattern,
+                            },
+                        }
+                    ]
                 findings.append(
                     Finding(
                         site_id=context.site_id,
@@ -1157,6 +1181,7 @@ class DeviceNamingConventionCheck(ComplianceCheck):
                         device_name=device_name or device_id or "device",
                         message=message,
                         details={"expected_pattern": pattern.pattern},
+                        actions=actions,
                     )
                 )
                 if is_ap:
@@ -1168,38 +1193,7 @@ class DeviceNamingConventionCheck(ComplianceCheck):
         contexts: Sequence[SiteContext],
         findings: Sequence[Finding],
     ) -> List[Dict[str, Any]]:
-        if not self.ap_pattern:
-            return []
-        if not getattr(self, "_ap_issue_counts", None):
-            return []
-
-        site_ids = sorted(self._ap_issue_counts.keys())
-        if not site_ids:
-            return []
-
-        site_summaries = [
-            {
-                "id": site_id,
-                "name": self._ap_issue_sites.get(site_id, site_id),
-                "issue_count": self._ap_issue_counts.get(site_id, 0),
-            }
-            for site_id in site_ids
-        ]
-
-        return [
-            {
-                "id": AP_RENAME_ACTION_ID,
-                "label": "Rename access points",
-                "button_label": "1 Click Fix Now",
-                "description": "Rename Mist access points to match the standard naming convention.",
-                "site_ids": site_ids,
-                "metadata": {
-                    "sites": site_summaries,
-                    "expected_pattern": self.ap_pattern.pattern,
-                    "finding_count": sum(self._ap_issue_counts.values()),
-                },
-            }
-        ]
+        return []
 
 
 def _collect_device_images(device: Dict[str, Any]) -> List[str]:

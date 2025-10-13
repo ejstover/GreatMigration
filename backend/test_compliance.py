@@ -633,13 +633,13 @@ def test_device_naming_convention_provides_ap_fix_action():
     check.prepare_run()
     findings = check.run(ctx)
     assert {f.device_id for f in findings} == {"ap-1"}
-    actions = check.suggest_actions([ctx], findings)
-    assert actions, "Expected an auto-remediation action"
-    action = actions[0]
+    assert findings[0].actions, "Expected per-device action"
+    action = findings[0].actions[0]
     assert action["id"] == AP_RENAME_ACTION_ID
     assert action["site_ids"] == ["site-9c"]
-    metadata = action.get("metadata", {})
-    assert metadata.get("finding_count") == 1
+    assert action["devices"] == [{"site_id": "site-9c", "device_id": "ap-1"}]
+    actions = check.suggest_actions([ctx], findings)
+    assert actions == []
 
 
 @pytest.mark.parametrize(
