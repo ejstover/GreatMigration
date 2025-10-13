@@ -33,6 +33,16 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
         "/sites/site-1/devices?type=switch": [
             {"id": "dev-1", "name": "Switch 1", "status": "connected"},
         ],
+        "/sites/site-1/stats/devices?type=switch&limit=1000": {
+            "results": [
+                {"id": "dev-1", "name": "Switch 1", "version": "23.4R2-S4.11"},
+            ]
+        },
+        "/sites/site-1/stats/devices?type=ap&limit=1000": {
+            "results": [
+                {"id": "dev-2", "name": "AP 2", "version": "0.12.27452"},
+            ]
+        },
         "/sites/site-1/devices/dev-1": {
             "id": "dev-1",
             "status": {"state": "online"},
@@ -64,14 +74,18 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
     assert dev1["status"] == {"state": "online"}
     assert dev1["switch_config"] == {"vlans": [10]}
     assert dev1["extra"] == "detail"
+    assert dev1["version"] == "23.4R2-S4.11"
 
     dev2 = devices_by_id["dev-2"]
     # Device without detail fallback retains base information.
     assert dev2["name"] == "AP 2"
     assert dev2["status"] == "connected"
+    assert dev2["version"] == "0.12.27452"
 
     assert "/sites/site-1/devices" in calls
     assert "/sites/site-1/devices?type=switch" in calls
+    assert "/sites/site-1/stats/devices?type=switch&limit=1000" in calls
+    assert "/sites/site-1/stats/devices?type=ap&limit=1000" in calls
     assert "/sites/site-1/devices/dev-1" in calls
     assert "/sites/site-1/devices/dev-2" in calls
     assert "/sites/site-1/switch_templates/template-1" in calls
