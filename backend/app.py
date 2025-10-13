@@ -4,7 +4,7 @@ import tempfile
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Sequence, Iterable
+from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set
 from zoneinfo import ZoneInfo
 from time import perf_counter
 
@@ -541,6 +541,18 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
         f"/sites/{site_id}/devices?type=switch",
         optional=True,
     )
+    switch_stats_doc = _mist_get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/stats/devices?type=switch&limit=1000",
+        optional=True,
+    )
+    ap_stats_doc = _mist_get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/stats/devices?type=ap&limit=1000",
+        optional=True,
+    )
 
     ordered_ids: List[str] = []
     devices_by_id: Dict[str, Dict[str, Any]] = {}
@@ -565,6 +577,66 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
     _ingest_devices(base_devices_doc)
     _ingest_devices(switch_devices_doc)
 
+    def _normalize_mac(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value).strip().lower()
+
+    def _iter_stats(doc: Any):
+        if isinstance(doc, list):
+            for item in doc:
+                if isinstance(item, dict):
+                    yield item
+            return
+        if isinstance(doc, dict):
+            containers = [doc.get(key) for key in ("results", "items", "data", "devices")]
+            emitted = False
+            for container in containers:
+                if isinstance(container, list):
+                    for item in container:
+                        if isinstance(item, dict):
+                            emitted = True
+                            yield item
+            if not emitted and doc:
+                yield doc
+
+    stats_payloads: List[Dict[str, Any]] = []
+    stats_by_id: Dict[str, Dict[str, Any]] = {}
+    stats_by_mac: Dict[str, Dict[str, Any]] = {}
+
+    def _register_stats_item(item: Dict[str, Any]) -> None:
+        item_copy = dict(item)
+        stats_payloads.append(item_copy)
+        for key in ("id", "device_id"):
+            identifier = item.get(key)
+            if isinstance(identifier, str) and identifier.strip():
+                stats_by_id.setdefault(identifier.strip(), item_copy)
+        mac = _normalize_mac(item.get("mac"))
+        if mac:
+            stats_by_mac.setdefault(mac, item_copy)
+
+    for stats_doc in (switch_stats_doc, ap_stats_doc):
+        if stats_doc is None:
+            continue
+        for stats_item in _iter_stats(stats_doc):
+            _register_stats_item(stats_item)
+
+    consumed_stats: Set[int] = set()
+
+    def _claim_stats(device: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        stats: Optional[Dict[str, Any]] = None
+        device_id = device.get("id")
+        if isinstance(device_id, str) and device_id.strip():
+            stats = stats_by_id.get(device_id.strip())
+        if stats is None:
+            mac = _normalize_mac(device.get("mac"))
+            if mac:
+                stats = stats_by_mac.get(mac)
+        if stats is not None and id(stats) not in consumed_stats:
+            consumed_stats.add(id(stats))
+            return stats
+        return None
+
     device_list: List[Dict[str, Any]] = []
     for device_id in ordered_ids:
         device = devices_by_id[device_id]
@@ -583,9 +655,19 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
         merged: Dict[str, Any] = dict(device)
         if detailed_doc:
             merged.update({k: v for k, v in detailed_doc.items() if k not in {"id", "site_id"} or v is not None})
+        stats_doc = _claim_stats(merged)
+        if stats_doc:
+            merged.update({k: v for k, v in stats_doc.items() if v is not None})
         device_list.append(merged)
 
     device_list.extend(anonymous_devices)
+    for stats_doc in stats_payloads:
+        if id(stats_doc) in consumed_stats:
+            continue
+        extra_device = dict(stats_doc)
+        if not extra_device.get("id") and isinstance(extra_device.get("device_id"), str):
+            extra_device.setdefault("id", extra_device["device_id"])
+        device_list.append(extra_device)
     candidate_org_ids = _collect_candidate_org_ids(site_doc, setting_doc, template_list, device_list)
 
     if SWITCH_TEMPLATE_ID:
