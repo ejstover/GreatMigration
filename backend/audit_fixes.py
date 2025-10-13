@@ -8,8 +8,12 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 
 import requests
 
-from audit_actions import AP_RENAME_ACTION_ID
-from compliance import DEFAULT_AP_NAME_PATTERN
+from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
+from compliance import (
+    DEFAULT_AP_NAME_PATTERN,
+    DNS_OVERRIDE_REQUIRED_VARS,
+    DNS_OVERRIDE_TEMPLATE_NAME,
+)
 
 AP_NAME_PATTERN = re.compile(DEFAULT_AP_NAME_PATTERN)
 SWITCH_LLDPNAME_PATTERN = re.compile(
@@ -103,6 +107,149 @@ def _fetch_site_name(base_url: str, headers: Dict[str, str], site_id: str) -> st
     return site_id
 
 
+def _format_summary_message(verb: str, count: int) -> str:
+    plural = "" if count == 1 else "s"
+    return f"{verb} {count} device{plural}"
+
+
+def _get_json(
+    base_url: str,
+    headers: Dict[str, str],
+    path: str,
+    *,
+    optional: bool = False,
+) -> Any:
+    url = f"{base_url}{path}"
+    response = requests.get(url, headers=headers, timeout=30)
+    if optional and response.status_code == 404:
+        return {}
+    response.raise_for_status()
+    try:
+        data = response.json()
+    except Exception:
+        return {}
+    return data
+
+
+def _collect_template_names_from_docs(*docs: Any) -> Set[str]:
+    names: Set[str] = set()
+
+    def _maybe_add(value: Any) -> None:
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                names.add(text)
+
+    for doc in docs:
+        if isinstance(doc, dict):
+            for key in ("networktemplate_name", "template_name", "name"):
+                _maybe_add(doc.get(key))
+        elif isinstance(doc, list):
+            for item in doc:
+                if isinstance(item, dict):
+                    for key in ("name", "template_name", "networktemplate_name"):
+                        _maybe_add(item.get(key))
+    return names
+
+
+def _collect_site_variables_from_docs(*docs: Any) -> Dict[str, Any]:
+    variables: Dict[str, Any] = {}
+    keys = ("variables", "vars", "site_vars", "site_variables")
+    for doc in docs:
+        if not isinstance(doc, dict):
+            continue
+        for key in keys:
+            value = doc.get(key)
+            if isinstance(value, dict):
+                for var_key, var_value in value.items():
+                    if isinstance(var_key, str):
+                        variables[var_key] = var_value
+    return variables
+
+
+def _site_display_name(doc: Any, default: str) -> str:
+    if isinstance(doc, dict):
+        for key in ("name", "site_name", "display_name"):
+            value = doc.get(key)
+            if isinstance(value, str):
+                text = value.strip()
+                if text:
+                    return text
+    return default
+
+
+def _fetch_device_document(
+    base_url: str, headers: Dict[str, str], site_id: str, device_id: str
+) -> Dict[str, Any]:
+    payload = _get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/devices/{device_id}",
+    )
+    return payload if isinstance(payload, dict) else {}
+
+
+def _device_display_name(doc: Mapping[str, Any], default: str) -> str:
+    for key in ("name", "device_name", "hostname", "display_name"):
+        value = doc.get(key)
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                return text
+    return default
+
+
+def _normalize_dns_values(values: Any) -> List[str]:
+    normalized: List[str] = []
+    if isinstance(values, list):
+        for value in values:
+            if isinstance(value, (str, bytes)):
+                text = str(value).strip()
+                if text:
+                    normalized.append(text)
+    return normalized
+
+
+def _value_is_set(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (str, bytes)):
+        return bool(str(value).strip())
+    return True
+
+
+def _build_dns_update_payload(
+    device_doc: Mapping[str, Any], sanitized_ip_config: Mapping[str, Any]
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    cleaned_config = dict(sanitized_ip_config)
+    direct_ip = device_doc.get("ip_config")
+    if isinstance(direct_ip, dict):
+        payload["ip_config"] = cleaned_config
+    switch_config = device_doc.get("switch_config")
+    if isinstance(switch_config, dict) and isinstance(switch_config.get("ip_config"), dict):
+        new_switch_config = dict(switch_config)
+        new_switch_config["ip_config"] = cleaned_config
+        payload["switch_config"] = new_switch_config
+    return payload
+
+
+def _update_device_payload(
+    base_url: str,
+    headers: Dict[str, str],
+    site_id: str,
+    device_id: str,
+    payload: Mapping[str, Any],
+) -> None:
+    response = requests.put(
+        f"{base_url}/sites/{site_id}/devices/{device_id}",
+        headers=headers,
+        json=dict(payload),
+        timeout=30,
+    )
+    response.raise_for_status()
+
+
 def _parse_switch_location(name: str) -> Optional[Tuple[str, str, str]]:
     match = SWITCH_LLDPNAME_PATTERN.match(name or "")
     if not match:
@@ -193,6 +340,7 @@ def _summarize_site(
         "site_id": site_id,
         "site_name": site_name,
         "renamed": 0,
+        "updated": 0,
         "skipped": 0,
         "failed": 0,
         "changes": [],
@@ -272,6 +420,7 @@ def _summarize_site(
                 existing_names.discard(candidate)
                 continue
         summary["renamed"] += 1
+        summary["updated"] += 1
         summary["changes"].append(
             {
                 "device_id": device_id,
@@ -284,24 +433,167 @@ def _summarize_site(
     return summary
 
 
-def execute_audit_action(
-    action_id: str,
+def _clear_dns_overrides_for_site(
+    base_url: str,
+    headers: Dict[str, str],
+    site_id: str,
+    *,
+    dry_run: bool,
+    device_ids: Optional[Sequence[str]],
+) -> Dict[str, Any]:
+    site_doc = _get_json(base_url, headers, f"/sites/{site_id}")
+    setting_doc = _get_json(base_url, headers, f"/sites/{site_id}/setting", optional=True)
+    templates_doc = _get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/networktemplates",
+        optional=True,
+    )
+    template_list = templates_doc if isinstance(templates_doc, list) else []
+
+    site_name = _site_display_name(site_doc, site_id)
+
+    normalized_devices: List[str] = []
+    if device_ids:
+        seen: Set[str] = set()
+        for device_id in device_ids:
+            if device_id is None:
+                continue
+            text = str(device_id).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized_devices.append(text)
+
+    summary: Dict[str, Any] = {
+        "site_id": site_id,
+        "site_name": site_name,
+        "updated": 0,
+        "skipped": 0,
+        "failed": 0,
+        "changes": [],
+        "errors": [],
+    }
+
+    if not normalized_devices:
+        summary["failed"] = 1
+        summary["errors"].append({"reason": "No target devices provided."})
+        return summary
+
+    template_names = _collect_template_names_from_docs(site_doc, setting_doc, template_list)
+    if DNS_OVERRIDE_TEMPLATE_NAME not in template_names:
+        summary["failed"] = len(normalized_devices)
+        summary["errors"].append(
+            {
+                "reason": f"Required template '{DNS_OVERRIDE_TEMPLATE_NAME}' is not applied.",
+                "templates": sorted(template_names),
+            }
+        )
+        return summary
+
+    site_variables = _collect_site_variables_from_docs(site_doc, setting_doc)
+    missing_vars = [
+        key for key in DNS_OVERRIDE_REQUIRED_VARS if not _value_is_set(site_variables.get(key))
+    ]
+    if missing_vars:
+        summary["failed"] = len(normalized_devices)
+        summary["errors"].append(
+            {
+                "reason": "Required site DNS variables are missing or empty.",
+                "missing": sorted(missing_vars),
+            }
+        )
+        return summary
+
+    for device_id in normalized_devices:
+        try:
+            device_doc = _fetch_device_document(base_url, headers, site_id, device_id)
+        except requests.HTTPError as exc:
+            summary["failed"] += 1
+            summary["errors"].append(
+                {
+                    "device_id": device_id,
+                    "reason": f"Device lookup failed: {exc}",
+                }
+            )
+            continue
+
+        device_name = _device_display_name(device_doc, device_id)
+        direct_ip = device_doc.get("ip_config")
+        switch_config = device_doc.get("switch_config")
+        ip_config_candidates: List[Dict[str, Any]] = []
+        if isinstance(direct_ip, dict):
+            ip_config_candidates.append(dict(direct_ip))
+        if isinstance(switch_config, dict) and isinstance(switch_config.get("ip_config"), dict):
+            ip_config_candidates.append(dict(switch_config["ip_config"]))
+
+        if not ip_config_candidates:
+            summary["failed"] += 1
+            summary["errors"].append(
+                {
+                    "device_id": device_id,
+                    "reason": "Device does not expose ip_config overrides.",
+                }
+            )
+            continue
+
+        ip_config = ip_config_candidates[0]
+        dns_values = _normalize_dns_values(ip_config.get("dns"))
+        if not dns_values:
+            summary["skipped"] += 1
+            continue
+
+        sanitized_ip_config = {k: v for k, v in ip_config.items() if k != "dns"}
+        payload = _build_dns_update_payload(device_doc, sanitized_ip_config)
+        if not payload:
+            summary["failed"] += 1
+            summary["errors"].append(
+                {
+                    "device_id": device_id,
+                    "reason": "Unable to construct update payload for device.",
+                }
+            )
+            continue
+
+        if not dry_run:
+            try:
+                _update_device_payload(base_url, headers, site_id, device_id, payload)
+            except requests.HTTPError as exc:
+                summary["failed"] += 1
+                summary["errors"].append(
+                    {
+                        "device_id": device_id,
+                        "reason": f"Failed to clear DNS override: {exc}",
+                    }
+                )
+                continue
+
+        summary["updated"] += 1
+        summary["changes"].append(
+            {
+                "device_id": device_id,
+                "device_name": device_name,
+                "removed_dns": dns_values,
+            }
+        )
+
+    return summary
+
+
+def _execute_ap_rename_action(
     base_url: str,
     token: str,
     site_ids: Sequence[str],
     *,
-    dry_run: bool = False,
-    pause: float = 0.2,
-    device_map: Optional[Mapping[str, Sequence[str]]] = None,
+    dry_run: bool,
+    pause: float,
+    device_map: Optional[Mapping[str, Sequence[str]]],
 ) -> Dict[str, Any]:
-    if action_id != AP_RENAME_ACTION_ID:
-        raise ValueError(f"Unsupported action_id: {action_id}")
-
     headers = _mist_headers(token)
     normalized_site_ids = [sid for sid in site_ids if isinstance(sid, str) and sid]
 
     results: List[Dict[str, Any]] = []
-    totals = {"renamed": 0, "skipped": 0, "failed": 0}
+    totals = {"renamed": 0, "updated": 0, "skipped": 0, "failed": 0}
     for site_id in normalized_site_ids:
         try:
             limit_ids: Optional[Set[str]] = None
@@ -323,6 +615,7 @@ def execute_audit_action(
                     "site_id": site_id,
                     "site_name": site_id,
                     "renamed": 0,
+                    "updated": 0,
                     "skipped": 0,
                     "failed": 1,
                     "changes": [],
@@ -336,17 +629,116 @@ def execute_audit_action(
             totals["failed"] += 1
             continue
         results.append(summary)
-        totals["renamed"] += summary.get("renamed", 0)
+        renamed_count = summary.get("renamed", 0)
+        totals["renamed"] += renamed_count
+        totals["updated"] += summary.get("updated", renamed_count)
         totals["skipped"] += summary.get("skipped", 0)
         totals["failed"] += summary.get("failed", 0)
 
+    totals_with_sites = {**totals, "sites": len(results)}
+    totals_with_sites.setdefault("updated", totals_with_sites.get("renamed", 0))
+    totals_with_sites.setdefault(
+        "summary", _format_summary_message("Renamed", totals_with_sites.get("renamed", 0))
+    )
+
     return {
         "ok": True,
-        "action_id": action_id,
+        "action_id": AP_RENAME_ACTION_ID,
         "dry_run": dry_run,
         "results": results,
-        "totals": {**totals, "sites": len(results)},
+        "totals": totals_with_sites,
     }
+
+
+def _execute_dns_override_action(
+    base_url: str,
+    token: str,
+    site_ids: Sequence[str],
+    *,
+    dry_run: bool,
+    device_map: Optional[Mapping[str, Sequence[str]]],
+) -> Dict[str, Any]:
+    headers = _mist_headers(token)
+    normalized_site_ids = [sid for sid in site_ids if isinstance(sid, str) and sid]
+
+    results: List[Dict[str, Any]] = []
+    totals = {"updated": 0, "skipped": 0, "failed": 0}
+    for site_id in normalized_site_ids:
+        try:
+            device_ids = device_map.get(site_id) if device_map else None
+            summary = _clear_dns_overrides_for_site(
+                base_url,
+                headers,
+                site_id,
+                dry_run=dry_run,
+                device_ids=device_ids,
+            )
+        except requests.HTTPError as exc:
+            results.append(
+                {
+                    "site_id": site_id,
+                    "site_name": site_id,
+                    "updated": 0,
+                    "skipped": 0,
+                    "failed": 1,
+                    "changes": [],
+                    "errors": [
+                        {
+                            "reason": f"API error: {exc}",
+                        }
+                    ],
+                }
+            )
+            totals["failed"] += 1
+            continue
+        results.append(summary)
+        totals["updated"] += summary.get("updated", 0)
+        totals["skipped"] += summary.get("skipped", 0)
+        totals["failed"] += summary.get("failed", 0)
+
+    totals_with_sites = {**totals, "sites": len(results)}
+    totals_with_sites.setdefault(
+        "summary",
+        _format_summary_message("Cleared DNS overrides for", totals_with_sites.get("updated", 0)),
+    )
+
+    return {
+        "ok": True,
+        "action_id": CLEAR_DNS_OVERRIDE_ACTION_ID,
+        "dry_run": dry_run,
+        "results": results,
+        "totals": totals_with_sites,
+    }
+
+
+def execute_audit_action(
+    action_id: str,
+    base_url: str,
+    token: str,
+    site_ids: Sequence[str],
+    *,
+    dry_run: bool = False,
+    pause: float = 0.2,
+    device_map: Optional[Mapping[str, Sequence[str]]] = None,
+) -> Dict[str, Any]:
+    if action_id == AP_RENAME_ACTION_ID:
+        return _execute_ap_rename_action(
+            base_url,
+            token,
+            site_ids,
+            dry_run=dry_run,
+            pause=pause,
+            device_map=device_map,
+        )
+    if action_id == CLEAR_DNS_OVERRIDE_ACTION_ID:
+        return _execute_dns_override_action(
+            base_url,
+            token,
+            site_ids,
+            dry_run=dry_run,
+            device_map=device_map,
+        )
+    raise ValueError(f"Unsupported action_id: {action_id}")
 
 
 __all__ = ["execute_audit_action"]

@@ -10,7 +10,7 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-from audit_actions import AP_RENAME_ACTION_ID
+from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
 
 
 @dataclass
@@ -849,6 +849,13 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                 )
             )
 
+        template_names = _collect_template_names(context)
+        prod_template_applied = DNS_OVERRIDE_TEMPLATE_NAME in template_names
+        site_variables = _collect_site_variables(context)
+        dns_variables_defined = all(
+            _has_value(site_variables.get(key)) for key in DNS_OVERRIDE_REQUIRED_VARS
+        )
+
         templates = _gather_switch_templates(context)
 
         for device in context.devices:
@@ -974,6 +981,50 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                         continue
                     filtered_diffs.append(diff)
                 if filtered_diffs:
+                    actions: Optional[List[Dict[str, Any]]] = None
+                    if (
+                        prod_template_applied
+                        and dns_variables_defined
+                        and device_id
+                    ):
+                        dns_diff = next(
+                            (
+                                diff
+                                for diff in filtered_diffs
+                                if isinstance(diff, dict)
+                                and (diff.get("path") or "").lower() == "ip_config.dns"
+                            ),
+                            None,
+                        )
+                        if dns_diff is not None:
+                            actual_dns = dns_diff.get("actual") if isinstance(dns_diff, dict) else None
+                            expected_dns = dns_diff.get("expected") if isinstance(dns_diff, dict) else None
+                            if expected_dns in (None, [], (), "") and isinstance(actual_dns, list):
+                                dns_values = [
+                                    str(value).strip()
+                                    for value in actual_dns
+                                    if isinstance(value, (str, bytes)) and str(value).strip()
+                                ]
+                                if dns_values:
+                                    actions = [
+                                        {
+                                            "id": CLEAR_DNS_OVERRIDE_ACTION_ID,
+                                            "label": "Clear DNS override",
+                                            "button_label": "1 Click Fix Now",
+                                            "site_ids": [context.site_id],
+                                            "devices": [
+                                                {
+                                                    "site_id": context.site_id,
+                                                    "device_id": device_id,
+                                                }
+                                            ],
+                                            "metadata": {
+                                                "device_id": device_id,
+                                                "device_name": device_name,
+                                                "dns_values": dns_values,
+                                            },
+                                        }
+                                    ]
                     template_label = None
                     if template:
                         template_label = template.name or template.template_id
@@ -988,6 +1039,7 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                                 "diffs": filtered_diffs,
                                 **({"template": template_label} if template_label else {}),
                             },
+                            actions=actions,
                         )
                     )
 
@@ -999,6 +1051,14 @@ DEFAULT_SWITCH_NAME_PATTERN = (
 )
 
 DEFAULT_AP_NAME_PATTERN = r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDF|IDF\d+)AP\d+$"
+
+
+DNS_OVERRIDE_TEMPLATE_NAME = "Prod - Standard Template"
+DNS_OVERRIDE_REQUIRED_VARS: Tuple[str, ...] = (
+    "siteDNS",
+    "hubDNSserver1",
+    "hubDNSserver2",
+)
 
 
 def _strip_pattern_wrappers(value: str) -> str:

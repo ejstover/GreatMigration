@@ -1270,13 +1270,16 @@ def api_audit_fix(
         )
 
         totals = result.get("totals", {}) if isinstance(result, dict) else {}
+        updated_total = totals.get("updated")
+        if not isinstance(updated_total, (int, float)):
+            updated_total = totals.get("renamed", 0)
         action_logger.info(
-            "user=%s action=audit_fix fix_id=%s dry_run=%s sites=%s renamed=%s failed=%s",
+            "user=%s action=audit_fix fix_id=%s dry_run=%s sites=%s updated=%s failed=%s",
             _request_user_label(request),
             action_id,
             dry_run,
             totals.get("sites", 0),
-            totals.get("renamed", 0),
+            updated_total,
             totals.get("failed", 0),
         )
         return result

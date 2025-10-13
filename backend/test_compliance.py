@@ -10,7 +10,7 @@ from compliance import (
     SiteAuditRunner,
     DEFAULT_REQUIRED_SITE_VARIABLES,
 )
-from audit_actions import AP_RENAME_ACTION_ID
+from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
 
 
 def test_required_site_variables_check_flags_missing():
@@ -418,6 +418,109 @@ def test_configuration_overrides_check_flags_map_and_ip_exceptions():
     assert "st_ip_base" in paths
     assert "evpn_scope" in paths
     assert "ip_config.dns" in paths
+
+
+def test_configuration_overrides_check_includes_dns_fix_action():
+    ctx = SiteContext(
+        site_id="site-dns",
+        site_name="DNS Site",
+        site={
+            "variables": {
+                "siteDNS": "dns.example.com",
+                "hubDNSserver1": "10.10.10.1",
+                "hubDNSserver2": "10.10.10.2",
+            },
+            "networktemplate_name": "Prod - Standard Template",
+        },
+        setting={},
+        templates=[
+            {
+                "name": "Prod - Standard Template",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.1.0.2",
+                        "gateway": "10.1.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    }
+                },
+            }
+        ],
+        devices=[
+            {
+                "id": "sw-dns",
+                "name": "Switch DNS",
+                "type": "switch",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.1.0.5",
+                        "gateway": "10.1.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                        "dns": ["10.45.170.17", "10.48.178.1"],
+                    }
+                },
+            }
+        ],
+    )
+
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+
+    device_findings = [f for f in findings if f.device_id == "sw-dns" and f.actions]
+    assert device_findings, "Expected DNS override finding with remediation action"
+
+    action = device_findings[0].actions[0]
+    assert action["id"] == CLEAR_DNS_OVERRIDE_ACTION_ID
+    assert action["devices"] == [{"site_id": "site-dns", "device_id": "sw-dns"}]
+    assert action["metadata"]["dns_values"] == ["10.45.170.17", "10.48.178.1"]
+
+
+def test_configuration_overrides_check_requires_prereqs_for_dns_fix():
+    ctx = SiteContext(
+        site_id="site-missing",
+        site_name="Missing Prereqs",
+        site={"variables": {"siteDNS": "dns.example.com"}},
+        setting={},
+        templates=[
+            {
+                "name": "Alternate Template",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.1.0.2",
+                        "gateway": "10.1.0.1",
+                        "netmask": "255.255.255.0",
+                    }
+                },
+            }
+        ],
+        devices=[
+            {
+                "id": "sw-noaction",
+                "name": "Switch No Action",
+                "type": "switch",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.1.0.5",
+                        "gateway": "10.1.0.1",
+                        "netmask": "255.255.255.0",
+                        "dns": ["10.45.170.17"],
+                    }
+                },
+            }
+        ],
+    )
+
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+
+    device_findings = [f for f in findings if f.device_id == "sw-noaction"]
+    assert device_findings, "Finding should still be reported"
+    assert not any(f.actions for f in device_findings), "Actions should not be suggested without prerequisites"
 
 
 def test_configuration_overrides_check_skips_vc_port_differences():

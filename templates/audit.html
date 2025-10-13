@@ -249,17 +249,25 @@
           }
 
           const totals = data.totals || {};
-          const renamed = Number.isFinite(totals.renamed) ? totals.renamed : 0;
+          const updated = Number.isFinite(totals.updated)
+            ? totals.updated
+            : (Number.isFinite(totals.renamed) ? totals.renamed : 0);
           const failed = Number.isFinite(totals.failed) ? totals.failed : 0;
           const siteCount = Number.isFinite(totals.sites) ? totals.sites : siteIds.length;
-          const summaryParts = [
-            `Renamed ${renamed} device${renamed === 1 ? '' : 's'}`,
-            `across ${siteCount} site${siteCount === 1 ? '' : 's'}`,
-          ];
-          if (failed) {
-            summaryParts.push(`(${failed} device${failed === 1 ? '' : 's'} could not be updated)`);
+          const summaryDetails = [];
+          const summaryText = typeof totals.summary === 'string' ? totals.summary.trim() : '';
+          if (summaryText) {
+            summaryDetails.push(summaryText);
+          } else if (updated) {
+            summaryDetails.push(`Updated ${updated} device${updated === 1 ? '' : 's'}`);
+          } else {
+            summaryDetails.push('No changes were required');
           }
-          showStatus(`1 Click Fix completed: ${summaryParts.join(' ')}.`, false);
+          summaryDetails.push(`across ${siteCount} site${siteCount === 1 ? '' : 's'}`);
+          if (failed) {
+            summaryDetails.push(`(${failed} device${failed === 1 ? '' : 's'} could not be updated)`);
+          }
+          showStatus(`1 Click Fix completed: ${summaryDetails.join(' ')}.`, false);
         } catch (error) {
           console.error('1 Click Fix error', error);
           showStatus('1 Click Fix failed due to a network error.', true);

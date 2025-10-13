@@ -1,7 +1,7 @@
 import pytest
 import requests
 
-from audit_actions import AP_RENAME_ACTION_ID
+from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
 from audit_fixes import execute_audit_action
 
 
@@ -128,3 +128,110 @@ def test_execute_action_targets_specific_device(monkeypatch):
     assert change["old_name"] == "AlsoBad"
     assert len(calls["put"]) == 1
     assert calls["put"][0][0].endswith("/devices/dev2")
+
+
+def test_execute_dns_override_action_updates_payload(monkeypatch):
+    calls = {"get": [], "put": []}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["get"].append(url)
+        if url.endswith("/sites/site-1"):
+            return DummyResponse({"name": "Site One", "networktemplate_name": "Prod - Standard Template"})
+        if url.endswith("/sites/site-1/setting"):
+            return DummyResponse(
+                {
+                    "variables": {
+                        "siteDNS": "dns.example.com",
+                        "hubDNSserver1": "10.1.1.1",
+                        "hubDNSserver2": "10.1.1.2",
+                    }
+                }
+            )
+        if url.endswith("/sites/site-1/networktemplates"):
+            return DummyResponse([
+                {"name": "Prod - Standard Template"},
+            ])
+        if url.endswith("/sites/site-1/devices/device-1"):
+            return DummyResponse(
+                {
+                    "id": "device-1",
+                    "name": "Switch 1",
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.0.0.5",
+                        "gateway": "10.0.0.1",
+                        "dns": ["10.45.170.17", "10.48.178.1"],
+                    },
+                }
+            )
+        raise AssertionError(f"Unexpected GET {url}")
+
+    def fake_put(url, headers=None, json=None, timeout=None):
+        calls["put"].append((url, json))
+        return DummyResponse({})
+
+    monkeypatch.setattr("audit_fixes.requests.get", fake_get)
+    monkeypatch.setattr("audit_fixes.requests.put", fake_put)
+
+    result = execute_audit_action(
+        CLEAR_DNS_OVERRIDE_ACTION_ID,
+        "https://api.mist.test/api/v1",
+        "token",
+        ["site-1"],
+        dry_run=False,
+        device_map={"site-1": ["device-1"]},
+    )
+
+    assert result["ok"] is True
+    totals = result["totals"]
+    assert totals["updated"] == 1
+    assert "summary" in totals
+    assert len(calls["put"]) == 1
+    put_url, put_payload = calls["put"][0]
+    assert put_url.endswith("/devices/device-1")
+    assert "dns" not in put_payload.get("ip_config", {})
+    assert result["results"][0]["changes"][0]["removed_dns"] == [
+        "10.45.170.17",
+        "10.48.178.1",
+    ]
+
+
+def test_execute_dns_override_action_checks_preconditions(monkeypatch):
+    calls = {"get": [], "put": []}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["get"].append(url)
+        if url.endswith("/sites/site-1"):
+            return DummyResponse({"name": "Site One"})
+        if url.endswith("/sites/site-1/setting"):
+            return DummyResponse({"variables": {"siteDNS": "dns.example.com"}})
+        if url.endswith("/sites/site-1/networktemplates"):
+            return DummyResponse([])
+        if url.endswith("/sites/site-1/devices/device-1"):
+            return DummyResponse({"id": "device-1", "name": "Switch 1"})
+        raise AssertionError(f"Unexpected GET {url}")
+
+    def fake_put(url, headers=None, json=None, timeout=None):
+        calls["put"].append((url, json))
+        return DummyResponse({})
+
+    monkeypatch.setattr("audit_fixes.requests.get", fake_get)
+    monkeypatch.setattr("audit_fixes.requests.put", fake_put)
+
+    result = execute_audit_action(
+        CLEAR_DNS_OVERRIDE_ACTION_ID,
+        "https://api.mist.test/api/v1",
+        "token",
+        ["site-1"],
+        dry_run=False,
+        device_map={"site-1": ["device-1"]},
+    )
+
+    assert result["ok"] is True
+    totals = result["totals"]
+    assert totals["updated"] == 0
+    assert totals["failed"] >= 1
+    assert calls["put"] == []
+    site_summary = result["results"][0]
+    assert site_summary["failed"] >= 1
+    assert site_summary["errors"], "Expected error details when template missing"
