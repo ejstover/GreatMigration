@@ -42,6 +42,7 @@ from translate_showtech import (
 )  # type: ignore
 from fpdf import FPDF
 from compliance import SiteAuditRunner, SiteContext, build_default_runner
+from audit_history import load_site_history
 
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
@@ -976,16 +977,27 @@ def api_audit_run(
         finished_at = datetime.now(tz) if tz else datetime.now()
 
         site_findings = audit_result.get("site_findings", {}) or {}
+        site_devices = audit_result.get("site_devices", {}) or {}
+        history_records = load_site_history([ctx.site_name for ctx in contexts])
+        history_by_name = {
+            name: history.as_dict()
+            for name, history in history_records.items()
+        }
+        site_history: Dict[str, Optional[Dict[str, Any]]] = {}
         summary_sites = []
         for ctx in contexts:
+            history = history_by_name.get(ctx.site_name)
             summary_sites.append(
                 {
                     "id": ctx.site_id,
                     "name": ctx.site_name,
                     "org_id": ctx.site.get("org_id") or ctx.setting.get("org_id"),
                     "issues": site_findings.get(ctx.site_id, 0),
+                    "devices": site_devices.get(ctx.site_id, 0),
+                    "history": history,
                 }
             )
+            site_history[ctx.site_id] = history
 
         summary = {
             "ok": True,
@@ -996,15 +1008,19 @@ def api_audit_run(
             "errors": errors,
             "sites": summary_sites,
             "site_findings": site_findings,
+            "site_history": site_history,
             "started_at": started_at.isoformat(),
             "finished_at": finished_at.isoformat(),
             "duration_ms": duration_ms,
         }
 
         breakdown = ", ".join(f"{site['name']}:{site['issues']}" for site in summary_sites) or "none"
+        device_breakdown = ", ".join(
+            f"{site['name']}:{site['devices']}" for site in summary_sites
+        ) or "none"
 
         action_logger.info(
-            "user=%s action=audit_run sites=%s devices=%s issues=%s errors=%s started=%s duration_ms=%s site_issue_breakdown=%s",
+            "user=%s action=audit_run sites=%s devices=%s issues=%s errors=%s started=%s duration_ms=%s site_issue_breakdown=%s site_device_breakdown=%s",
             _request_user_label(request),
             len(unique_site_ids),
             summary["total_devices"],
@@ -1013,6 +1029,7 @@ def api_audit_run(
             summary["started_at"],
             duration_ms,
             breakdown,
+            device_breakdown,
         )
 
         return summary

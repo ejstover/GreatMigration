@@ -297,18 +297,26 @@
         `;
         resultsContainer.appendChild(meta);
 
+        const layout = document.createElement('div');
+        layout.className = 'lg:flex lg:items-start lg:gap-6';
+        const mainColumn = document.createElement('div');
+        mainColumn.className = 'flex-1 space-y-4';
+        const sideColumn = document.createElement('aside');
+        sideColumn.className = 'mt-6 lg:mt-0 lg:w-80 space-y-4';
+        layout.appendChild(mainColumn);
+        layout.appendChild(sideColumn);
+        resultsContainer.appendChild(layout);
+
         const checks = Array.isArray(data.checks) ? data.checks : [];
         if (!checks.length) {
           const empty = document.createElement('div');
           empty.className = 'rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 text-sm';
           empty.textContent = 'No checks were executed.';
-          resultsContainer.appendChild(empty);
-          return;
-        }
-
-        checks.forEach(check => {
-          const card = document.createElement('div');
-          card.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6 space-y-3';
+          mainColumn.appendChild(empty);
+        } else {
+          checks.forEach(check => {
+            const card = document.createElement('div');
+            card.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6 space-y-3';
           const header = document.createElement('div');
           header.className = 'flex flex-wrap items-center justify-between gap-3';
           const title = document.createElement('div');
@@ -336,18 +344,135 @@
           const badge = createSeverityBadge(badgeSeverity);
           header.appendChild(title);
           header.appendChild(badge);
-          card.appendChild(header);
+            card.appendChild(header);
 
-          const stats = document.createElement('div');
-          stats.className = 'flex flex-wrap gap-4 text-xs text-slate-500 dark:text-slate-400';
-          const failingCount = Array.isArray(check.failing_sites) ? check.failing_sites.length : 0;
-          const passingCount = typeof check.passing_sites === 'number' ? check.passing_sites : Math.max((data.total_sites || 0) - failingCount, 0);
-          stats.innerHTML = `<span><strong>${passingCount}</strong> site${passingCount === 1 ? '' : 's'} passing</span><span><strong>${failingCount}</strong> site${failingCount === 1 ? '' : 's'} with findings</span>`;
-          card.appendChild(stats);
+            const stats = document.createElement('div');
+            stats.className = 'flex flex-wrap gap-4 text-xs text-slate-500 dark:text-slate-400';
+            const failingCount = Array.isArray(check.failing_sites) ? check.failing_sites.length : 0;
+            const passingCount = typeof check.passing_sites === 'number' ? check.passing_sites : Math.max((data.total_sites || 0) - failingCount, 0);
+            stats.innerHTML = `<span><strong>${passingCount}</strong> site${passingCount === 1 ? '' : 's'} passing</span><span><strong>${failingCount}</strong> site${failingCount === 1 ? '' : 's'} with findings</span>`;
+            card.appendChild(stats);
 
-          card.appendChild(renderFindings(findings, check.severity));
-          resultsContainer.appendChild(card);
-        });
+            card.appendChild(renderFindings(findings, check.severity));
+            mainColumn.appendChild(card);
+          });
+        }
+
+        const sites = Array.isArray(data.sites) ? data.sites : [];
+        const siteHistory = data.site_history || {};
+        if (sites.length) {
+          const siteListCard = document.createElement('div');
+          siteListCard.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6';
+          siteListCard.innerHTML = '<h3 class="text-lg font-semibold mb-3">Audited sites</h3>';
+          const siteList = document.createElement('div');
+          siteList.className = 'space-y-2';
+          siteListCard.appendChild(siteList);
+          sideColumn.appendChild(siteListCard);
+
+          const historyCard = document.createElement('div');
+          historyCard.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6';
+          const historyTitle = document.createElement('h3');
+          historyTitle.className = 'text-lg font-semibold';
+          historyTitle.textContent = 'Historical audits';
+          const historyBody = document.createElement('div');
+          historyBody.className = 'mt-4 space-y-4';
+          const historyMessage = document.createElement('p');
+          historyMessage.className = 'text-sm text-slate-500 dark:text-slate-400';
+          historyMessage.textContent = 'Select a site to view historical audit totals for the past year.';
+          const historyStats = document.createElement('dl');
+          historyStats.className = 'grid grid-cols-2 gap-3 text-sm';
+          const devicesMetric = document.createElement('div');
+          devicesMetric.innerHTML = '<dt class="text-slate-500 dark:text-slate-400">Devices audited</dt><dd class="text-xl font-semibold text-slate-900 dark:text-slate-100">—</dd>';
+          const issuesMetric = document.createElement('div');
+          issuesMetric.innerHTML = '<dt class="text-slate-500 dark:text-slate-400">Issues found</dt><dd class="text-xl font-semibold text-slate-900 dark:text-slate-100">—</dd>';
+          const runsMetric = document.createElement('p');
+          runsMetric.className = 'text-xs text-slate-500 dark:text-slate-400';
+          historyBody.appendChild(historyMessage);
+          historyBody.appendChild(historyStats);
+          historyStats.appendChild(devicesMetric);
+          historyStats.appendChild(issuesMetric);
+          historyBody.appendChild(runsMetric);
+          historyCard.appendChild(historyTitle);
+          historyCard.appendChild(historyBody);
+          sideColumn.appendChild(historyCard);
+
+          const siteButtons = new Map();
+          let activeSiteId = null;
+
+          function updateHistory(site) {
+            if (!site) {
+              historyTitle.textContent = 'Historical audits';
+              historyMessage.textContent = 'Select a site to view historical audit totals for the past year.';
+              devicesMetric.querySelector('dd').textContent = '—';
+              issuesMetric.querySelector('dd').textContent = '—';
+              runsMetric.textContent = '';
+              return;
+            }
+            const history = site.history || siteHistory[site.id] || null;
+            historyTitle.textContent = `Historical audits for ${site.name}`;
+            if (!history || !history.run_count) {
+              historyMessage.textContent = 'No historical audit data recorded for this site yet.';
+              devicesMetric.querySelector('dd').textContent = '—';
+              issuesMetric.querySelector('dd').textContent = '—';
+              runsMetric.textContent = '';
+              return;
+            }
+            historyMessage.textContent = 'Totals from the past year of audit runs:';
+            const deviceTotal = Number(history.devices_total) || 0;
+            const issueTotal = Number(history.issues_total) || 0;
+            devicesMetric.querySelector('dd').textContent = deviceTotal.toLocaleString();
+            issuesMetric.querySelector('dd').textContent = issueTotal.toLocaleString();
+            const runCount = Number(history.run_count) || 0;
+            const lastAudit = history.last_audit_at ? new Date(history.last_audit_at).toLocaleString() : null;
+            runsMetric.textContent = runCount
+              ? `Runs analyzed: ${runCount.toLocaleString()}${lastAudit ? ` • Last audit: ${lastAudit}` : ''}`
+              : '';
+          }
+
+          function selectSite(siteId) {
+            if (!siteButtons.has(siteId)) {
+              activeSiteId = null;
+              updateHistory(null);
+              return;
+            }
+            siteButtons.forEach((btn, id) => {
+              if (id === siteId) {
+                btn.classList.add('border-emerald-300', 'bg-emerald-50', 'dark:bg-emerald-900/30', 'dark:border-emerald-700');
+              } else {
+                btn.classList.remove('border-emerald-300', 'bg-emerald-50', 'dark:bg-emerald-900/30', 'dark:border-emerald-700');
+              }
+            });
+            activeSiteId = siteId;
+            const site = sites.find(item => item.id === siteId);
+            updateHistory(site || null);
+          }
+
+          sites.forEach(site => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'w-full text-left border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 hover:border-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/40 transition';
+            const deviceCount = Number(site.devices) || 0;
+            const issueCount = Number(site.issues) || 0;
+            button.innerHTML = `
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <p class="font-medium text-sm">${site.name}</p>
+                  <p class="text-xs text-slate-500 dark:text-slate-400">${deviceCount.toLocaleString()} device${deviceCount === 1 ? '' : 's'} • ${issueCount.toLocaleString()} issue${issueCount === 1 ? '' : 's'}</p>
+                </div>
+                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                </svg>
+              </div>
+            `;
+            button.addEventListener('click', () => selectSite(site.id));
+            siteList.appendChild(button);
+            siteButtons.set(site.id, button);
+          });
+
+          if (sites.length === 1) {
+            selectSite(sites[0].id);
+          }
+        }
       }
 
       async function loadSites() {

@@ -903,6 +903,7 @@ def test_site_audit_runner_summarizes_results():
     assert result["total_devices"] == 3
     assert result["total_findings"] == 4
     assert result["site_findings"] == {"site-5": 0, "site-6": 4}
+    assert result["site_devices"] == {"site-5": 2, "site-6": 1}
     checks = result["checks"]
     assert len(checks) == 1
     check = checks[0]

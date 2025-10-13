@@ -1,5 +1,6 @@
 import importlib
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
@@ -77,3 +78,29 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
 
     template_ids = {t.get("id") for t in context.templates if isinstance(t, dict)}
     assert "template-1" in template_ids
+
+
+def test_load_site_history_parses_breakdown(tmp_path):
+    from audit_history import load_site_history
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+
+    log_contents = (
+        "2025-10-13 08:05:38,905 | INFO | user=Eric Stover action=audit_run sites=2 devices=52 "
+        "issues=52 errors=0 started=2025-10-13T08:05:30.074244 duration_ms=8831 "
+        "site_issue_breakdown=West Chicago:51, Wahpeton:1 site_device_breakdown=West Chicago:30, Wahpeton:22\n"
+    )
+    (log_dir / "13102025.log").write_text(log_contents, encoding="utf-8")
+
+    history = load_site_history(
+        ["West Chicago", "Wahpeton", "Unknown"],
+        now=datetime(2025, 10, 13, 12, 0, 0),
+        log_dir=log_dir,
+    )
+
+    assert history["West Chicago"].issues_total == 51
+    assert history["West Chicago"].devices_total == 30
+    assert history["West Chicago"].run_count == 1
+    assert history["Wahpeton"].issues_total == 1
+    assert history["Unknown"].run_count == 0
