@@ -34,6 +34,7 @@
       <a href="/replacements" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_REPLACEMENTS}}</a>
       <a href="/" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_CONFIG}}</a>
       <a href="/rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_RULES}}</a>
+      <a href="/audit" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_AUDIT}}</a>
       <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Help</a>
       <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
     </nav>
@@ -54,6 +55,38 @@
     </header>
 
     <div class="max-w-7xl mx-auto p-6">
+      <!-- SSH Retrieval -->
+      <section class="mb-6">
+        <div class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-6">
+          <h2 class="text-lg font-medium mb-2">Fetch running configs via SSH</h2>
+          <p class="text-sm text-slate-600 dark:text-slate-300 mb-4">Enter the Cisco switches to collect <code>show running-config</code>. The configs are converted automatically once collection completes.</p>
+          <div class="grid md:grid-cols-2 gap-4">
+            <div>
+              <label for="cfg_ssh_devices" class="block text-sm font-medium mb-1">Devices (one per line)</label>
+              <textarea id="cfg_ssh_devices" class="w-full border rounded-lg p-3 min-h-[8rem] dark:bg-slate-900 dark:border-slate-700" placeholder="switch1.example.com&#10;10.0.0.5"></textarea>
+            </div>
+            <div class="space-y-4">
+              <div>
+                <label for="cfg_ssh_username" class="block text-sm font-medium mb-1">SSH username</label>
+                <input id="cfg_ssh_username" type="text" class="w-full border rounded-lg p-3 dark:bg-slate-900 dark:border-slate-700" autocomplete="username" />
+              </div>
+              <div>
+                <label for="cfg_ssh_password" class="block text-sm font-medium mb-1">SSH password</label>
+                <div class="relative">
+                  <input id="cfg_ssh_password" type="password" class="w-full border rounded-lg p-3 pr-16 dark:bg-slate-900 dark:border-slate-700" autocomplete="current-password" />
+                  <button type="button" id="cfg_ssh_toggle_password" class="absolute inset-y-0 right-0 px-3 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-200">Show</button>
+                </div>
+              </div>
+              <p class="text-xs text-slate-500 dark:text-slate-400">Usernames persist locally for convenience. Passwords clear immediately after the job starts.</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 mt-4">
+            <button id="cfg_ssh_collect" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Fetch configs</button>
+            <span id="cfg_ssh_progress" class="text-sm text-slate-600 dark:text-slate-300"></span>
+          </div>
+        </div>
+      </section>
+
       <!-- Drag & Drop -->
       <section class="mb-6">
       <div id="dz" class="dropzone rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 p-8 text-center text-slate-500 dark:text-slate-300">
@@ -63,7 +96,7 @@
       </div>
       <div class="flex items-center justify-between mt-2">
         <div id="convert_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
-        <button id="clear_all" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Clear</button>
+        <button id="clear_all" class="px-4 py-2 rounded bg-red-600 text-white hover:bg-red-700">Clear</button>
       </div>
     </section>
 
@@ -172,6 +205,13 @@
     });
 
     // --- Elements ---
+    const sshDevicesInput = document.getElementById('cfg_ssh_devices');
+    const sshUsernameInput = document.getElementById('cfg_ssh_username');
+    const sshPasswordInput = document.getElementById('cfg_ssh_password');
+    const sshToggleBtn = document.getElementById('cfg_ssh_toggle_password');
+    const sshCollectBtn = document.getElementById('cfg_ssh_collect');
+    const sshProgress = document.getElementById('cfg_ssh_progress');
+
     const dz = document.getElementById('dz');
     const fileInput = document.getElementById('file_input');
     const chooseBtn = document.getElementById('choose_files');
@@ -198,11 +238,179 @@
     let seenFiles = new Set(); // dedupe chooser/dnd
     let sitesCache = []; // list of sites
     const devicesBySite = new Map(); // site_id -> devices[]
+    let sshCollectStartedAt = null;
+    let sshCollectRequested = 0;
 
     // --- Utils ---
     function show(el){ el.classList.remove('hidden'); }
     function hide(el){ el.classList.add('hidden'); }
     function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
+
+    async function logTiming(eventName, durationMs, metadata = {}){
+      try {
+        await fetch('/api/log_timing', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event: eventName,
+            duration_ms: Math.max(0, Math.round(durationMs)),
+            metadata
+          })
+        });
+      } catch (err) {
+        console.warn('Failed to log timing metric', err);
+      }
+    }
+
+    const savedSshUser = localStorage.getItem('ssh_username');
+    if (savedSshUser && sshUsernameInput) sshUsernameInput.value = savedSshUser;
+
+    if (sshToggleBtn && sshPasswordInput){
+      sshToggleBtn.addEventListener('click', () => {
+        const hidden = sshPasswordInput.type === 'password';
+        sshPasswordInput.type = hidden ? 'text' : 'password';
+        sshToggleBtn.textContent = hidden ? 'Hide' : 'Show';
+      });
+    }
+
+    if (sshCollectBtn){
+      sshCollectBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        if (sshCollectBtn.disabled) return;
+        const devicesRaw = (sshDevicesInput?.value || '').split(/\r?\n|,/);
+        const devices = devicesRaw.map(v => v.trim()).filter(Boolean).map(host => ({ host, label: host }));
+        if (!devices.length){
+          convertStatus.textContent = 'Enter at least one device hostname or IP.';
+          return;
+        }
+        const username = sshUsernameInput?.value?.trim() || '';
+        const password = sshPasswordInput?.value || '';
+        if (!username || !password){
+          convertStatus.textContent = 'SSH username and password are required.';
+          return;
+        }
+
+        sshCollectBtn.disabled = true;
+        sshCollectBtn.classList.add('opacity-70', 'cursor-not-allowed');
+        if (sshProgress) sshProgress.textContent = 'Starting SSH collection…';
+        convertStatus.textContent = '';
+        sshCollectStartedAt = performance.now();
+        sshCollectRequested = devices.length;
+
+        try {
+          const res = await fetch('/api/ssh/jobs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password, devices })
+          });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.error || res.statusText || 'Failed to start job');
+          localStorage.setItem('ssh_username', username);
+          if (sshPasswordInput) sshPasswordInput.value = '';
+          pollConfigJob(data.job_id);
+        } catch (err) {
+          convertStatus.textContent = 'Error starting SSH job: ' + (err?.message || err);
+          sshCollectBtn.disabled = false;
+          sshCollectBtn.classList.remove('opacity-70', 'cursor-not-allowed');
+          if (sshProgress) sshProgress.textContent = '';
+          sshCollectStartedAt = null;
+          sshCollectRequested = 0;
+        }
+      });
+    }
+
+    function pollConfigJob(jobId){
+      let timer = null;
+      const fetchStatus = async () => {
+        try {
+          const res = await fetch(`/api/ssh/jobs/${jobId}`);
+          if (!res.ok) throw new Error(res.statusText || 'Status request failed');
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.error || 'Status error');
+          const job = data.job || {};
+          const updates = job.updates || [];
+          if (sshProgress && job.message){
+            if (updates.length){
+              const last = updates[updates.length - 1];
+              const detail = last?.device ? `${last.device} (${last.status})` : '';
+              sshProgress.textContent = detail ? `${job.message} • ${detail}` : job.message;
+            } else {
+              sshProgress.textContent = job.message;
+            }
+          }
+
+          if (job.status === 'complete'){
+            clearInterval(timer);
+            await handleConfigJobComplete(job);
+            if (sshCollectBtn){
+              sshCollectBtn.disabled = false;
+              sshCollectBtn.classList.remove('opacity-70', 'cursor-not-allowed');
+            }
+            if (sshProgress) sshProgress.textContent = '';
+          }
+        } catch (err) {
+          clearInterval(timer);
+          convertStatus.textContent = 'Error retrieving SSH status: ' + (err?.message || err);
+          if (sshCollectBtn){
+            sshCollectBtn.disabled = false;
+            sshCollectBtn.classList.remove('opacity-70', 'cursor-not-allowed');
+          }
+          if (sshProgress) sshProgress.textContent = '';
+          sshCollectStartedAt = null;
+          sshCollectRequested = 0;
+        }
+      };
+      fetchStatus();
+      timer = setInterval(fetchStatus, 1500);
+    }
+
+    async function handleConfigJobComplete(job){
+      const resultsArr = job.results || [];
+      const successes = resultsArr.filter(r => r.status === 'ok' && r.running_config && r.running_config.text);
+      const failures = resultsArr.filter(r => r.status !== 'ok');
+
+      if (!successes.length){
+        if (failures.length){
+          convertStatus.textContent = `SSH collection failed for ${failures.length} device(s).`;
+        } else {
+          convertStatus.textContent = 'No configs collected via SSH.';
+        }
+        sshCollectStartedAt = null;
+        sshCollectRequested = 0;
+        return;
+      }
+
+      const now = Date.now();
+      const files = successes.map(item => {
+        const text = item.running_config?.text || '';
+        let filename = item.running_config?.filename || '';
+        if (!filename){
+          const base = (item.label || item.host || 'config').replace(/[^A-Za-z0-9._-]+/g, '_') || 'config';
+          filename = `${base}.running-config.txt`;
+        }
+        return new File([text], filename, { type: 'text/plain', lastModified: now });
+      });
+
+      if (files.length){
+        await handleFiles(files);
+        if (sshCollectStartedAt !== null){
+          const duration = performance.now() - sshCollectStartedAt;
+          logTiming('config_fetch_results', duration, {
+            devices_requested: sshCollectRequested,
+            successes: successes.length,
+            failures: failures.length
+          });
+        }
+      }
+
+      sshCollectStartedAt = null;
+      sshCollectRequested = 0;
+
+      if (failures.length){
+        convertStatus.textContent += ` ${failures.length} device(s) failed.`;
+        console.warn('SSH config collection failures:', failures);
+      }
+    }
 
     // --- File input UX (Chrome/Edge: single dialog & same-file reselect) ---
     chooseBtn.addEventListener('click', (e) => {
