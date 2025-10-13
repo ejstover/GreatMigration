@@ -10,9 +10,33 @@ from compliance import (
     SiteAuditRunner,
     DEFAULT_REQUIRED_SITE_VARIABLES,
     DNS_OVERRIDE_TEMPLATE_NAME,
+    DNS_OVERRIDE_LAB_TEMPLATE_NAME,
+    DNS_OVERRIDE_PROD_TEMPLATE_IDS,
+    DNS_OVERRIDE_LAB_TEMPLATE_IDS,
+    DNS_OVERRIDE_REQUIRED_VAR_GROUPS,
     DNS_OVERRIDE_REQUIRED_VARS,
 )
 from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
+
+
+def _format_dns_label_group(options):
+    values = [opt for opt in options if isinstance(opt, str) and opt]
+    if not values:
+        return ""
+    if len(values) == 1:
+        return values[0]
+    if len(values) == 2:
+        return f"{values[0]} or {values[1]}"
+    return ", ".join(values[:-1]) + f", or {values[-1]}"
+
+
+def _expected_dns_labels():
+    labels = []
+    for group in DNS_OVERRIDE_REQUIRED_VAR_GROUPS:
+        label = _format_dns_label_group(group)
+        if label:
+            labels.append(label)
+    return labels
 
 
 def test_required_site_variables_check_flags_missing():
@@ -454,6 +478,7 @@ def test_configuration_overrides_check_includes_dns_fix_action():
                 "id": "sw-dns",
                 "name": "Switch DNS",
                 "type": "switch",
+                "template_id": DNS_OVERRIDE_PROD_TEMPLATE_IDS[0],
                 "switch_config": {
                     "ip_config": {
                         "type": "static",
@@ -479,14 +504,20 @@ def test_configuration_overrides_check_includes_dns_fix_action():
     assert action["devices"] == [{"site_id": "site-dns", "device_id": "sw-dns"}]
     assert action["metadata"]["dns_values"] == ["10.45.170.17", "10.48.178.1"]
     prechecks = action["metadata"].get("prechecks")
-    assert prechecks == {
+    expected_prechecks = {
+        "can_run": True,
+        "site_type": "production",
         "template_applied": True,
-        "dns_variables_defined": True,
         "template_name": DNS_OVERRIDE_TEMPLATE_NAME,
-        "required_dns_variables": list(DNS_OVERRIDE_REQUIRED_VARS),
+        "allowed_template_names": [DNS_OVERRIDE_TEMPLATE_NAME],
+        "allowed_template_ids": list(DNS_OVERRIDE_PROD_TEMPLATE_IDS),
+        "device_template_id": DNS_OVERRIDE_PROD_TEMPLATE_IDS[0],
+        "dns_variables_defined": True,
+        "required_dns_variables": _expected_dns_labels(),
         "missing_dns_variables": [],
         "messages": [],
     }
+    assert prechecks == expected_prechecks
 
 
 def test_configuration_overrides_check_reports_prereq_status_when_missing():
@@ -534,17 +565,90 @@ def test_configuration_overrides_check_reports_prereq_status_when_missing():
     actions = [action for finding in device_findings for action in (finding.actions or [])]
     assert actions, "Expected remediation action even when prerequisites missing"
     prechecks = actions[0]["metadata"].get("prechecks")
-    assert prechecks == {
+    expected_prechecks = {
+        "can_run": False,
+        "site_type": "production",
         "template_applied": False,
-        "dns_variables_defined": False,
         "template_name": DNS_OVERRIDE_TEMPLATE_NAME,
-        "required_dns_variables": list(DNS_OVERRIDE_REQUIRED_VARS),
+        "allowed_template_names": [DNS_OVERRIDE_TEMPLATE_NAME],
+        "allowed_template_ids": list(DNS_OVERRIDE_PROD_TEMPLATE_IDS),
+        "device_template_id": None,
+        "dns_variables_defined": False,
+        "required_dns_variables": _expected_dns_labels(),
         "missing_dns_variables": ["hubDNSserver1", "hubDNSserver2"],
         "messages": [
             "Apply 'Prod - Standard Template' template to this site.",
             "Define site DNS variables: hubDNSserver1, hubDNSserver2.",
         ],
     }
+    assert prechecks == expected_prechecks
+
+
+def test_configuration_overrides_check_allows_lab_template_precheck():
+    ctx = SiteContext(
+        site_id="site-lab",
+        site_name="Automation Lab",
+        site={
+            "variables": {
+                "siteDNS": "10.10.10.10",
+                "hubDNSserver1": "10.10.10.11",
+                "hubDNSserver2": "10.10.10.12",
+            }
+        },
+        setting={},
+        templates=[
+            {
+                "id": DNS_OVERRIDE_LAB_TEMPLATE_IDS[0],
+                "name": DNS_OVERRIDE_LAB_TEMPLATE_NAME,
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.2.0.2",
+                        "gateway": "10.2.0.1",
+                        "netmask": "255.255.255.0",
+                    }
+                },
+            }
+        ],
+        devices=[
+            {
+                "id": "lab-sw",
+                "name": "Lab Switch",
+                "type": "switch",
+                "template_id": DNS_OVERRIDE_LAB_TEMPLATE_IDS[0],
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.2.0.5",
+                        "gateway": "10.2.0.1",
+                        "netmask": "255.255.255.0",
+                        "dns": ["9.9.9.9"],
+                    }
+                },
+            }
+        ],
+    )
+
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+
+    device_findings = [f for f in findings if f.device_id == "lab-sw" and f.actions]
+    assert device_findings, "Expected remediation action for lab site"
+
+    action = device_findings[0].actions[0]
+    prechecks = action["metadata"].get("prechecks")
+    assert prechecks["can_run"] is True
+    assert prechecks["site_type"] == "lab"
+    assert prechecks["template_applied"] is True
+    assert DNS_OVERRIDE_LAB_TEMPLATE_NAME in prechecks["allowed_template_names"]
+    assert DNS_OVERRIDE_TEMPLATE_NAME in prechecks["allowed_template_names"]
+    expected_allowed_ids = sorted(set(DNS_OVERRIDE_LAB_TEMPLATE_IDS + DNS_OVERRIDE_PROD_TEMPLATE_IDS))
+    assert sorted(prechecks["allowed_template_ids"]) == expected_allowed_ids
+    assert prechecks["device_template_id"] == DNS_OVERRIDE_LAB_TEMPLATE_IDS[0]
+    assert prechecks["dns_variables_defined"] is True
+    assert prechecks["required_dns_variables"] == _expected_dns_labels()
+    assert prechecks["missing_dns_variables"] == []
+    assert prechecks["messages"] == []
 
 
 def test_configuration_overrides_check_skips_vc_port_differences():

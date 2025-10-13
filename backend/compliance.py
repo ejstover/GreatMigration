@@ -8,7 +8,7 @@ import os
 import re
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
 
@@ -166,6 +166,147 @@ def _collect_template_names(context: SiteContext) -> Set[str]:
             if isinstance(value, str) and value.strip():
                 names.add(value)
     return names
+
+
+def _collect_template_ids(context: SiteContext) -> Set[str]:
+    ids: Set[str] = set()
+    for container in (context.site, context.setting):
+        if not isinstance(container, dict):
+            continue
+        for key in (
+            "networktemplate_id",
+            "network_template_id",
+            "template_id",
+            "switch_template_id",
+        ):
+            value = container.get(key)
+            if isinstance(value, str) and value.strip():
+                ids.add(value)
+    for tmpl in context.templates:
+        if not isinstance(tmpl, dict):
+            continue
+        for key in ("id", "template_id"):
+            value = tmpl.get(key)
+            if isinstance(value, str) and value.strip():
+                ids.add(value)
+    return ids
+
+
+def _resolve_device_template_id(device: Mapping[str, Any]) -> Optional[str]:
+    for key in ("template_id", "switch_template_id"):
+        value = device.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _site_is_lab(site_name: Optional[str]) -> bool:
+    if not site_name:
+        return False
+    return "lab" in site_name.lower()
+
+
+def _format_dns_var_group_label(options: Sequence[str]) -> str:
+    labels = [opt for opt in options if isinstance(opt, str) and opt]
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} or {labels[1]}"
+    return ", ".join(labels[:-1]) + f", or {labels[-1]}"
+
+
+def _evaluate_dns_variable_groups(variables: Mapping[str, Any]) -> Tuple[bool, List[str]]:
+    missing: List[str] = []
+    for group in DNS_OVERRIDE_REQUIRED_VAR_GROUPS:
+        if not any(_has_value(variables.get(name)) for name in group):
+            label = _format_dns_var_group_label(group)
+            if label:
+                missing.append(label)
+    return (not missing, missing)
+
+
+def _expected_template_details(site_name: Optional[str]) -> Dict[str, Any]:
+    is_lab = _site_is_lab(site_name)
+    if is_lab:
+        allowed_names = [
+            name
+            for name in (
+                DNS_OVERRIDE_LAB_TEMPLATE_NAME,
+                DNS_OVERRIDE_TEMPLATE_NAME,
+            )
+            if isinstance(name, str) and name
+        ]
+        allowed_ids: Tuple[str, ...] = tuple(
+            dict.fromkeys(
+                value
+                for value in (
+                    *(DNS_OVERRIDE_LAB_TEMPLATE_IDS or ()),
+                    *(DNS_OVERRIDE_PROD_TEMPLATE_IDS or ()),
+                )
+                if isinstance(value, str) and value
+            )
+        )
+        preferred = DNS_OVERRIDE_LAB_TEMPLATE_NAME or (allowed_names[0] if allowed_names else "")
+    else:
+        allowed_names = [
+            name
+            for name in (
+                DNS_OVERRIDE_TEMPLATE_NAME,
+            )
+            if isinstance(name, str) and name
+        ]
+        allowed_ids = tuple(
+            dict.fromkeys(
+                value
+                for value in (DNS_OVERRIDE_PROD_TEMPLATE_IDS or ())
+                if isinstance(value, str) and value
+            )
+        )
+        preferred = DNS_OVERRIDE_TEMPLATE_NAME
+    return {
+        "site_type": "lab" if is_lab else "production",
+        "allowed_template_names": tuple(allowed_names),
+        "allowed_template_ids": allowed_ids,
+        "preferred_template_name": preferred,
+    }
+
+
+def _template_matches_requirements(
+    template_names: Set[str],
+    template_ids: Set[str],
+    allowed_names: Sequence[str],
+    allowed_ids: Sequence[str],
+    device_template_id: Optional[str],
+) -> bool:
+    normalized_allowed_names = {name for name in allowed_names if isinstance(name, str) and name}
+    normalized_allowed_ids = {tid for tid in allowed_ids if isinstance(tid, str) and tid}
+
+    if device_template_id:
+        value = device_template_id.strip()
+        if value and value in normalized_allowed_ids:
+            return True
+
+    if normalized_allowed_ids and template_ids.intersection(normalized_allowed_ids):
+        return True
+
+    if normalized_allowed_names and template_names.intersection(normalized_allowed_names):
+        return True
+
+    return False
+
+
+def _format_template_precheck_message(allowed_names: Sequence[str]) -> str:
+    filtered = [name for name in allowed_names if isinstance(name, str) and name]
+    if not filtered:
+        return "Required switch template is not applied to this site."
+    if len(filtered) == 1:
+        return f"Apply '{filtered[0]}' template to this site."
+    if len(filtered) == 2:
+        return f"Apply '{filtered[0]}' or '{filtered[1]}' template to this site."
+    joined = ", ".join(f"'{name}'" for name in filtered[:-1])
+    return f"Apply one of these templates to this site: {joined}, or '{filtered[-1]}'."
 
 
 class SwitchTemplateConfigurationCheck(ComplianceCheck):
@@ -850,12 +991,22 @@ class ConfigurationOverridesCheck(ComplianceCheck):
             )
 
         template_names = _collect_template_names(context)
-        prod_template_applied = DNS_OVERRIDE_TEMPLATE_NAME in template_names
+        template_ids = _collect_template_ids(context)
         site_variables = _collect_site_variables(context)
-        missing_dns_variables = sorted(
-            key for key in DNS_OVERRIDE_REQUIRED_VARS if not _has_value(site_variables.get(key))
-        )
-        dns_variables_defined = not missing_dns_variables
+        template_details = _expected_template_details(context.site_name)
+        allowed_template_names: Sequence[str] = template_details["allowed_template_names"]
+        allowed_template_ids: Sequence[str] = template_details["allowed_template_ids"]
+        site_type_label: str = template_details["site_type"]
+        preferred_template_name: str = template_details["preferred_template_name"]
+        required_dns_labels = [
+            label
+            for label in (
+                _format_dns_var_group_label(group)
+                for group in DNS_OVERRIDE_REQUIRED_VAR_GROUPS
+            )
+            if label
+        ]
+        dns_variables_defined, missing_dns_labels = _evaluate_dns_variable_groups(site_variables)
 
         templates = _gather_switch_templates(context)
 
@@ -1003,16 +1154,29 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                                     if isinstance(value, (str, bytes)) and str(value).strip()
                                 ]
                                 if dns_values:
+                                    device_template_id = _resolve_device_template_id(device)
+                                    template_precheck_ok = _template_matches_requirements(
+                                        template_names,
+                                        template_ids,
+                                        allowed_template_names,
+                                        allowed_template_ids,
+                                        device_template_id,
+                                    )
                                     precheck_messages: List[str] = []
-                                    if not prod_template_applied:
+                                    if not template_precheck_ok:
                                         precheck_messages.append(
-                                            f"Apply '{DNS_OVERRIDE_TEMPLATE_NAME}' template to this site."
+                                            _format_template_precheck_message(allowed_template_names)
                                         )
-                                    if missing_dns_variables:
-                                        joined_missing = ", ".join(missing_dns_variables)
-                                        precheck_messages.append(
-                                            f"Define site DNS variables: {joined_missing}."
-                                        )
+                                    if not dns_variables_defined:
+                                        if missing_dns_labels:
+                                            precheck_messages.append(
+                                                f"Define site DNS variables: {', '.join(missing_dns_labels)}."
+                                            )
+                                        else:
+                                            precheck_messages.append(
+                                                "Required site DNS variables are missing."
+                                            )
+                                    can_run = template_precheck_ok and dns_variables_defined
                                     actions = [
                                         {
                                             "id": CLEAR_DNS_OVERRIDE_ACTION_ID,
@@ -1030,17 +1194,24 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                                                 "device_name": device_name,
                                                 "dns_values": dns_values,
                                                 "prechecks": {
+                                                    "can_run": can_run,
+                                                    "site_type": site_type_label,
                                                     "template_applied": bool(
-                                                        prod_template_applied
+                                                        template_precheck_ok
                                                     ),
+                                                    "template_name": preferred_template_name,
+                                                    "allowed_template_names": list(
+                                                        allowed_template_names
+                                                    ),
+                                                    "allowed_template_ids": list(
+                                                        allowed_template_ids
+                                                    ),
+                                                    "device_template_id": device_template_id,
                                                     "dns_variables_defined": bool(
                                                         dns_variables_defined
                                                     ),
-                                                    "template_name": DNS_OVERRIDE_TEMPLATE_NAME,
-                                                    "required_dns_variables": list(
-                                                        DNS_OVERRIDE_REQUIRED_VARS
-                                                    ),
-                                                    "missing_dns_variables": missing_dns_variables,
+                                                    "required_dns_variables": required_dns_labels,
+                                                    "missing_dns_variables": missing_dns_labels,
                                                     "messages": precheck_messages,
                                                 },
                                             },
@@ -1075,11 +1246,19 @@ DEFAULT_AP_NAME_PATTERN = r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDF|IDF\d+)AP\d+$"
 
 
 DNS_OVERRIDE_TEMPLATE_NAME = "Prod - Standard Template"
-DNS_OVERRIDE_REQUIRED_VARS: Tuple[str, ...] = (
-    "siteDNS",
-    "hubDNSserver1",
-    "hubDNSserver2",
+DNS_OVERRIDE_LAB_TEMPLATE_NAME = "Test - Standard Template"
+DNS_OVERRIDE_PROD_TEMPLATE_IDS: Tuple[str, ...] = (
+    "35413d62-89d5-45f7-a5dd-9d7e2ed31a23",
 )
+DNS_OVERRIDE_LAB_TEMPLATE_IDS: Tuple[str, ...] = (
+    "40928180-ea55-48c5-9055-f34c1fe1033a",
+)
+DNS_OVERRIDE_REQUIRED_VAR_GROUPS: Tuple[Tuple[str, ...], ...] = (
+    ("siteDNS", "siteDNSserver"),
+    ("hubDNSserver1",),
+    ("hubDNSserver2",),
+)
+DNS_OVERRIDE_REQUIRED_VARS: Tuple[str, ...] = tuple(group[0] for group in DNS_OVERRIDE_REQUIRED_VAR_GROUPS)
 
 
 def _strip_pattern_wrappers(value: str) -> str:

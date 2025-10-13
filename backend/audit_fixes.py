@@ -11,7 +11,10 @@ import requests
 from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
 from compliance import (
     DEFAULT_AP_NAME_PATTERN,
-    DNS_OVERRIDE_REQUIRED_VARS,
+    DNS_OVERRIDE_LAB_TEMPLATE_IDS,
+    DNS_OVERRIDE_LAB_TEMPLATE_NAME,
+    DNS_OVERRIDE_PROD_TEMPLATE_IDS,
+    DNS_OVERRIDE_REQUIRED_VAR_GROUPS,
     DNS_OVERRIDE_TEMPLATE_NAME,
 )
 
@@ -152,6 +155,27 @@ def _collect_template_names_from_docs(*docs: Any) -> Set[str]:
     return names
 
 
+def _collect_template_ids_from_docs(*docs: Any) -> Set[str]:
+    identifiers: Set[str] = set()
+
+    def _maybe_add(value: Any) -> None:
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                identifiers.add(text)
+
+    for doc in docs:
+        if isinstance(doc, dict):
+            for key in ("id", "template_id", "networktemplate_id", "network_template_id"):
+                _maybe_add(doc.get(key))
+        elif isinstance(doc, list):
+            for item in doc:
+                if isinstance(item, dict):
+                    for key in ("id", "template_id"):
+                        _maybe_add(item.get(key))
+    return identifiers
+
+
 def _collect_site_variables_from_docs(*docs: Any) -> Dict[str, Any]:
     variables: Dict[str, Any] = {}
     keys = ("variables", "vars", "site_vars", "site_variables")
@@ -176,6 +200,110 @@ def _site_display_name(doc: Any, default: str) -> str:
                 if text:
                     return text
     return default
+
+
+def _site_is_lab(site_name: str) -> bool:
+    return "lab" in (site_name or "").lower()
+
+
+def _format_dns_var_group_label(options: Sequence[str]) -> str:
+    labels = [opt for opt in options if isinstance(opt, str) and opt]
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} or {labels[1]}"
+    return ", ".join(labels[:-1]) + f", or {labels[-1]}"
+
+
+def _evaluate_dns_variable_groups(variables: Mapping[str, Any]) -> Tuple[bool, List[str]]:
+    missing: List[str] = []
+    for group in DNS_OVERRIDE_REQUIRED_VAR_GROUPS:
+        if not any(_value_is_set(variables.get(name)) for name in group):
+            label = _format_dns_var_group_label(group)
+            if label:
+                missing.append(label)
+    return (not missing, missing)
+
+
+def _allowed_templates_for_site(site_name: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    if _site_is_lab(site_name):
+        allowed_names = tuple(
+            dict.fromkeys(
+                name
+                for name in (
+                    DNS_OVERRIDE_LAB_TEMPLATE_NAME,
+                    DNS_OVERRIDE_TEMPLATE_NAME,
+                )
+                if isinstance(name, str) and name
+            )
+        )
+        allowed_ids = tuple(
+            dict.fromkeys(
+                value
+                for value in (
+                    *(DNS_OVERRIDE_LAB_TEMPLATE_IDS or ()),
+                    *(DNS_OVERRIDE_PROD_TEMPLATE_IDS or ()),
+                )
+                if isinstance(value, str) and value
+            )
+        )
+        return allowed_names, allowed_ids
+    allowed_names = tuple(
+        dict.fromkeys(
+            name
+            for name in (DNS_OVERRIDE_TEMPLATE_NAME,)
+            if isinstance(name, str) and name
+        )
+    )
+    allowed_ids = tuple(
+        dict.fromkeys(
+            value
+            for value in (DNS_OVERRIDE_PROD_TEMPLATE_IDS or ())
+            if isinstance(value, str) and value
+        )
+    )
+    return allowed_names, allowed_ids
+
+
+def _templates_match(
+    template_names: Set[str],
+    template_ids: Set[str],
+    allowed_names: Sequence[str],
+    allowed_ids: Sequence[str],
+    device_docs: Iterable[Mapping[str, Any]] = (),
+) -> bool:
+    normalized_names = {name for name in allowed_names if isinstance(name, str) and name}
+    normalized_ids = {tid for tid in allowed_ids if isinstance(tid, str) and tid}
+
+    if normalized_names and template_names.intersection(normalized_names):
+        return True
+    if normalized_ids and template_ids.intersection(normalized_ids):
+        return True
+
+    for doc in device_docs:
+        if not isinstance(doc, Mapping):
+            continue
+        for key in ("template_id", "switch_template_id"):
+            value = doc.get(key)
+            if isinstance(value, str):
+                text = value.strip()
+                if text and text in normalized_ids:
+                    return True
+    return False
+
+
+def _format_template_error_message(allowed_names: Sequence[str]) -> str:
+    filtered = [name for name in allowed_names if isinstance(name, str) and name]
+    if not filtered:
+        return "Required switch template is not applied to this site."
+    if len(filtered) == 1:
+        return f"Required template '{filtered[0]}' is not applied."
+    if len(filtered) == 2:
+        return f"Required templates '{filtered[0]}' or '{filtered[1]}' are not applied."
+    joined = ", ".join(f"'{name}'" for name in filtered[:-1])
+    return f"None of the required templates are applied. Expected one of: {joined}, or '{filtered[-1]}'."
 
 
 def _fetch_device_document(
@@ -504,30 +632,20 @@ def _clear_dns_overrides_for_site(
         return summary
 
     template_names = _collect_template_names_from_docs(site_doc, setting_doc, template_list)
-    if DNS_OVERRIDE_TEMPLATE_NAME not in template_names:
-        summary["failed"] = len(normalized_devices)
-        summary["errors"].append(
-            {
-                "reason": f"Required template '{DNS_OVERRIDE_TEMPLATE_NAME}' is not applied.",
-                "templates": sorted(template_names),
-            }
-        )
-        return summary
-
+    template_ids = _collect_template_ids_from_docs(site_doc, setting_doc, template_list)
     site_variables = _collect_site_variables_from_docs(site_doc, setting_doc)
-    missing_vars = [
-        key for key in DNS_OVERRIDE_REQUIRED_VARS if not _value_is_set(site_variables.get(key))
-    ]
-    if missing_vars:
-        summary["failed"] = len(normalized_devices)
-        summary["errors"].append(
-            {
-                "reason": "Required site DNS variables are missing or empty.",
-                "missing": sorted(missing_vars),
-            }
+    allowed_template_names, allowed_template_ids = _allowed_templates_for_site(site_name)
+    required_dns_labels = [
+        label
+        for label in (
+            _format_dns_var_group_label(group)
+            for group in DNS_OVERRIDE_REQUIRED_VAR_GROUPS
         )
-        return summary
+        if label
+    ]
+    dns_ok, missing_dns_labels = _evaluate_dns_variable_groups(site_variables)
 
+    device_docs: Dict[str, Dict[str, Any]] = {}
     for device_id in normalized_devices:
         try:
             device_doc = _fetch_device_document(base_url, headers, site_id, device_id)
@@ -540,8 +658,69 @@ def _clear_dns_overrides_for_site(
                 }
             )
             continue
+        device_docs[device_id] = device_doc
+
+    if not _templates_match(
+        template_names,
+        template_ids,
+        allowed_template_names,
+        allowed_template_ids,
+        device_docs.values(),
+    ):
+        already_failed = summary["failed"]
+        summary["failed"] = already_failed + max(0, len(normalized_devices) - already_failed)
+        summary["errors"].append(
+            {
+                "reason": _format_template_error_message(allowed_template_names),
+                "templates": sorted(template_names),
+                "allowed_templates": list(allowed_template_names),
+            }
+        )
+        return summary
+
+    if not dns_ok:
+        already_failed = summary["failed"]
+        summary["failed"] = already_failed + max(0, len(normalized_devices) - already_failed)
+        summary["errors"].append(
+            {
+                "reason": "Required site DNS variables are missing or empty.",
+                "missing": missing_dns_labels,
+                "required": required_dns_labels,
+            }
+        )
+        return summary
+
+    allowed_template_id_set = {tid for tid in allowed_template_ids if tid}
+
+    for device_id in normalized_devices:
+        device_doc = device_docs.get(device_id)
+        if not device_doc:
+            continue
 
         device_name = _device_display_name(device_doc, device_id)
+
+        device_template_id = None
+        for key in ("template_id", "switch_template_id"):
+            value = device_doc.get(key)
+            if isinstance(value, str) and value.strip():
+                device_template_id = value.strip()
+                break
+
+        if device_template_id and allowed_template_id_set and device_template_id not in allowed_template_id_set:
+            summary["failed"] += 1
+            summary["errors"].append(
+                {
+                    "device_id": device_id,
+                    "device_name": device_name,
+                    "reason": (
+                        "Device template does not match allowed templates for this site."
+                    ),
+                    "template_id": device_template_id,
+                    "allowed_template_ids": list(allowed_template_id_set),
+                }
+            )
+            continue
+
         direct_ip = device_doc.get("ip_config")
         has_direct_ip = isinstance(direct_ip, dict)
 

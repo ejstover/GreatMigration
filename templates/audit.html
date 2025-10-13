@@ -255,49 +255,81 @@
         applyActionStatus(button, initial.message, initial.isError);
       }
 
-      function collectActionPrecheckMessages(action) {
+      function evaluateActionPrechecks(action) {
+        const result = { messages: [], canRun: true };
         if (!action || typeof action !== 'object') {
-          return [];
+          return result;
         }
         const metadata = action.metadata;
         if (!metadata || typeof metadata !== 'object') {
-          return [];
+          return result;
         }
         const prechecks = metadata.prechecks;
         if (!prechecks || typeof prechecks !== 'object') {
-          return [];
+          return result;
         }
+
+        if (prechecks.can_run === false) {
+          result.canRun = false;
+        }
+        if (prechecks.template_applied === false) {
+          result.canRun = false;
+        }
+        if (prechecks.dns_variables_defined === false) {
+          result.canRun = false;
+        }
+
         const baseMessages = Array.isArray(prechecks.messages)
           ? prechecks.messages.filter(msg => typeof msg === 'string' && msg.trim())
           : [];
         if (baseMessages.length) {
-          return baseMessages.map(msg => msg.trim());
+          result.messages = baseMessages.map(msg => msg.trim());
+          return result;
         }
-        const messages = [];
+
+        const allowedTemplateNames = Array.isArray(prechecks.allowed_template_names)
+          ? prechecks.allowed_template_names.filter(name => typeof name === 'string' && name.trim())
+          : [];
+        const templateName = typeof prechecks.template_name === 'string' && prechecks.template_name.trim()
+          ? prechecks.template_name.trim()
+          : null;
         if (prechecks.template_applied === false) {
-          const templateName = typeof prechecks.template_name === 'string' && prechecks.template_name.trim()
-            ? prechecks.template_name.trim()
-            : 'required template';
-          messages.push(`Apply '${templateName}' template to this site.`);
+          if (allowedTemplateNames.length === 1) {
+            result.messages.push(`Apply '${allowedTemplateNames[0]}' template to this site.`);
+          } else if (allowedTemplateNames.length > 1) {
+            const last = allowedTemplateNames[allowedTemplateNames.length - 1];
+            const rest = allowedTemplateNames.slice(0, -1).map(name => `'${name}'`).join(', ');
+            result.messages.push(`Apply one of these templates to this site: ${rest ? rest + ', ' : ''}'${last}'.`);
+          } else if (templateName) {
+            result.messages.push(`Apply '${templateName}' template to this site.`);
+          } else {
+            result.messages.push('Required switch template is not applied to this site.');
+          }
         }
+
         if (prechecks.dns_variables_defined === false) {
           const missing = Array.isArray(prechecks.missing_dns_variables)
             ? prechecks.missing_dns_variables.filter(value => typeof value === 'string' && value.trim())
             : [];
           if (missing.length) {
-            messages.push(`Define site DNS variables: ${missing.join(', ')}.`);
+            result.messages.push(`Define site DNS variables: ${missing.join(', ')}.`);
           } else {
             const required = Array.isArray(prechecks.required_dns_variables)
               ? prechecks.required_dns_variables.filter(value => typeof value === 'string' && value.trim())
               : [];
             if (required.length) {
-              messages.push(`Define site DNS variables: ${required.join(', ')}.`);
+              result.messages.push(`Define site DNS variables: ${required.join(', ')}.`);
             } else {
-              messages.push('Required site DNS variables are missing.');
+              result.messages.push('Required site DNS variables are missing.');
             }
           }
         }
-        return messages;
+
+        if (!result.messages.length && result.canRun === false) {
+          result.messages.push('This 1 Click Fix cannot run until the prerequisites are met.');
+        }
+
+        return result;
       }
 
       async function runOneClickFix(action, button) {
@@ -321,6 +353,7 @@
         }
 
         const originalLabel = button ? button.textContent : '';
+        const originalDisabled = button ? button.disabled : false;
         if (button) {
           resetActionStatus(button);
           button.disabled = true;
@@ -427,7 +460,8 @@
           }
         } finally {
           if (button) {
-            button.disabled = false;
+            const shouldRemainDisabled = button._precheckCanRun === false ? true : originalDisabled;
+            button.disabled = shouldRemainDisabled;
             button.textContent = originalLabel || action.button_label || '1 Click Fix Now';
           }
         }
@@ -494,11 +528,15 @@
               wrapper.appendChild(button);
               wrapper.appendChild(status);
               button._actionStatusElement = status;
-              const precheckMessages = collectActionPrecheckMessages(action);
-              if (precheckMessages.length) {
-                setInitialActionStatus(button, precheckMessages.join(' '), true);
+              const precheckState = evaluateActionPrechecks(action);
+              if (precheckState.messages.length) {
+                setInitialActionStatus(button, precheckState.messages.join(' '), !precheckState.canRun);
               } else {
                 setInitialActionStatus(button, '', false);
+              }
+              button._precheckCanRun = precheckState.canRun;
+              if (!precheckState.canRun) {
+                button.disabled = true;
               }
               actionBar.appendChild(wrapper);
             });
@@ -635,11 +673,15 @@
               wrapper.appendChild(button);
               wrapper.appendChild(status);
               button._actionStatusElement = status;
-              const precheckMessages = collectActionPrecheckMessages(action);
-              if (precheckMessages.length) {
-                setInitialActionStatus(button, precheckMessages.join(' '), true);
+              const precheckState = evaluateActionPrechecks(action);
+              if (precheckState.messages.length) {
+                setInitialActionStatus(button, precheckState.messages.join(' '), !precheckState.canRun);
               } else {
                 setInitialActionStatus(button, '', false);
+              }
+              button._precheckCanRun = precheckState.canRun;
+              if (!precheckState.canRun) {
+                button.disabled = true;
               }
               controls.appendChild(wrapper);
             });
