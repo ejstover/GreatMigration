@@ -92,6 +92,7 @@
 
       const userGreeting = document.getElementById('user_greeting');
       const logoutBtn = document.getElementById('logout_btn');
+      let canUseFixes = false;
       fetch('/me').then(res => {
         if (!res.ok) throw new Error('not authed');
         return res.json();
@@ -99,6 +100,7 @@
         const user = data.user || {};
         const name = user.name || 'there';
         const readOnly = Boolean(user.read_only);
+        canUseFixes = Boolean(user.can_push);
         const suffix = readOnly ? ' (read-only)' : '';
         userGreeting.textContent = `Hey ${name}!${suffix}`;
         userGreeting.classList.remove('hidden');
@@ -201,6 +203,62 @@
       function showStatus(message, isError = false) {
         auditStatus.textContent = message;
         auditStatus.className = `text-sm ${isError ? 'text-rose-500 dark:text-rose-300' : 'text-slate-600 dark:text-slate-300'}`;
+      }
+
+      async function runOneClickFix(action, button) {
+        if (!action || !action.id) {
+          showStatus('Unable to start 1 Click Fix (missing action id).', true);
+          return;
+        }
+        if (!Array.isArray(action.site_ids) || !action.site_ids.length) {
+          showStatus('No sites are eligible for this 1 Click Fix.', true);
+          return;
+        }
+
+        const originalLabel = button ? button.textContent : '';
+        if (button) {
+          button.disabled = true;
+          button.textContent = 'Running…';
+        }
+        showStatus('Running 1 Click Fix…');
+
+        try {
+          const response = await fetch('/api/audit/fix', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action_id: action.id,
+              site_ids: action.site_ids,
+            }),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ok) {
+            const message = (data && (data.error || data.message)) || '1 Click Fix failed.';
+            showStatus(message, true);
+            return;
+          }
+
+          const totals = data.totals || {};
+          const renamed = Number.isFinite(totals.renamed) ? totals.renamed : 0;
+          const failed = Number.isFinite(totals.failed) ? totals.failed : 0;
+          const siteCount = Number.isFinite(totals.sites) ? totals.sites : action.site_ids.length;
+          const summaryParts = [
+            `Renamed ${renamed} device${renamed === 1 ? '' : 's'}`,
+            `across ${siteCount} site${siteCount === 1 ? '' : 's'}`,
+          ];
+          if (failed) {
+            summaryParts.push(`(${failed} device${failed === 1 ? '' : 's'} could not be updated)`);
+          }
+          showStatus(`1 Click Fix completed: ${summaryParts.join(' ')}.`, false);
+        } catch (error) {
+          console.error('1 Click Fix error', error);
+          showStatus('1 Click Fix failed due to a network error.', true);
+        } finally {
+          if (button) {
+            button.disabled = false;
+            button.textContent = originalLabel || action.button_label || '1 Click Fix Now';
+          }
+        }
       }
 
       function createSeverityBadge(severity) {
@@ -342,8 +400,27 @@
           const findings = Array.isArray(check.findings) ? check.findings : [];
           const badgeSeverity = findings.length ? check.severity : 'success';
           const badge = createSeverityBadge(badgeSeverity);
+          const controls = document.createElement('div');
+          controls.className = 'flex items-center gap-2';
+          controls.appendChild(badge);
+
+          const actions = Array.isArray(check.actions) ? check.actions : [];
+          if (canUseFixes && actions.length) {
+            actions.forEach(action => {
+              if (!action || !Array.isArray(action.site_ids) || !action.site_ids.length) {
+                return;
+              }
+              const button = document.createElement('button');
+              button.type = 'button';
+              button.className = 'text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
+              button.textContent = action.button_label || '1 Click Fix Now';
+              button.addEventListener('click', () => runOneClickFix(action, button));
+              controls.appendChild(button);
+            });
+          }
+
           header.appendChild(title);
-          header.appendChild(badge);
+          header.appendChild(controls);
             card.appendChild(header);
 
             const stats = document.createElement('div');

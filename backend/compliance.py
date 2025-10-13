@@ -10,6 +10,8 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
+from audit_actions import AP_RENAME_ACTION_ID
+
 
 @dataclass
 class SiteContext:
@@ -59,8 +61,19 @@ class ComplianceCheck:
     description: str = ""
     severity: str = "warning"
 
+    def prepare_run(self) -> None:  # pragma: no cover - hook
+        """Reset any stateful data prior to executing across all sites."""
+
     def run(self, context: SiteContext) -> List[Finding]:  # pragma: no cover - interface
         raise NotImplementedError
+
+    def suggest_actions(
+        self,
+        contexts: Sequence[SiteContext],
+        findings: Sequence[Finding],
+    ) -> List[Dict[str, Any]]:  # pragma: no cover - hook
+        """Return optional auto-remediation actions for the given findings."""
+        return []
 
 
 def _normalize_site_name(site: Dict[str, Any]) -> str:
@@ -982,6 +995,8 @@ DEFAULT_SWITCH_NAME_PATTERN = (
     r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDFSPARE|MDF(AS|CS|WS)\d+|IDF\d+(AS|CS|WS)\d+)$"
 )
 
+DEFAULT_AP_NAME_PATTERN = r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDF|IDF\d+)AP\d+$"
+
 
 def _strip_pattern_wrappers(value: str) -> str:
     """Remove optional r"..." or quoted wrappers from an env-sourced pattern."""
@@ -1051,7 +1066,7 @@ def _ensure_pattern(
 
 
 ENV_SWITCH_NAME_PATTERN = _load_pattern_from_env("SWITCH_NAME_REGEX_PATTERN", DEFAULT_SWITCH_NAME_PATTERN)
-ENV_AP_NAME_PATTERN = _load_pattern_from_env("AP_NAME_REGEX_PATTERN", None)
+ENV_AP_NAME_PATTERN = _load_pattern_from_env("AP_NAME_REGEX_PATTERN", DEFAULT_AP_NAME_PATTERN)
 
 
 def _load_positive_int_from_env(var_name: str, default: int) -> int:
@@ -1087,6 +1102,18 @@ class DeviceNamingConventionCheck(ComplianceCheck):
     ) -> None:
         self.switch_pattern = _ensure_pattern(switch_pattern, ENV_SWITCH_NAME_PATTERN)
         self.ap_pattern = _ensure_pattern(ap_pattern, ENV_AP_NAME_PATTERN)
+        self.prepare_run()
+
+    def prepare_run(self) -> None:
+        self._ap_issue_counts: Dict[str, int] = {}
+        self._ap_issue_sites: Dict[str, str] = {}
+
+    def _register_ap_issue(self, context: SiteContext, device_name: str) -> None:
+        site_id = context.site_id
+        self._ap_issue_counts[site_id] = self._ap_issue_counts.get(site_id, 0) + 1
+        if site_id not in self._ap_issue_sites:
+            label = context.site_name or site_id
+            self._ap_issue_sites[site_id] = label
 
     def run(self, context: SiteContext) -> List[Finding]:
         findings: List[Finding] = []
@@ -1096,12 +1123,14 @@ class DeviceNamingConventionCheck(ComplianceCheck):
 
             pattern: Optional[re.Pattern[str]] = None
             label = "Device"
+            is_ap = False
             if _is_switch(device):
                 pattern = self.switch_pattern
                 label = "Switch"
             elif _is_access_point(device):
                 pattern = self.ap_pattern
                 label = "Access point"
+                is_ap = True
 
             if pattern is None:
                 continue
@@ -1130,7 +1159,47 @@ class DeviceNamingConventionCheck(ComplianceCheck):
                         details={"expected_pattern": pattern.pattern},
                     )
                 )
+                if is_ap:
+                    self._register_ap_issue(context, device_name or (device_id or ""))
         return findings
+
+    def suggest_actions(
+        self,
+        contexts: Sequence[SiteContext],
+        findings: Sequence[Finding],
+    ) -> List[Dict[str, Any]]:
+        if not self.ap_pattern:
+            return []
+        if not getattr(self, "_ap_issue_counts", None):
+            return []
+
+        site_ids = sorted(self._ap_issue_counts.keys())
+        if not site_ids:
+            return []
+
+        site_summaries = [
+            {
+                "id": site_id,
+                "name": self._ap_issue_sites.get(site_id, site_id),
+                "issue_count": self._ap_issue_counts.get(site_id, 0),
+            }
+            for site_id in site_ids
+        ]
+
+        return [
+            {
+                "id": AP_RENAME_ACTION_ID,
+                "label": "Rename access points",
+                "button_label": "1 Click Fix Now",
+                "description": "Rename Mist access points to match the standard naming convention.",
+                "site_ids": site_ids,
+                "metadata": {
+                    "sites": site_summaries,
+                    "expected_pattern": self.ap_pattern.pattern,
+                    "finding_count": sum(self._ap_issue_counts.values()),
+                },
+            }
+        ]
 
 
 def _collect_device_images(device: Dict[str, Any]) -> List[str]:
@@ -1258,6 +1327,7 @@ class SiteAuditRunner:
         total_findings = 0
         site_findings: Dict[str, int] = {context.site_id: 0 for context in contexts}
         for check in self.checks:
+            check.prepare_run()
             check_findings: List[Finding] = []
             for context in contexts:
                 site_findings_for_check = check.run(context)
@@ -1267,6 +1337,7 @@ class SiteAuditRunner:
                 )
             total_findings += len(check_findings)
             failing_site_ids = sorted({finding.site_id for finding in check_findings})
+            actions = check.suggest_actions(contexts, check_findings) or []
             results.append(
                 {
                     "id": check.id,
@@ -1276,6 +1347,7 @@ class SiteAuditRunner:
                     "findings": [finding.as_dict(check.severity) for finding in check_findings],
                     "failing_sites": failing_site_ids,
                     "passing_sites": max(total_sites - len(failing_site_ids), 0),
+                    "actions": actions,
                 }
             )
         return {

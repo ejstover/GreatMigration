@@ -10,6 +10,7 @@ from compliance import (
     SiteAuditRunner,
     DEFAULT_REQUIRED_SITE_VARIABLES,
 )
+from audit_actions import AP_RENAME_ACTION_ID
 
 
 def test_required_site_variables_check_flags_missing():
@@ -589,7 +590,7 @@ def test_device_naming_convention_enforces_pattern():
     check = DeviceNamingConventionCheck()
     findings = check.run(ctx)
     ids = {f.device_id for f in findings}
-    assert ids == {"bad1", "bad2"}
+    assert ids == {"bad1", "bad2", "ignore1"}
     for finding in findings:
         assert finding.details and "expected_pattern" in finding.details
 
@@ -614,6 +615,31 @@ def test_device_naming_convention_respects_custom_patterns():
         ("switch-bad", r"^SW-\d+$"),
         ("ap-bad", r"^AP-\d+$"),
     }
+
+
+def test_device_naming_convention_provides_ap_fix_action():
+    ctx = SiteContext(
+        site_id="site-9c",
+        site_name="Naming Site Actions",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "ap-1", "name": "BadAP", "type": "ap", "status": "connected"},
+            {"id": "switch-1", "name": "NAABCMDFAS1", "type": "switch", "status": "connected"},
+        ],
+    )
+    check = DeviceNamingConventionCheck()
+    check.prepare_run()
+    findings = check.run(ctx)
+    assert {f.device_id for f in findings} == {"ap-1"}
+    actions = check.suggest_actions([ctx], findings)
+    assert actions, "Expected an auto-remediation action"
+    action = actions[0]
+    assert action["id"] == AP_RENAME_ACTION_ID
+    assert action["site_ids"] == ["site-9c"]
+    metadata = action.get("metadata", {})
+    assert metadata.get("finding_count") == 1
 
 
 @pytest.mark.parametrize(
@@ -909,3 +935,4 @@ def test_site_audit_runner_summarizes_results():
     check = checks[0]
     assert check["failing_sites"] == ["site-6"]
     assert check["passing_sites"] == 1
+    assert check.get("actions") == []
