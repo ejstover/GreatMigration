@@ -1798,6 +1798,7 @@ class SiteAuditRunner:
             site_devices[context.site_id] = count
         total_findings = 0
         site_findings: Dict[str, int] = {context.site_id: 0 for context in contexts}
+        total_quick_fix_issues = 0
         for check in self.checks:
             check.prepare_run()
             check_findings: List[Finding] = []
@@ -1808,6 +1809,18 @@ class SiteAuditRunner:
                     site_findings_for_check
                 )
             total_findings += len(check_findings)
+            for finding in check_findings:
+                actions = finding.actions or []
+                for action in actions:
+                    if not isinstance(action, Mapping):
+                        continue
+                    label_value = action.get("button_label")
+                    if label_value is None:
+                        continue
+                    label_text = str(label_value).strip().lower()
+                    if label_text == "1 click fix now":
+                        total_quick_fix_issues += 1
+                        break
             failing_site_ids = sorted({finding.site_id for finding in check_findings})
             actions = check.suggest_actions(contexts, check_findings) or []
             results.append(
@@ -1827,6 +1840,7 @@ class SiteAuditRunner:
             "total_sites": total_sites,
             "total_devices": total_devices,
             "total_findings": total_findings,
+            "total_quick_fix_issues": total_quick_fix_issues,
             "site_findings": site_findings,
             "site_devices": site_devices,
         }

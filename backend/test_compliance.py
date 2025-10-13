@@ -2,6 +2,8 @@ import pytest
 
 from compliance import (
     SiteContext,
+    Finding,
+    ComplianceCheck,
     RequiredSiteVariablesCheck,
     SwitchTemplateConfigurationCheck,
     ConfigurationOverridesCheck,
@@ -1286,6 +1288,7 @@ def test_site_audit_runner_summarizes_results():
     assert result["total_sites"] == 2
     assert result["total_devices"] == 3
     assert result["total_findings"] == 4
+    assert result["total_quick_fix_issues"] == 0
     assert result["site_findings"] == {"site-5": 0, "site-6": 4}
     assert result["site_devices"] == {"site-5": 2, "site-6": 1}
     checks = result["checks"]
@@ -1294,3 +1297,49 @@ def test_site_audit_runner_summarizes_results():
     assert check["failing_sites"] == ["site-6"]
     assert check["passing_sites"] == 1
     assert check.get("actions") == []
+
+
+def test_site_audit_runner_counts_quick_fix_findings():
+    contexts = [
+        SiteContext(
+            site_id="site-quick-1",
+            site_name="Quick 1",
+            site={},
+            setting={},
+            templates=[],
+            devices=[],
+        ),
+        SiteContext(
+            site_id="site-quick-2",
+            site_name="Quick 2",
+            site={},
+            setting={},
+            templates=[],
+            devices=[],
+        ),
+    ]
+
+    class QuickFixCheck(ComplianceCheck):
+        id = "quick-fix"
+        name = "Quick fix"
+
+        def run(self, context: SiteContext):
+            return [
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    message="Auto-remediation available.",
+                    actions=[
+                        {
+                            "id": "quick-fix-action",
+                            "button_label": "1 Click Fix Now",
+                        }
+                    ],
+                )
+            ]
+
+    runner = SiteAuditRunner([QuickFixCheck()])
+    result = runner.run(contexts)
+
+    assert result["total_findings"] == 2
+    assert result["total_quick_fix_issues"] == 2

@@ -1216,6 +1216,7 @@ def api_audit_run(
             "total_sites": audit_result.get("total_sites", 0),
             "total_devices": audit_result.get("total_devices", 0),
             "total_findings": audit_result.get("total_findings", 0),
+            "total_quick_fix_issues": audit_result.get("total_quick_fix_issues", 0),
             "errors": errors,
             "sites": summary_sites,
             "site_findings": site_findings,
