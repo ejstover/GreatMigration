@@ -1,6 +1,6 @@
 import importlib
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
@@ -21,6 +21,9 @@ def app_module(monkeypatch):
 
 
 def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
+    now_ts = 1_700_000_000.0
+    monkeypatch.setattr(app_module, "_current_timestamp", lambda: now_ts)
+
     calls: list[str] = []
 
     responses: Dict[str, Any] = {
@@ -28,19 +31,45 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
         "/sites/site-1/setting": {"variables": {}},
         "/sites/site-1/networktemplates": [],
         "/sites/site-1/devices": [
-            {"id": "dev-2", "name": "AP 2", "status": "connected"},
+            {
+                "id": "dev-2",
+                "name": "AP 2",
+                "status": "connected",
+                "last_seen": now_ts - 300,
+            },
+            {
+                "id": "dev-3",
+                "name": "Switch 3",
+                "status": "offline",
+                "last_seen": now_ts - (20 * 24 * 60 * 60),
+            },
         ],
         "/sites/site-1/devices?type=switch": [
-            {"id": "dev-1", "name": "Switch 1", "status": "connected"},
+            {
+                "id": "dev-1",
+                "name": "Switch 1",
+                "status": "connected",
+                "last_seen": now_ts - 120,
+            },
         ],
         "/sites/site-1/stats/devices?type=switch&limit=1000": {
             "results": [
-                {"id": "dev-1", "name": "Switch 1", "version": "23.4R2-S4.11"},
+                {
+                    "id": "dev-1",
+                    "name": "Switch 1",
+                    "version": "23.4R2-S4.11",
+                    "last_seen": now_ts - 60,
+                },
             ]
         },
         "/sites/site-1/stats/devices?type=ap&limit=1000": {
             "results": [
-                {"id": "dev-2", "name": "AP 2", "version": "0.12.27452"},
+                {
+                    "id": "dev-2",
+                    "name": "AP 2",
+                    "version": "0.12.27452",
+                    "last_seen": now_ts - 240,
+                },
             ]
         },
         "/sites/site-1/devices/dev-1": {
@@ -50,6 +79,7 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
             "extra": "detail",
         },
         "/sites/site-1/devices/dev-2": None,
+        "/sites/site-1/devices/dev-3": None,
         "/sites/site-1/switch_templates/template-1": {
             "id": "template-1",
             "switch_config": {"port_config": {"ge-0/0/1": {"usage": "end_user"}}},
@@ -82,6 +112,8 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
     assert dev2["status"] == "connected"
     assert dev2["version"] == "0.12.27452"
 
+    assert all(device.get("id") != "dev-3" for device in context.devices)
+
     assert "/sites/site-1/devices" in calls
     assert "/sites/site-1/devices?type=switch" in calls
     assert "/sites/site-1/stats/devices?type=switch&limit=1000" in calls
@@ -92,6 +124,58 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
 
     template_ids = {t.get("id") for t in context.templates if isinstance(t, dict)}
     assert "template-1" in template_ids
+
+
+def test_fetch_site_context_filters_recent_last_seen(monkeypatch, app_module):
+    now_ts = 1_700_000_000.0
+    monkeypatch.setattr(app_module, "_current_timestamp", lambda: now_ts)
+
+    recent_iso_value = datetime.fromtimestamp(now_ts - 600, tz=timezone.utc).isoformat()
+
+    responses: Dict[str, Any] = {
+        "/sites/site-1": {"id": "site-1", "name": "HQ"},
+        "/sites/site-1/setting": {"variables": {}},
+        "/sites/site-1/networktemplates": [],
+        "/sites/site-1/devices": [
+            {"id": "recent", "name": "Recent", "last_seen": now_ts - 90},
+            {"id": "stale", "name": "Stale", "last_seen": now_ts - (15 * 24 * 60 * 60)},
+            {"id": "missing", "name": "Missing"},
+            {"id": "recent-iso", "name": "Recent ISO", "last_seen": recent_iso_value},
+        ],
+        "/sites/site-1/devices?type=switch": [
+            {
+                "id": "recent-ms",
+                "name": "Recent Millis",
+                "last_seen": (now_ts - 180) * 1000,
+            }
+        ],
+        "/sites/site-1/stats/devices?type=switch&limit=1000": {
+            "results": [
+                {"id": "recent", "last_seen": now_ts - 60},
+                {"id": "stale", "last_seen": now_ts - (20 * 24 * 60 * 60)},
+                {"id": "missing", "status": "connected"},
+                {"id": "recent-ms", "last_seen": (now_ts - 120) * 1000},
+            ]
+        },
+        "/sites/site-1/stats/devices?type=ap&limit=1000": [],
+        "/sites/site-1/devices/recent": None,
+        "/sites/site-1/devices/stale": None,
+        "/sites/site-1/devices/missing": None,
+        "/sites/site-1/devices/recent-iso": None,
+        "/sites/site-1/devices/recent-ms": None,
+        "/sites/site-1/switch_templates/template-1": {"id": "template-1"},
+    }
+
+    def fake_get(base_url: str, headers: Dict[str, str], path: str, optional: bool = False):
+        return responses.get(path)
+
+    monkeypatch.setattr(app_module, "_mist_get_json", fake_get)
+
+    context = app_module._fetch_site_context("https://example.com/api/v1", {"Authorization": "token"}, "site-1")
+
+    device_ids = [device.get("id") for device in context.devices if device.get("id")]
+
+    assert device_ids == ["recent", "recent-iso", "recent-ms"]
 
 
 def test_load_site_history_parses_breakdown(tmp_path):

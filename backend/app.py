@@ -2,7 +2,7 @@ import os
 import json
 import tempfile
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set
 from zoneinfo import ZoneInfo
@@ -524,6 +524,65 @@ def _fetch_switch_template_document(
     return None
 
 
+RECENT_LAST_SEEN_WINDOW_SECONDS = 14 * 24 * 60 * 60
+
+
+def _current_timestamp() -> float:
+    return datetime.now(tz=timezone.utc).timestamp()
+
+
+def _coerce_epoch_seconds(value: Any) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        candidate = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            candidate = float(text)
+        except ValueError:
+            try:
+                normalized = text.replace("Z", "+00:00") if text.endswith("Z") else text
+                parsed = datetime.fromisoformat(normalized)
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            candidate = parsed.timestamp()
+    else:
+        return None
+    if candidate <= 0:
+        return None
+    if candidate > 1e12:
+        candidate /= 1000.0
+    return candidate
+
+
+def _extract_last_seen_timestamp(device: Mapping[str, Any]) -> Optional[float]:
+    keys = ("last_seen", "lastSeen")
+    candidates: List[Any] = []
+    for key in keys:
+        if key in device:
+            candidates.append(device.get(key))
+    for nested_key in ("details", "status"):
+        nested = device.get(nested_key)
+        if isinstance(nested, Mapping):
+            for key in keys:
+                if key in nested:
+                    candidates.append(nested.get(key))
+    timestamps = [ts for ts in (_coerce_epoch_seconds(value) for value in candidates) if ts is not None]
+    if not timestamps:
+        return None
+    return max(timestamps)
+
+
+def _is_recent_device(device: Mapping[str, Any], reference_ts: float) -> bool:
+    last_seen_ts = _extract_last_seen_timestamp(device)
+    if last_seen_ts is None:
+        return False
+    return last_seen_ts >= reference_ts - RECENT_LAST_SEEN_WINDOW_SECONDS
+
+
 def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) -> SiteContext:
     raw_site = _mist_get_json(base_url, headers, f"/sites/{site_id}")
     site_doc = raw_site if isinstance(raw_site, dict) else {}
@@ -541,6 +600,7 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
         f"/sites/{site_id}/devices?type=switch",
         optional=True,
     )
+
     switch_stats_doc = _mist_get_json(
         base_url,
         headers,
@@ -669,6 +729,16 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
             extra_device.setdefault("id", extra_device["device_id"])
         device_list.append(extra_device)
     candidate_org_ids = _collect_candidate_org_ids(site_doc, setting_doc, template_list, device_list)
+
+    reference_ts = _current_timestamp()
+    filtered_devices: List[Dict[str, Any]] = []
+    for device in device_list:
+        if not isinstance(device, dict):
+            continue
+        if _is_recent_device(device, reference_ts):
+            filtered_devices.append(device)
+
+    device_list = filtered_devices
 
     if SWITCH_TEMPLATE_ID:
         template_doc = _fetch_switch_template_document(
