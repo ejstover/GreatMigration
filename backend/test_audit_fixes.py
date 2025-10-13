@@ -161,6 +161,16 @@ def test_execute_dns_override_action_updates_payload(monkeypatch):
                         "ip": "10.0.0.5",
                         "gateway": "10.0.0.1",
                         "dns": ["10.45.170.17", "10.48.178.1"],
+                        "static_config": {
+                            "dns_servers": ["9.9.9.9", "10.48.178.1"],
+                            "ntp": ["1.1.1.1"],
+                        },
+                    },
+                    "switch_config": {
+                        "ip_config": {
+                            "dns_servers": ["9.9.9.9"],
+                            "other": "value",
+                        }
                     },
                 }
             )
@@ -190,10 +200,82 @@ def test_execute_dns_override_action_updates_payload(monkeypatch):
     put_url, put_payload = calls["put"][0]
     assert put_url.endswith("/devices/device-1")
     assert "dns" not in put_payload.get("ip_config", {})
+    assert "dns_servers" not in put_payload.get("ip_config", {})
+    static_config = put_payload.get("ip_config", {}).get("static_config")
+    assert isinstance(static_config, dict)
+    assert "dns" not in static_config
+    assert "dns_servers" not in static_config
+    assert static_config["ntp"] == ["1.1.1.1"]
+    switch_ip = put_payload.get("switch_config", {}).get("ip_config", {})
+    assert "dns" not in switch_ip
+    assert "dns_servers" not in switch_ip
+    assert switch_ip["other"] == "value"
     assert result["results"][0]["changes"][0]["removed_dns"] == [
         "10.45.170.17",
         "10.48.178.1",
+        "9.9.9.9",
     ]
+
+
+def test_execute_dns_override_action_handles_static_config_only(monkeypatch):
+    calls = {"get": [], "put": []}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["get"].append(url)
+        if url.endswith("/sites/site-1"):
+            return DummyResponse({"name": "Site One", "networktemplate_name": "Prod - Standard Template"})
+        if url.endswith("/sites/site-1/setting"):
+            return DummyResponse(
+                {
+                    "variables": {
+                        "siteDNS": "dns.example.com",
+                        "hubDNSserver1": "10.1.1.1",
+                        "hubDNSserver2": "10.1.1.2",
+                    }
+                }
+            )
+        if url.endswith("/sites/site-1/networktemplates"):
+            return DummyResponse([
+                {"name": "Prod - Standard Template"},
+            ])
+        if url.endswith("/sites/site-1/devices/device-2"):
+            return DummyResponse(
+                {
+                    "id": "device-2",
+                    "name": "Switch 2",
+                    "ip_config": {
+                        "type": "static",
+                        "static_config": {
+                            "dns": ["4.4.4.4"],
+                        },
+                    },
+                }
+            )
+        raise AssertionError(f"Unexpected GET {url}")
+
+    def fake_put(url, headers=None, json=None, timeout=None):
+        calls["put"].append((url, json))
+        return DummyResponse({})
+
+    monkeypatch.setattr("audit_fixes.requests.get", fake_get)
+    monkeypatch.setattr("audit_fixes.requests.put", fake_put)
+
+    result = execute_audit_action(
+        CLEAR_DNS_OVERRIDE_ACTION_ID,
+        "https://api.mist.test/api/v1",
+        "token",
+        ["site-1"],
+        dry_run=False,
+        device_map={"site-1": ["device-2"]},
+    )
+
+    assert result["ok"] is True
+    assert len(calls["put"]) == 1
+    payload = calls["put"][0][1]
+    assert "static_config" not in payload.get("ip_config", {}) or not payload["ip_config"]["static_config"].get("dns")
+    change = result["results"][0]["changes"][0]
+    assert change["device_id"] == "device-2"
+    assert change["removed_dns"] == ["4.4.4.4"]
 
 
 def test_execute_dns_override_action_checks_preconditions(monkeypatch):
