@@ -1246,15 +1246,25 @@ class SiteAuditRunner:
         results: List[Dict[str, Any]] = []
         total_sites = len(contexts)
         total_devices = 0
+        site_devices: Dict[str, int] = {}
         for context in contexts:
             devices = context.devices
             if isinstance(devices, Sequence) and not isinstance(devices, (str, bytes)):
-                total_devices += len(devices)
+                count = len(devices)
+                total_devices += count
+            else:
+                count = 0
+            site_devices[context.site_id] = count
         total_findings = 0
+        site_findings: Dict[str, int] = {context.site_id: 0 for context in contexts}
         for check in self.checks:
             check_findings: List[Finding] = []
             for context in contexts:
-                check_findings.extend(check.run(context))
+                site_findings_for_check = check.run(context)
+                check_findings.extend(site_findings_for_check)
+                site_findings[context.site_id] = site_findings.get(context.site_id, 0) + len(
+                    site_findings_for_check
+                )
             total_findings += len(check_findings)
             failing_site_ids = sorted({finding.site_id for finding in check_findings})
             results.append(
@@ -1273,6 +1283,8 @@ class SiteAuditRunner:
             "total_sites": total_sites,
             "total_devices": total_devices,
             "total_findings": total_findings,
+            "site_findings": site_findings,
+            "site_devices": site_devices,
         }
 
 
