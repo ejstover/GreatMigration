@@ -222,30 +222,17 @@ DNS_KEYS = ("dns", "dns_servers", "dns_server")
 
 
 def _sanitize_ip_config_dns(ip_config: Mapping[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
-    """Remove all DNS-related entries from an ip_config document."""
+    """Remove DNS keys defined directly on an ip_config document."""
 
     cleaned_config: Dict[str, Any] = dict(ip_config)
     removed: List[str] = []
 
-    def _pop_dns(target: Dict[str, Any]) -> None:
-        nonlocal removed
-        for key in DNS_KEYS:
-            values = _normalize_dns_values(target.get(key))
-            if values:
-                removed.extend(values)
-            if key in target:
-                target.pop(key, None)
-
-    _pop_dns(cleaned_config)
-
-    static_cfg = cleaned_config.get("static_config")
-    if isinstance(static_cfg, dict):
-        new_static = dict(static_cfg)
-        _pop_dns(new_static)
-        if new_static:
-            cleaned_config["static_config"] = new_static
-        else:
-            cleaned_config.pop("static_config", None)
+    for key in DNS_KEYS:
+        values = _normalize_dns_values(cleaned_config.get(key))
+        if values:
+            removed.extend(values)
+        if key in cleaned_config:
+            cleaned_config.pop(key, None)
 
     return cleaned_config, removed
 
@@ -556,13 +543,9 @@ def _clear_dns_overrides_for_site(
 
         device_name = _device_display_name(device_doc, device_id)
         direct_ip = device_doc.get("ip_config")
-        switch_config = device_doc.get("switch_config")
         has_direct_ip = isinstance(direct_ip, dict)
-        has_switch_ip = isinstance(switch_config, dict) and isinstance(
-            switch_config.get("ip_config"), dict
-        )
 
-        if not has_direct_ip and not has_switch_ip:
+        if not has_direct_ip:
             summary["failed"] += 1
             summary["errors"].append(
                 {
@@ -574,14 +557,10 @@ def _clear_dns_overrides_for_site(
 
         removed_dns: List[str] = []
         sanitized_direct: Optional[Dict[str, Any]] = None
-        sanitized_switch: Optional[Dict[str, Any]] = None
 
-        if has_direct_ip:
+        if has_direct_ip and direct_ip.get("type") == "static":
             sanitized_direct, direct_removed = _sanitize_ip_config_dns(direct_ip)
             removed_dns.extend(direct_removed)
-        if has_switch_ip:
-            sanitized_switch, switch_removed = _sanitize_ip_config_dns(switch_config["ip_config"])
-            removed_dns.extend(switch_removed)
 
         deduped_removed: List[str] = []
         seen_dns: Set[str] = set()
@@ -592,9 +571,17 @@ def _clear_dns_overrides_for_site(
 
         if not deduped_removed:
             summary["skipped"] += 1
+            summary["changes"].append(
+                {
+                    "device_id": device_id,
+                    "device_name": device_name,
+                    "removed_dns": [],
+                    "reason": "No static DNS overrides present.",
+                }
+            )
             continue
 
-        payload = _build_dns_update_payload(device_doc, sanitized_direct, sanitized_switch)
+        payload = _build_dns_update_payload(device_doc, sanitized_direct, None)
         if not payload:
             summary["failed"] += 1
             summary["errors"].append(

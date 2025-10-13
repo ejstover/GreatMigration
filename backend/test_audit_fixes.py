@@ -160,15 +160,15 @@ def test_execute_dns_override_action_updates_payload(monkeypatch):
                         "type": "static",
                         "ip": "10.0.0.5",
                         "gateway": "10.0.0.1",
-                        "dns": ["10.45.170.17", "10.48.178.1"],
+                        "dns": ["9.9.9.9"],
                         "static_config": {
-                            "dns_servers": ["9.9.9.9", "10.48.178.1"],
+                            "dns_servers": ["10.45.170.17", "10.48.178.1"],
                             "ntp": ["1.1.1.1"],
                         },
                     },
                     "switch_config": {
                         "ip_config": {
-                            "dns_servers": ["9.9.9.9"],
+                            "dns_servers": ["10.45.170.17", "10.48.178.1"],
                             "other": "value",
                         }
                     },
@@ -202,19 +202,12 @@ def test_execute_dns_override_action_updates_payload(monkeypatch):
     assert "dns" not in put_payload.get("ip_config", {})
     assert "dns_servers" not in put_payload.get("ip_config", {})
     static_config = put_payload.get("ip_config", {}).get("static_config")
-    assert isinstance(static_config, dict)
-    assert "dns" not in static_config
-    assert "dns_servers" not in static_config
-    assert static_config["ntp"] == ["1.1.1.1"]
-    switch_ip = put_payload.get("switch_config", {}).get("ip_config", {})
-    assert "dns" not in switch_ip
-    assert "dns_servers" not in switch_ip
-    assert switch_ip["other"] == "value"
-    assert result["results"][0]["changes"][0]["removed_dns"] == [
-        "10.45.170.17",
-        "10.48.178.1",
-        "9.9.9.9",
-    ]
+    assert static_config == {
+        "dns_servers": ["10.45.170.17", "10.48.178.1"],
+        "ntp": ["1.1.1.1"],
+    }
+    assert "switch_config" not in put_payload
+    assert result["results"][0]["changes"][0]["removed_dns"] == ["9.9.9.9"]
 
 
 def test_execute_dns_override_action_handles_static_config_only(monkeypatch):
@@ -270,12 +263,12 @@ def test_execute_dns_override_action_handles_static_config_only(monkeypatch):
     )
 
     assert result["ok"] is True
-    assert len(calls["put"]) == 1
-    payload = calls["put"][0][1]
-    assert "static_config" not in payload.get("ip_config", {}) or not payload["ip_config"]["static_config"].get("dns")
-    change = result["results"][0]["changes"][0]
+    assert calls["put"] == []
+    site_summary = result["results"][0]
+    assert site_summary["skipped"] == 1
+    change = site_summary["changes"][0]
     assert change["device_id"] == "device-2"
-    assert change["removed_dns"] == ["4.4.4.4"]
+    assert change["removed_dns"] == []
 
 
 def test_execute_dns_override_action_checks_preconditions(monkeypatch):
