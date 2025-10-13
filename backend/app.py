@@ -43,7 +43,7 @@ from translate_showtech import (
 )  # type: ignore
 import ssh_collect
 from fpdf import FPDF
-from compliance import SiteAuditRunner, SiteContext, build_default_runner
+from compliance import SiteAuditRunner, SiteContext, build_default_runner, _is_device_online
 from audit_fixes import execute_audit_action
 from audit_actions import AP_RENAME_ACTION_ID
 from audit_history import load_site_history
@@ -669,6 +669,15 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
             extra_device.setdefault("id", extra_device["device_id"])
         device_list.append(extra_device)
     candidate_org_ids = _collect_candidate_org_ids(site_doc, setting_doc, template_list, device_list)
+
+    filtered_devices: List[Dict[str, Any]] = []
+    for device in device_list:
+        if not isinstance(device, dict):
+            continue
+        if _is_device_online(device):
+            filtered_devices.append(device)
+
+    device_list = filtered_devices
 
     if SWITCH_TEMPLATE_ID:
         template_doc = _fetch_switch_template_document(

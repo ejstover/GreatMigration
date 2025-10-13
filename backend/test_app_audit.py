@@ -29,6 +29,7 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
         "/sites/site-1/networktemplates": [],
         "/sites/site-1/devices": [
             {"id": "dev-2", "name": "AP 2", "status": "connected"},
+            {"id": "dev-3", "name": "Switch 3", "status": "offline"},
         ],
         "/sites/site-1/devices?type=switch": [
             {"id": "dev-1", "name": "Switch 1", "status": "connected"},
@@ -81,6 +82,8 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
     assert dev2["name"] == "AP 2"
     assert dev2["status"] == "connected"
     assert dev2["version"] == "0.12.27452"
+
+    assert all(device.get("id") != "dev-3" for device in context.devices)
 
     assert "/sites/site-1/devices" in calls
     assert "/sites/site-1/devices?type=switch" in calls
