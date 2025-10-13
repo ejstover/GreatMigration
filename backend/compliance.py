@@ -825,6 +825,83 @@ def _diff_configs(
             }
         ]
     return []
+
+
+def _evaluate_wan_oob_ip_config(actual: Any) -> List[Dict[str, Any]]:
+    diffs: List[Dict[str, Any]] = []
+
+    def _make_diff(path: str, expected: Any, value: Any) -> Dict[str, Any]:
+        diff: Dict[str, Any] = {
+            "path": path,
+            "expected": expected,
+            "actual": value,
+            "wan_oob_validation": True,
+        }
+        return diff
+
+    if actual is None:
+        diffs.append(
+            _make_diff(
+                "oob_ip_config",
+                "defined static out-of-band management configuration",
+                actual,
+            )
+        )
+        return diffs
+
+    if not isinstance(actual, dict):
+        diffs.append(
+            _make_diff(
+                "oob_ip_config",
+                "dictionary of out-of-band management configuration values",
+                actual,
+            )
+        )
+        return diffs
+
+    type_value = actual.get("type") or actual.get("ip_assignment")
+    type_normalized = str(type_value).strip().lower() if isinstance(type_value, (str, bytes)) else None
+    if type_normalized != "static":
+        diffs.append(
+            _make_diff(
+                "oob_ip_config.type",
+                "static",
+                type_value,
+            )
+        )
+
+    for key in ("ip", "netmask", "gateway"):
+        value = actual.get(key)
+        if not (isinstance(value, str) and value.strip()):
+            diffs.append(
+                _make_diff(
+                    f"oob_ip_config.{key}",
+                    "defined value",
+                    value,
+                )
+            )
+
+    use_mgmt_vrf = actual.get("use_mgmt_vrf")
+    if use_mgmt_vrf is not True:
+        diffs.append(
+            _make_diff(
+                "oob_ip_config.use_mgmt_vrf",
+                True,
+                use_mgmt_vrf,
+            )
+        )
+
+    use_mgmt_host_out = actual.get("use_mgmt_vrf_for_host_out")
+    if use_mgmt_host_out is not False:
+        diffs.append(
+            _make_diff(
+                "oob_ip_config.use_mgmt_vrf_for_host_out",
+                False,
+                use_mgmt_host_out,
+            )
+        )
+
+    return diffs
 def _role_scoped_switch_configs(
     role: Any,
     template_config: Dict[str, Any],
@@ -1076,6 +1153,12 @@ class ConfigurationOverridesCheck(ComplianceCheck):
             expected_ip_config = None
             actual_ip_config = None
 
+            actual_oob_config = None
+            if isinstance(actual_config_source, dict):
+                actual_oob_config = actual_config_source.get("oob_ip_config")
+            if actual_oob_config is None and isinstance(device, dict):
+                actual_oob_config = device.get("oob_ip_config")
+
             if expected_config_raw and actual_config_source:
                 (
                     filtered_expected,
@@ -1104,11 +1187,15 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                 expected_ip_config = expected_config_raw.get("ip_config")
 
             ip_config_diffs: List[Dict[str, Any]] = []
+            wan_oob_diffs: List[Dict[str, Any]] = []
             if expected_config_raw or actual_config_source:
                 ip_config_diffs = _evaluate_ip_config(
                     expected_ip_config if expected_config_raw else None,
                     actual_ip_config if actual_config_source else None,
                 )
+            if is_wan_role:
+                wan_oob_diffs = _evaluate_wan_oob_ip_config(actual_oob_config)
+                ip_config_diffs = []
 
             standard_device_diffs = _collect_standard_device_issues(device)
 
@@ -1120,13 +1207,17 @@ class ConfigurationOverridesCheck(ComplianceCheck):
             if standard_device_diffs:
                 combined_diffs.extend(standard_device_diffs)
 
+            if wan_oob_diffs:
+                combined_diffs.extend(wan_oob_diffs)
+
             if combined_diffs:
                 filtered_diffs: List[Dict[str, Any]] = []
                 for diff in combined_diffs:
                     path = diff.get("path") or ""
                     normalized_path = path.lower()
-                    if is_wan_role and any(
-                        normalized_path.startswith(prefix) for prefix in WAN_ALLOWED_CONFIG_PATH_PREFIXES
+                    if is_wan_role and not diff.get("wan_oob_validation") and any(
+                        normalized_path.startswith(prefix)
+                        for prefix in WAN_ALLOWED_CONFIG_PATH_PREFIXES
                     ):
                         continue
                     if any(path.startswith(p) for p in port_override_allowed_paths):

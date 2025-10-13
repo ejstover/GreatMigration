@@ -734,6 +734,8 @@ def test_configuration_overrides_check_allows_wan_mgmt_and_oob_blocks():
                         "ip": "10.20.20.20",
                         "gateway": "10.20.20.1",
                         "netmask": "255.255.255.0",
+                        "use_mgmt_vrf": True,
+                        "use_mgmt_vrf_for_host_out": False,
                     },
                 },
             }
@@ -801,6 +803,61 @@ def test_configuration_overrides_check_flags_unexpected_wan_fields():
         for finding in wan_findings
     )
 
+
+def test_configuration_overrides_check_flags_invalid_wan_oob_config():
+    ctx = SiteContext(
+        site_id="site-12b",
+        site_name="WAN Site Invalid OOB",
+        site={},
+        setting={},
+        templates=[
+            {
+                "id": "tmpl-1",
+                "name": "Standard",
+                "switch_config": {
+                    "ip_config": {
+                        "type": "static",
+                        "ip": "10.0.0.2",
+                        "gateway": "10.0.0.1",
+                        "network": "IT_Mgmt",
+                        "netmask": "255.255.255.0",
+                    }
+                },
+            }
+        ],
+        devices=[
+            {
+                "id": "wan3",
+                "name": "WAN Switch Invalid",
+                "role": "WAN",
+                "status": "connected",
+                "switch_template_id": "tmpl-1",
+                "switch_config": {
+                    "oob_ip_config": {
+                        "type": "dhcp",
+                        "ip": "",
+                        "gateway": None,
+                        "netmask": "",
+                        "use_mgmt_vrf": False,
+                        "use_mgmt_vrf_for_host_out": True,
+                    }
+                },
+            }
+        ],
+    )
+
+    check = ConfigurationOverridesCheck()
+    findings = check.run(ctx)
+    wan_findings = [f for f in findings if f.device_id == "wan3"]
+    assert wan_findings, "WAN device with invalid OOB config should be flagged"
+    diff_paths = {
+        diff.get("path")
+        for finding in wan_findings
+        for diff in (finding.details or {}).get("diffs", [])
+    }
+    assert "oob_ip_config.type" in diff_paths
+    assert "oob_ip_config.use_mgmt_vrf" in diff_paths
+    assert "oob_ip_config.use_mgmt_vrf_for_host_out" in diff_paths
 
 def test_device_naming_convention_enforces_pattern():
     ctx = SiteContext(
