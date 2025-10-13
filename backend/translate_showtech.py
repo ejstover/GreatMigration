@@ -199,7 +199,9 @@ def parse_showtech(text: str) -> Dict[str, Dict[str, int]]:
 
         m_pid = re.search(r"PID:\s*([^,]*)", line, re.IGNORECASE)
         if m_pid:
-            pid = m_pid.group(1).strip() or "MISSING PID"
+            pid = (m_pid.group(1) or "").strip()
+            if not pid:
+                continue
             switch = current_intf_switch or current_switch
             # If this PID corresponds to an interface that is not up, skip it.
             if current_intf:

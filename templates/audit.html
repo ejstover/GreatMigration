@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{DOC_TITLE}}</title>
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'media' };</script>
+  <style>
+    .card { transition: box-shadow .2s ease, transform .2s ease; }
+    .card:hover { transform: translateY(-1px); box-shadow: 0 10px 30px rgba(15,23,42,0.08); }
+  </style>
+  </head>
+  <body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100 overflow-x-hidden">
+    <nav id="menu" class="fixed inset-y-0 left-0 w-64 bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100 transform -translate-x-full transition-transform duration-300 z-50 shadow-lg p-4 space-y-2">
+      <p id="user_greeting" class="hidden px-4 py-2 font-semibold"></p>
+      <a href="/hardware" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_HARDWARE}}</a>
+      <a href="/replacements" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_REPLACEMENTS}}</a>
+      <a href="/" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_CONFIG}}</a>
+      <a href="/rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_RULES}}</a>
+      <a href="/audit" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_AUDIT}}</a>
+      <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Help</a>
+      <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
+    </nav>
+    <div id="main" class="transition-all duration-300">
+    <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+      <div class="max-w-7xl mx-auto flex items-center gap-4 p-6">
+        <button id="menu_btn" class="p-2 rounded hover:bg-white/30" aria-label="Menu">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
+        </button>
+        <div class="flex items-center gap-4">
+          <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
+          <div>
+            <h1 class="text-3xl font-bold">{{BANNER_TITLE}}</h1>
+            <p class="text-slate-100 text-sm md:text-base">{{BANNER_TAGLINE}}</p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div class="max-w-7xl mx-auto p-6 space-y-6">
+      <section class="bg-white dark:bg-slate-800 rounded-2xl shadow p-6 space-y-4">
+        <h2 class="text-xl font-semibold">Scope</h2>
+        <p class="text-sm text-slate-600 dark:text-slate-300">Run compliance checks across one or more Mist sites. Use the filters below to choose sites or audit the entire organization.</p>
+        <div class="flex flex-col md:flex-row gap-6">
+          <div class="md:w-1/2 space-y-3">
+            <label class="inline-flex items-center gap-3 text-sm font-medium">
+              <input type="checkbox" id="entire_org" class="w-4 h-4" />
+              <span>Entire organization (all accessible sites)</span>
+            </label>
+            <div class="space-y-2">
+              <label class="block text-sm font-medium">Search sites</label>
+              <input id="site_search" type="text" placeholder="Start typing a site name..." class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" />
+            </div>
+            <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+              <span id="selection_summary">0 sites selected</span>
+              <div class="space-x-2">
+                <button id="select_all" class="px-2 py-1 rounded border text-xs">Select all</button>
+                <button id="clear_selection" class="px-2 py-1 rounded border text-xs">Clear</button>
+              </div>
+            </div>
+          </div>
+          <div class="md:w-1/2">
+            <div class="h-64 overflow-y-auto border rounded-lg dark:border-slate-700 bg-slate-50 dark:bg-slate-900 p-3" id="site_list"></div>
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <button id="run_audit" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed">Run audit</button>
+          <span id="audit_status" class="text-sm text-slate-600 dark:text-slate-300"></span>
+        </div>
+      </section>
+
+      <section id="audit_results" class="space-y-4"></section>
+    </div>
+    </div>
+
+    <script>
+      const menuBtn = document.getElementById('menu_btn');
+      const menu = document.getElementById('menu');
+      const main = document.getElementById('main');
+      menuBtn.addEventListener('click', () => {
+        menu.classList.toggle('-translate-x-full');
+        main.classList.toggle('ml-64');
+      });
+      document.addEventListener('click', e => {
+        if (!menu.contains(e.target) && !menuBtn.contains(e.target)) {
+          menu.classList.add('-translate-x-full');
+          main.classList.remove('ml-64');
+        }
+      });
+
+      const userGreeting = document.getElementById('user_greeting');
+      const logoutBtn = document.getElementById('logout_btn');
+      fetch('/me').then(res => {
+        if (!res.ok) throw new Error('not authed');
+        return res.json();
+      }).then(data => {
+        const user = data.user || {};
+        const name = user.name || 'there';
+        const readOnly = Boolean(user.read_only);
+        const suffix = readOnly ? ' (read-only)' : '';
+        userGreeting.textContent = `Hey ${name}!${suffix}`;
+        userGreeting.classList.remove('hidden');
+        logoutBtn?.classList.remove('hidden');
+        logoutBtn?.addEventListener('click', (e) => {
+          e.preventDefault();
+          window.location.href = '/logout';
+        });
+      }).catch(() => {
+        window.location.href = '/login';
+      });
+
+      const entireOrg = document.getElementById('entire_org');
+      const siteSearch = document.getElementById('site_search');
+      const siteList = document.getElementById('site_list');
+      const runAuditBtn = document.getElementById('run_audit');
+      const auditStatus = document.getElementById('audit_status');
+      const resultsContainer = document.getElementById('audit_results');
+      const selectionSummary = document.getElementById('selection_summary');
+      const selectAllBtn = document.getElementById('select_all');
+      const clearSelectionBtn = document.getElementById('clear_selection');
+
+      let allSites = [];
+      const selectedSiteIds = new Set();
+
+      function updateSelectionSummary() {
+        if (entireOrg.checked) {
+          const count = allSites.length;
+          selectionSummary.textContent = `Entire organization (${count} site${count === 1 ? '' : 's'})`;
+        } else {
+          selectionSummary.textContent = `${selectedSiteIds.size} site${selectedSiteIds.size === 1 ? '' : 's'} selected`;
+        }
+      }
+
+      function renderSiteList() {
+        siteList.innerHTML = '';
+        const filter = siteSearch.value.trim().toLowerCase();
+        const filtered = allSites.filter(site => site.name.toLowerCase().includes(filter));
+        if (!filtered.length) {
+          const empty = document.createElement('p');
+          empty.className = 'text-sm text-slate-500 dark:text-slate-400';
+          empty.textContent = filter ? 'No sites match the current filter.' : 'No sites available.';
+          siteList.appendChild(empty);
+          return;
+        }
+        filtered.forEach(site => {
+          const label = document.createElement('label');
+          label.className = 'flex items-center gap-3 px-3 py-2 rounded hover:bg-white dark:hover:bg-slate-800 cursor-pointer';
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.className = 'w-4 h-4';
+          checkbox.value = site.id;
+          checkbox.checked = selectedSiteIds.has(site.id);
+          checkbox.disabled = entireOrg.checked;
+          checkbox.addEventListener('change', (event) => {
+            if (event.target.checked) {
+              selectedSiteIds.add(site.id);
+            } else {
+              selectedSiteIds.delete(site.id);
+            }
+            updateSelectionSummary();
+          });
+          const text = document.createElement('div');
+          text.className = 'flex-1 min-w-0';
+          text.innerHTML = `<p class="text-sm font-medium">${site.name}</p><p class="text-xs text-slate-500 dark:text-slate-400 truncate">${site.org_id || ''}</p>`;
+          label.appendChild(checkbox);
+          label.appendChild(text);
+          siteList.appendChild(label);
+        });
+      }
+
+      function setSelectionFromAll() {
+        selectedSiteIds.clear();
+        allSites.forEach(site => selectedSiteIds.add(site.id));
+        updateSelectionSummary();
+        renderSiteList();
+      }
+
+      selectAllBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        setSelectionFromAll();
+      });
+
+      clearSelectionBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        selectedSiteIds.clear();
+        updateSelectionSummary();
+        renderSiteList();
+      });
+
+      entireOrg.addEventListener('change', () => {
+        renderSiteList();
+        updateSelectionSummary();
+      });
+
+      siteSearch.addEventListener('input', () => {
+        renderSiteList();
+      });
+
+      function showStatus(message, isError = false) {
+        auditStatus.textContent = message;
+        auditStatus.className = `text-sm ${isError ? 'text-rose-500 dark:text-rose-300' : 'text-slate-600 dark:text-slate-300'}`;
+      }
+
+      function createSeverityBadge(severity) {
+        const badge = document.createElement('span');
+        const severityKey = (severity || '').toLowerCase();
+        const map = {
+          error: 'bg-rose-100 text-rose-800 border border-rose-200 dark:bg-rose-900 dark:text-rose-200',
+          warning: 'bg-amber-100 text-amber-800 border border-amber-200 dark:bg-amber-900 dark:text-amber-200',
+          info: 'bg-sky-100 text-sky-800 border border-sky-200 dark:bg-sky-900 dark:text-sky-200',
+          success: 'bg-emerald-100 text-emerald-800 border border-emerald-200 dark:bg-emerald-900 dark:text-emerald-200'
+        };
+        badge.className = `px-2 py-0.5 text-xs font-medium rounded-full ${map[severityKey] || map.warning}`;
+        badge.textContent = severityKey ? severityKey.charAt(0).toUpperCase() + severityKey.slice(1) : 'Warning';
+        return badge;
+      }
+
+      function renderFindings(list, severity) {
+        if (!list.length) {
+          const ok = document.createElement('div');
+          ok.className = 'rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 dark:bg-emerald-900/40 dark:border-emerald-700 dark:text-emerald-200 px-4 py-3 text-sm';
+          ok.textContent = 'No issues detected for this check.';
+          return ok;
+        }
+        const container = document.createElement('div');
+        container.className = 'space-y-3';
+        list.forEach(finding => {
+          const item = document.createElement('div');
+          item.className = 'border-l-4 pl-4 py-2 bg-white/60 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 rounded';
+          const title = document.createElement('div');
+          title.className = 'text-sm font-semibold flex flex-wrap gap-2 items-center';
+          title.textContent = finding.site_name || finding.site_id;
+          if (finding.device_name) {
+            const chip = document.createElement('span');
+            chip.className = 'text-xs font-medium px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700';
+            chip.textContent = finding.device_name;
+            title.appendChild(chip);
+          }
+          const message = document.createElement('p');
+          message.className = 'text-sm text-slate-600 dark:text-slate-300 mt-1';
+          message.textContent = finding.message;
+          item.appendChild(title);
+          item.appendChild(message);
+          if (finding.details && typeof finding.details === 'object') {
+            const details = document.createElement('pre');
+            details.className = 'mt-2 text-xs bg-slate-100 dark:bg-slate-900/80 text-slate-700 dark:text-slate-300 rounded p-2 overflow-x-auto';
+            details.textContent = JSON.stringify(finding.details, null, 2);
+            item.appendChild(details);
+          }
+          container.appendChild(item);
+        });
+        return container;
+      }
+
+      function renderResults(data) {
+        resultsContainer.innerHTML = '';
+        if (!data) return;
+
+        if (data.errors && data.errors.length) {
+          const errorBox = document.createElement('div');
+          errorBox.className = 'rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950 text-amber-900 dark:text-amber-200 p-4 text-sm';
+          errorBox.innerHTML = '<strong>Some sites could not be audited:</strong>';
+          const list = document.createElement('ul');
+          list.className = 'mt-2 space-y-1';
+          data.errors.forEach(err => {
+            const li = document.createElement('li');
+            li.innerHTML = `<span class="font-medium">${err.site_id || 'unknown'}:</span> ${typeof err.error === 'string' ? err.error : JSON.stringify(err.error)}`;
+            list.appendChild(li);
+          });
+          errorBox.appendChild(list);
+          resultsContainer.appendChild(errorBox);
+        }
+
+        const formatCount = (value) => {
+          const num = typeof value === 'number' ? value : Number(value);
+          return Number.isFinite(num) ? num : 0;
+        };
+        const startedDisplay = data.started_at ? new Date(data.started_at).toLocaleString() : '—';
+        const totalSites = formatCount(data.total_sites);
+        const totalDevices = formatCount(data.total_devices);
+        const totalFindings = formatCount(data.total_findings);
+        const durationDisplay = data.duration_ms != null ? `${formatCount(data.duration_ms)} ms` : '—';
+
+        const meta = document.createElement('div');
+        meta.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6';
+        meta.innerHTML = `
+          <h3 class="text-lg font-semibold mb-2">Audit summary</h3>
+          <dl class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+            <div><dt class="text-slate-500 dark:text-slate-400">Started</dt><dd>${startedDisplay}</dd></div>
+            <div><dt class="text-slate-500 dark:text-slate-400">Sites audited</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalSites.toLocaleString()}</dd></div>
+            <div><dt class="text-slate-500 dark:text-slate-400">Devices audited</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalDevices.toLocaleString()}</dd></div>
+            <div><dt class="text-slate-500 dark:text-slate-400">Issues identified</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalFindings.toLocaleString()}</dd></div>
+          </dl>
+          <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">Duration: ${durationDisplay}</p>
+        `;
+        resultsContainer.appendChild(meta);
+
+        const checks = Array.isArray(data.checks) ? data.checks : [];
+        if (!checks.length) {
+          const empty = document.createElement('div');
+          empty.className = 'rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 text-sm';
+          empty.textContent = 'No checks were executed.';
+          resultsContainer.appendChild(empty);
+          return;
+        }
+
+        checks.forEach(check => {
+          const card = document.createElement('div');
+          card.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6 space-y-3';
+          const header = document.createElement('div');
+          header.className = 'flex flex-wrap items-center justify-between gap-3';
+          const title = document.createElement('div');
+          title.innerHTML = `<h3 class="text-lg font-semibold">${check.name || 'Check'}</h3><p class="text-sm text-slate-500 dark:text-slate-400">${check.description || ''}</p>`;
+          if (check.id === 'configuration_overrides') {
+            const heading = title.querySelector('h3');
+            if (heading) {
+              const tip = document.createElement('span');
+              tip.className = 'ml-2 inline-flex items-center text-xs text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 cursor-help';
+              tip.setAttribute('title', 'Local switch configuration overrides the assigned template. Additional fields are surfaced as exceptions.');
+              tip.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-10.5a.75.75 0 10-1.5 0v.75a.75.75 0 001.5 0V7.5zm0 3a.75.75 0 10-1.5 0v3a.75.75 0 001.5 0v-3z" clip-rule="evenodd" />
+                </svg>
+              `;
+              const sr = document.createElement('span');
+              sr.className = 'sr-only';
+              sr.textContent = 'Local configuration overrides template';
+              tip.appendChild(sr);
+              heading.appendChild(tip);
+            }
+          }
+          const findings = Array.isArray(check.findings) ? check.findings : [];
+          const badgeSeverity = findings.length ? check.severity : 'success';
+          const badge = createSeverityBadge(badgeSeverity);
+          header.appendChild(title);
+          header.appendChild(badge);
+          card.appendChild(header);
+
+          const stats = document.createElement('div');
+          stats.className = 'flex flex-wrap gap-4 text-xs text-slate-500 dark:text-slate-400';
+          const failingCount = Array.isArray(check.failing_sites) ? check.failing_sites.length : 0;
+          const passingCount = typeof check.passing_sites === 'number' ? check.passing_sites : Math.max((data.total_sites || 0) - failingCount, 0);
+          stats.innerHTML = `<span><strong>${passingCount}</strong> site${passingCount === 1 ? '' : 's'} passing</span><span><strong>${failingCount}</strong> site${failingCount === 1 ? '' : 's'} with findings</span>`;
+          card.appendChild(stats);
+
+          card.appendChild(renderFindings(findings, check.severity));
+          resultsContainer.appendChild(card);
+        });
+      }
+
+      async function loadSites() {
+        try {
+          showStatus('Loading sites…');
+          const res = await fetch('/api/sites');
+          if (!res.ok) {
+            throw new Error('Failed to load sites');
+          }
+          const data = await res.json();
+          if (!data.ok) {
+            throw new Error(typeof data.error === 'string' ? data.error : 'Failed to load sites');
+          }
+          allSites = Array.isArray(data.items) ? data.items.map(site => ({
+            id: site.id,
+            name: site.name || site.id,
+            org_id: site.org_id || ''
+          })).filter(site => site.id) : [];
+          allSites.sort((a, b) => a.name.localeCompare(b.name));
+          renderSiteList();
+          updateSelectionSummary();
+          showStatus('Ready to run audit');
+        } catch (err) {
+          console.error(err);
+          showStatus(`Error loading sites: ${err.message || err}`, true);
+        }
+      }
+
+      runAuditBtn.addEventListener('click', async () => {
+        runAuditBtn.disabled = true;
+        showStatus('Running audit…');
+        resultsContainer.innerHTML = '';
+        try {
+          const body = {
+            site_ids: Array.from(selectedSiteIds),
+            entire_org: entireOrg.checked
+          };
+          const res = await fetch('/api/audit/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+          const data = await res.json().catch(() => ({ ok: false, error: 'Invalid response from server' }));
+          if (!res.ok || data.ok === false) {
+            const message = data && data.error ? (typeof data.error === 'string' ? data.error : JSON.stringify(data.error)) : res.statusText;
+            showStatus(`Audit failed: ${message}`, true);
+            return;
+          }
+          showStatus('Audit complete');
+          renderResults(data);
+        } catch (err) {
+          console.error(err);
+          showStatus(`Audit failed: ${err.message || err}`, true);
+        } finally {
+          runAuditBtn.disabled = false;
+        }
+      });
+
+      loadSites();
+    </script>
+  </body>
+</html>
