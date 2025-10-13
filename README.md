@@ -145,9 +145,9 @@ Allow the following flows if your environment restricts outbound traffic:
 | Direction | Protocol/Port | Destination | Purpose |
 |-----------|---------------|-------------|---------|
 | Inbound   | TCP `API_PORT` (8000 by default) | Admin workstations | Reach the GreatMigration web UI. Adjust if `API_PORT` is changed. |
-| Inbound   | TCP 22 | Admin workstations (optional) | Allow SSH administration of the GreatMigration host when running headless or in remote environments. |
 | Outbound  | TCP 443 | `api.ac2.mist.com` (or your regional Mist API host) | Fetch inventory, perform 1 Click Fix actions, push configurations. |
 | Outbound  | TCP 443 | `api.github.com` (and any custom `NETBOX_DT_URL`) | Download device type metadata referenced during conversions. |
+| Outbound  | TCP 22  | Managed switches | Allow the automation engine to initiate SSH sessions when executing configuration pushes or validation steps. |
 | Outbound† | TCP 389 / 636 | LDAP / Active Directory servers | Needed only when `AUTH_METHOD=ldap`. |
 
 †Use the secure port declared in `LDAP_SERVER_URL` (e.g., 636 for LDAPS).
