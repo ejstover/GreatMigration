@@ -205,6 +205,101 @@
         auditStatus.className = `text-sm ${isError ? 'text-rose-500 dark:text-rose-300' : 'text-slate-600 dark:text-slate-300'}`;
       }
 
+      function ensureActionStatusElement(button) {
+        if (!button) return null;
+        if (button._actionStatusElement && button._actionStatusElement.isConnected) {
+          return button._actionStatusElement;
+        }
+        const parent = button.parentElement;
+        if (parent) {
+          const candidate = parent.querySelector(':scope > span[data-role="action-status"]');
+          if (candidate) {
+            button._actionStatusElement = candidate;
+            return candidate;
+          }
+        }
+        return null;
+      }
+
+      function applyActionStatus(button, message, isError = false) {
+        const el = ensureActionStatusElement(button);
+        if (!el) return;
+        el.classList.remove('text-emerald-600', 'dark:text-emerald-300', 'text-slate-500', 'dark:text-slate-300', 'text-rose-600', 'dark:text-rose-300');
+        const text = typeof message === 'string' ? message.trim() : '';
+        if (text) {
+          el.textContent = text;
+          if (isError) {
+            el.classList.add('text-rose-600', 'dark:text-rose-300');
+          } else {
+            el.classList.add('text-slate-500', 'dark:text-slate-300');
+          }
+          el.classList.remove('hidden');
+        } else {
+          el.textContent = '';
+          el.classList.add('hidden');
+        }
+      }
+
+      function setInitialActionStatus(button, message, isError = false) {
+        if (!button) return;
+        button._initialActionStatus = {
+          message: typeof message === 'string' ? message : '',
+          isError: Boolean(isError),
+        };
+        applyActionStatus(button, button._initialActionStatus.message, button._initialActionStatus.isError);
+      }
+
+      function resetActionStatus(button) {
+        if (!button) return;
+        const initial = button._initialActionStatus || { message: '', isError: false };
+        applyActionStatus(button, initial.message, initial.isError);
+      }
+
+      function collectActionPrecheckMessages(action) {
+        if (!action || typeof action !== 'object') {
+          return [];
+        }
+        const metadata = action.metadata;
+        if (!metadata || typeof metadata !== 'object') {
+          return [];
+        }
+        const prechecks = metadata.prechecks;
+        if (!prechecks || typeof prechecks !== 'object') {
+          return [];
+        }
+        const baseMessages = Array.isArray(prechecks.messages)
+          ? prechecks.messages.filter(msg => typeof msg === 'string' && msg.trim())
+          : [];
+        if (baseMessages.length) {
+          return baseMessages.map(msg => msg.trim());
+        }
+        const messages = [];
+        if (prechecks.template_applied === false) {
+          const templateName = typeof prechecks.template_name === 'string' && prechecks.template_name.trim()
+            ? prechecks.template_name.trim()
+            : 'required template';
+          messages.push(`Apply '${templateName}' template to this site.`);
+        }
+        if (prechecks.dns_variables_defined === false) {
+          const missing = Array.isArray(prechecks.missing_dns_variables)
+            ? prechecks.missing_dns_variables.filter(value => typeof value === 'string' && value.trim())
+            : [];
+          if (missing.length) {
+            messages.push(`Define site DNS variables: ${missing.join(', ')}.`);
+          } else {
+            const required = Array.isArray(prechecks.required_dns_variables)
+              ? prechecks.required_dns_variables.filter(value => typeof value === 'string' && value.trim())
+              : [];
+            if (required.length) {
+              messages.push(`Define site DNS variables: ${required.join(', ')}.`);
+            } else {
+              messages.push('Required site DNS variables are missing.');
+            }
+          }
+        }
+        return messages;
+      }
+
       async function runOneClickFix(action, button) {
         if (!action || !action.id) {
           showStatus('Unable to start 1 Click Fix (missing action id).', true);
@@ -213,6 +308,7 @@
         const deviceTargets = Array.isArray(action.devices)
           ? action.devices.filter(item => item && item.site_id && item.device_id)
           : [];
+        const deviceIdSet = new Set(deviceTargets.map(item => String(item.device_id)).filter(Boolean));
         let siteIds = Array.isArray(action.site_ids)
           ? action.site_ids.filter(siteId => typeof siteId === 'string' && siteId)
           : [];
@@ -226,6 +322,7 @@
 
         const originalLabel = button ? button.textContent : '';
         if (button) {
+          resetActionStatus(button);
           button.disabled = true;
           button.textContent = 'Running…';
         }
@@ -245,6 +342,9 @@
           if (!response.ok || !data.ok) {
             const message = (data && (data.error || data.message)) || '1 Click Fix failed.';
             showStatus(message, true);
+            if (button) {
+              applyActionStatus(button, message, true);
+            }
             return;
           }
 
@@ -268,9 +368,63 @@
             summaryDetails.push(`(${failed} device${failed === 1 ? '' : 's'} could not be updated)`);
           }
           showStatus(`1 Click Fix completed: ${summaryDetails.join(' ')}.`, false);
+
+          if (button) {
+            const results = Array.isArray(data.results) ? data.results : [];
+            const siteIdSet = new Set(siteIds.map(siteId => String(siteId)));
+            const errorMessages = [];
+            const infoMessages = [];
+            results.forEach(summary => {
+              if (!summary || typeof summary !== 'object') {
+                return;
+              }
+              const summarySiteId = summary.site_id != null ? String(summary.site_id) : null;
+              if (!summarySiteId || !siteIdSet.has(summarySiteId)) {
+                return;
+              }
+              const summaryErrors = Array.isArray(summary.errors) ? summary.errors : [];
+              summaryErrors.forEach(err => {
+                if (err && typeof err.reason === 'string' && err.reason.trim()) {
+                  errorMessages.push(err.reason.trim());
+                }
+              });
+              if (summaryErrors.length) {
+                return;
+              }
+              if (!deviceIdSet.size) {
+                return;
+              }
+              const changes = Array.isArray(summary.changes) ? summary.changes : [];
+              changes.forEach(change => {
+                if (!change || typeof change !== 'object') {
+                  return;
+                }
+                const deviceId = change.device_id != null ? String(change.device_id) : null;
+                if (!deviceId || !deviceIdSet.has(deviceId)) {
+                  return;
+                }
+                const reason = typeof change.reason === 'string' ? change.reason.trim() : '';
+                if (reason) {
+                  infoMessages.push(reason);
+                }
+              });
+            });
+            if (errorMessages.length) {
+              const uniqueErrors = Array.from(new Set(errorMessages));
+              applyActionStatus(button, uniqueErrors.join(' '), true);
+            } else if (infoMessages.length) {
+              const uniqueInfo = Array.from(new Set(infoMessages));
+              applyActionStatus(button, uniqueInfo.join(' '), false);
+            } else {
+              resetActionStatus(button);
+            }
+          }
         } catch (error) {
           console.error('1 Click Fix error', error);
           showStatus('1 Click Fix failed due to a network error.', true);
+          if (button) {
+            applyActionStatus(button, '1 Click Fix failed due to a network error.', true);
+          }
         } finally {
           if (button) {
             button.disabled = false;
@@ -327,12 +481,26 @@
               if (!action) {
                 return;
               }
+              const wrapper = document.createElement('div');
+              wrapper.className = 'flex items-center gap-2';
               const button = document.createElement('button');
               button.type = 'button';
               button.className = 'text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
               button.textContent = action.button_label || '1 Click Fix Now';
               button.addEventListener('click', () => runOneClickFix(action, button));
-              actionBar.appendChild(button);
+              const status = document.createElement('span');
+              status.className = 'text-xs font-medium hidden whitespace-normal';
+              status.setAttribute('data-role', 'action-status');
+              wrapper.appendChild(button);
+              wrapper.appendChild(status);
+              button._actionStatusElement = status;
+              const precheckMessages = collectActionPrecheckMessages(action);
+              if (precheckMessages.length) {
+                setInitialActionStatus(button, precheckMessages.join(' '), true);
+              } else {
+                setInitialActionStatus(button, '', false);
+              }
+              actionBar.appendChild(wrapper);
             });
             if (actionBar.childElementCount) {
               item.appendChild(actionBar);
@@ -454,12 +622,26 @@
               if (!siteIds.length) {
                 return;
               }
+              const wrapper = document.createElement('div');
+              wrapper.className = 'flex items-center gap-2';
               const button = document.createElement('button');
               button.type = 'button';
               button.className = 'text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
               button.textContent = action.button_label || '1 Click Fix Now';
               button.addEventListener('click', () => runOneClickFix(action, button));
-              controls.appendChild(button);
+              const status = document.createElement('span');
+              status.className = 'text-xs font-medium hidden whitespace-normal';
+              status.setAttribute('data-role', 'action-status');
+              wrapper.appendChild(button);
+              wrapper.appendChild(status);
+              button._actionStatusElement = status;
+              const precheckMessages = collectActionPrecheckMessages(action);
+              if (precheckMessages.length) {
+                setInitialActionStatus(button, precheckMessages.join(' '), true);
+              } else {
+                setInitialActionStatus(button, '', false);
+              }
+              controls.appendChild(wrapper);
             });
           }
 

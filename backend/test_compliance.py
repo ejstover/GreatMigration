@@ -9,6 +9,8 @@ from compliance import (
     DeviceDocumentationCheck,
     SiteAuditRunner,
     DEFAULT_REQUIRED_SITE_VARIABLES,
+    DNS_OVERRIDE_TEMPLATE_NAME,
+    DNS_OVERRIDE_REQUIRED_VARS,
 )
 from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
 
@@ -480,6 +482,10 @@ def test_configuration_overrides_check_includes_dns_fix_action():
     assert prechecks == {
         "template_applied": True,
         "dns_variables_defined": True,
+        "template_name": DNS_OVERRIDE_TEMPLATE_NAME,
+        "required_dns_variables": list(DNS_OVERRIDE_REQUIRED_VARS),
+        "missing_dns_variables": [],
+        "messages": [],
     }
 
 
@@ -531,6 +537,13 @@ def test_configuration_overrides_check_reports_prereq_status_when_missing():
     assert prechecks == {
         "template_applied": False,
         "dns_variables_defined": False,
+        "template_name": DNS_OVERRIDE_TEMPLATE_NAME,
+        "required_dns_variables": list(DNS_OVERRIDE_REQUIRED_VARS),
+        "missing_dns_variables": ["hubDNSserver1", "hubDNSserver2"],
+        "messages": [
+            "Apply 'Prod - Standard Template' template to this site.",
+            "Define site DNS variables: hubDNSserver1, hubDNSserver2.",
+        ],
     }
 
 

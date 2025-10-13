@@ -852,9 +852,10 @@ class ConfigurationOverridesCheck(ComplianceCheck):
         template_names = _collect_template_names(context)
         prod_template_applied = DNS_OVERRIDE_TEMPLATE_NAME in template_names
         site_variables = _collect_site_variables(context)
-        dns_variables_defined = all(
-            _has_value(site_variables.get(key)) for key in DNS_OVERRIDE_REQUIRED_VARS
+        missing_dns_variables = sorted(
+            key for key in DNS_OVERRIDE_REQUIRED_VARS if not _has_value(site_variables.get(key))
         )
+        dns_variables_defined = not missing_dns_variables
 
         templates = _gather_switch_templates(context)
 
@@ -1002,6 +1003,16 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                                     if isinstance(value, (str, bytes)) and str(value).strip()
                                 ]
                                 if dns_values:
+                                    precheck_messages: List[str] = []
+                                    if not prod_template_applied:
+                                        precheck_messages.append(
+                                            f"Apply '{DNS_OVERRIDE_TEMPLATE_NAME}' template to this site."
+                                        )
+                                    if missing_dns_variables:
+                                        joined_missing = ", ".join(missing_dns_variables)
+                                        precheck_messages.append(
+                                            f"Define site DNS variables: {joined_missing}."
+                                        )
                                     actions = [
                                         {
                                             "id": CLEAR_DNS_OVERRIDE_ACTION_ID,
@@ -1025,6 +1036,12 @@ class ConfigurationOverridesCheck(ComplianceCheck):
                                                     "dns_variables_defined": bool(
                                                         dns_variables_defined
                                                     ),
+                                                    "template_name": DNS_OVERRIDE_TEMPLATE_NAME,
+                                                    "required_dns_variables": list(
+                                                        DNS_OVERRIDE_REQUIRED_VARS
+                                                    ),
+                                                    "missing_dns_variables": missing_dns_variables,
+                                                    "messages": precheck_messages,
                                                 },
                                             },
                                         }
