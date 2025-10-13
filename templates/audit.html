@@ -378,21 +378,12 @@
           historyBody.className = 'mt-4 space-y-4';
           const historyMessage = document.createElement('p');
           historyMessage.className = 'text-sm text-slate-500 dark:text-slate-400';
-          historyMessage.textContent = 'Select a site to view historical audit totals for the past year.';
-          const historyStats = document.createElement('dl');
-          historyStats.className = 'grid grid-cols-2 gap-3 text-sm';
-          const devicesMetric = document.createElement('div');
-          devicesMetric.innerHTML = '<dt class="text-slate-500 dark:text-slate-400">Devices audited</dt><dd class="text-xl font-semibold text-slate-900 dark:text-slate-100">—</dd>';
-          const issuesMetric = document.createElement('div');
-          issuesMetric.innerHTML = '<dt class="text-slate-500 dark:text-slate-400">Issues found</dt><dd class="text-xl font-semibold text-slate-900 dark:text-slate-100">—</dd>';
+          historyMessage.textContent = 'Select a site to view historical audit runs from the past year.';
           const runsMetric = document.createElement('p');
           runsMetric.className = 'text-xs text-slate-500 dark:text-slate-400';
           const historyTableContainer = document.createElement('div');
           historyTableContainer.className = 'hidden mt-4 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700/60';
           historyBody.appendChild(historyMessage);
-          historyBody.appendChild(historyStats);
-          historyStats.appendChild(devicesMetric);
-          historyStats.appendChild(issuesMetric);
           historyBody.appendChild(runsMetric);
           historyBody.appendChild(historyTableContainer);
           historyCard.appendChild(historyTitle);
@@ -405,9 +396,7 @@
           function updateHistory(site) {
             if (!site) {
               historyTitle.textContent = 'Historical audits';
-              historyMessage.textContent = 'Select a site to view historical audit totals for the past year.';
-              devicesMetric.querySelector('dd').textContent = '—';
-              issuesMetric.querySelector('dd').textContent = '—';
+              historyMessage.textContent = 'Select a site to view historical audit runs from the past year.';
               runsMetric.textContent = '';
               historyTableContainer.innerHTML = '';
               historyTableContainer.classList.add('hidden');
@@ -417,18 +406,12 @@
             historyTitle.textContent = `Historical audits for ${site.name}`;
             if (!history || !history.run_count) {
               historyMessage.textContent = 'No historical audit data recorded for this site yet.';
-              devicesMetric.querySelector('dd').textContent = '—';
-              issuesMetric.querySelector('dd').textContent = '—';
               runsMetric.textContent = '';
               historyTableContainer.innerHTML = '';
               historyTableContainer.classList.add('hidden');
               return;
             }
-            historyMessage.textContent = 'Totals from the past year of audit runs:';
-            const deviceTotal = Number(history.devices_total) || 0;
-            const issueTotal = Number(history.issues_total) || 0;
-            devicesMetric.querySelector('dd').textContent = deviceTotal.toLocaleString();
-            issuesMetric.querySelector('dd').textContent = issueTotal.toLocaleString();
+            historyMessage.textContent = 'Audit runs from the past year:';
             const runCount = Number(history.run_count) || 0;
             const lastAudit = history.last_audit_at ? new Date(history.last_audit_at).toLocaleString() : null;
             runsMetric.textContent = runCount
