@@ -44,6 +44,8 @@ from translate_showtech import (
 import ssh_collect
 from fpdf import FPDF
 from compliance import SiteAuditRunner, SiteContext, build_default_runner
+from audit_fixes import execute_audit_action
+from audit_actions import AP_RENAME_ACTION_ID
 from audit_history import load_site_history
 
 APP_TITLE = "Switch Port Config Frontend"
@@ -1186,6 +1188,124 @@ def api_audit_run(
             exc,
         )
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/api/audit/fix")
+def api_audit_fix(
+    request: Request,
+    payload: Dict[str, Any] = Body(...),
+    base_url: str = DEFAULT_BASE_URL,
+):
+    try:
+        _ensure_push_allowed(request, dry_run=False)
+
+        action_id = str(payload.get("action_id") or "").strip()
+        if not action_id:
+            raise ValueError("action_id is required")
+
+        site_ids_raw = payload.get("site_ids") or []
+        if site_ids_raw and not isinstance(site_ids_raw, list):
+            raise ValueError("site_ids must be provided as a list")
+
+        site_ids: List[str] = []
+        for sid in site_ids_raw:
+            if sid is None:
+                continue
+            text = str(sid).strip()
+            if text:
+                site_ids.append(text)
+
+        devices_raw = payload.get("devices") or []
+        device_map: Dict[str, List[str]] = {}
+        if devices_raw:
+            if not isinstance(devices_raw, list):
+                raise ValueError("devices must be provided as a list")
+            for entry in devices_raw:
+                if not isinstance(entry, dict):
+                    continue
+                site_id_raw = entry.get("site_id")
+                device_id_raw = entry.get("device_id")
+                site_id = str(site_id_raw).strip() if site_id_raw is not None else ""
+                device_id = str(device_id_raw).strip() if device_id_raw is not None else ""
+                if not site_id or not device_id:
+                    continue
+                device_map.setdefault(site_id, []).append(device_id)
+                if site_id not in site_ids:
+                    site_ids.append(site_id)
+
+        if not site_ids:
+            raise ValueError("Provide at least one site identifier.")
+
+        # Deduplicate device identifiers per site while preserving order
+        if device_map:
+            for site_id, devices in list(device_map.items()):
+                seen: set[str] = set()
+                deduped: List[str] = []
+                for device_id in devices:
+                    if device_id not in seen:
+                        seen.add(device_id)
+                        deduped.append(device_id)
+                device_map[site_id] = deduped
+
+        dry_run = bool(payload.get("dry_run", False))
+        pause_default = 0.2 if action_id == AP_RENAME_ACTION_ID else 0.1
+        pause_value = payload.get("pause")
+        try:
+            pause = float(pause_value)
+            if pause < 0:
+                pause = 0.0
+        except (TypeError, ValueError):
+            pause = pause_default
+
+        token = _load_mist_token()
+        base_url = base_url.rstrip("/")
+        result = execute_audit_action(
+            action_id,
+            base_url,
+            token,
+            site_ids,
+            dry_run=dry_run,
+            pause=pause,
+            device_map=device_map if device_map else None,
+        )
+
+        totals = result.get("totals", {}) if isinstance(result, dict) else {}
+        updated_total = totals.get("updated")
+        if not isinstance(updated_total, (int, float)):
+            updated_total = totals.get("renamed", 0)
+        action_logger.info(
+            "user=%s action=audit_fix fix_id=%s dry_run=%s sites=%s updated=%s failed=%s",
+            _request_user_label(request),
+            action_id,
+            dry_run,
+            totals.get("sites", 0),
+            updated_total,
+            totals.get("failed", 0),
+        )
+        return result
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except requests.HTTPError as exc:
+        response = exc.response
+        status = response.status_code if response is not None else 500
+        try:
+            detail = response.json() if response is not None else None
+        except Exception:
+            detail = response.text if response is not None else None
+        action_logger.error(
+            "user=%s action=audit_fix status=%s error=%s",
+            _request_user_label(request),
+            status,
+            detail or str(exc),
+        )
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=status)
+    except Exception as exc:
+        action_logger.exception(
+            "user=%s action=audit_fix error=%s",
+            _request_user_label(request),
+            exc,
+        )
+        return JSONResponse({"ok": False, "error": "Unexpected remediation failure."}, status_code=500)
 
 
 @app.post("/api/convert")

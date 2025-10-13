@@ -12,7 +12,8 @@ param(
   [string]$RepoUrl,                # e.g. https://github.com/ejstover/GreatMigration.git
   [string]$TargetDir = "$PWD",     # where to clone/use the project
   [string]$Branch = "main",
-  [int]$Port = 0
+  [int]$Port = 0,
+  [switch]$NoStart
 )
 
 $ErrorActionPreference = "Stop"
@@ -70,6 +71,12 @@ function Pip {
 
 function Ensure-Requirements {
   param([string]$projectDir, [string]$venvPython)
+  & $venvPython -m pip --version *> $null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "pip not found; bootstrapping with ensurepip ..." -ForegroundColor Yellow
+    & $venvPython -m ensurepip --upgrade
+    if ($LASTEXITCODE -ne 0) { throw "Failed to bootstrap pip with ensurepip." }
+  }
   $reqPath = Join-Path $projectDir "backend\requirements.txt"
 
   Write-Host "Upgrading pip..." -ForegroundColor Cyan
@@ -218,4 +225,11 @@ Ensure-PortRules -projectDir $projectDir
 if (-not $PSBoundParameters.ContainsKey('Port') -and $envPort -ne 0) { $Port = $envPort }
 if (-not $Port) { $Port = 8000 }
 
-Start-App -projectDir $projectDir -venvPath $venvPath -port $Port
+if ($NoStart) {
+  Write-Host "`nSetup complete. To start later run:" -ForegroundColor Cyan
+  $backendDir = Join-Path $projectDir "backend"
+  $venvPython = Join-Path $venvPath "Scripts\python.exe"
+  Write-Host "  `"$venvPython`" -m uvicorn app:app --host 0.0.0.0 --port $Port --app-dir `"$backendDir`"" -ForegroundColor White
+} else {
+  Start-App -projectDir $projectDir -venvPath $venvPath -port $Port
+}
