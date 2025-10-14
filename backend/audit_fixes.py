@@ -11,15 +11,23 @@ import requests
 from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
 from compliance import (
     DEFAULT_AP_NAME_PATTERN,
+    DEFAULT_SWITCH_NAME_PATTERN,
     DNS_OVERRIDE_LAB_TEMPLATE_IDS,
     DNS_OVERRIDE_LAB_TEMPLATE_NAME,
     DNS_OVERRIDE_PROD_TEMPLATE_IDS,
     DNS_OVERRIDE_REQUIRED_VAR_GROUPS,
     DNS_OVERRIDE_TEMPLATE_NAME,
+    ENV_SWITCH_NAME_PATTERN,
 )
 
 AP_NAME_PATTERN = re.compile(DEFAULT_AP_NAME_PATTERN)
-SWITCH_LLDPNAME_PATTERN = re.compile(
+if ENV_SWITCH_NAME_PATTERN is not None:
+    SWITCH_LLDPNAME_PATTERN = ENV_SWITCH_NAME_PATTERN
+else:
+    SWITCH_LLDPNAME_PATTERN = re.compile(DEFAULT_SWITCH_NAME_PATTERN)
+
+
+SWITCH_LOCATION_EXTRACT_PATTERN = re.compile(
     r"^(?P<region>NA|LA|EU|AP)(?P<site>[A-Z]{3})(?P<location>MDF|IDF\d+)[A-Z]{2}\d+$"
 )
 
@@ -76,23 +84,25 @@ def _list_site_aps(
     )
 
 
-def _get_site_ap_stats(
+def _get_device_stats(
     base_url: str,
     headers: Dict[str, str],
     site_id: str,
-) -> Dict[str, Dict[str, Any]]:
-    stats = _paginated_get(
-        base_url,
-        headers,
-        f"/sites/{site_id}/stats/devices",
-        params={"type": "ap", "limit": 1000},
+    device_id: str,
+) -> Dict[str, Any]:
+    response = requests.get(
+        f"{base_url}/sites/{site_id}/devices/{device_id}/stats",
+        headers=headers,
+        timeout=30,
     )
-    results: Dict[str, Dict[str, Any]] = {}
-    for item in stats:
-        mac = item.get("mac")
-        if isinstance(mac, str) and mac:
-            results[mac.lower()] = item
-    return results
+    response.raise_for_status()
+    try:
+        payload = response.json()
+    except Exception:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
 
 
 def _fetch_site_name(base_url: str, headers: Dict[str, str], site_id: str) -> str:
@@ -402,7 +412,10 @@ def _update_device_payload(
 
 
 def _parse_switch_location(name: str) -> Optional[Tuple[str, str, str]]:
-    match = SWITCH_LLDPNAME_PATTERN.match(name or "")
+    text = (name or "").strip()
+    if SWITCH_LLDPNAME_PATTERN is not None and not SWITCH_LLDPNAME_PATTERN.fullmatch(text):
+        return None
+    match = SWITCH_LOCATION_EXTRACT_PATTERN.match(text)
     if not match:
         return None
     return match.group("region"), match.group("site"), match.group("location")
@@ -468,6 +481,49 @@ def _neighbor_system_name(stats: Dict[str, Any]) -> Optional[str]:
                 value = neighbor.get(key)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
+    if isinstance(stats, dict):
+        lldp_stats = stats.get("lldp_stats")
+        entries: Iterable[Any]
+        if isinstance(lldp_stats, dict):
+            entries = list(lldp_stats.values())
+        elif isinstance(lldp_stats, (list, tuple, set)):
+            entries = lldp_stats
+        else:
+            entries = []
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            for key in (
+                "system_name",
+                "sys_name",
+                "name",
+                "remote_system_name",
+                "lldp_remote_system_name",
+            ):
+                value = entry.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            neighbor = entry.get("neighbor")
+            if isinstance(neighbor, Mapping):
+                for key in ("system_name", "sys_name", "name"):
+                    value = neighbor.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+            neighbors = entry.get("neighbors")
+            if isinstance(neighbors, Mapping):
+                for nested in neighbors.values():
+                    if isinstance(nested, Mapping):
+                        for key in ("system_name", "sys_name", "name"):
+                            value = nested.get(key)
+                            if isinstance(value, str) and value.strip():
+                                return value.strip()
+            if isinstance(neighbors, (list, tuple, set)):
+                for nested in neighbors:
+                    if isinstance(nested, Mapping):
+                        for key in ("system_name", "sys_name", "name"):
+                            value = nested.get(key)
+                            if isinstance(value, str) and value.strip():
+                                return value.strip()
     return None
 
 
@@ -482,7 +538,6 @@ def _summarize_site(
 ) -> Dict[str, Any]:
     site_name = _fetch_site_name(base_url, headers, site_id)
     devices = _list_site_aps(base_url, headers, site_id)
-    stats = _get_site_ap_stats(base_url, headers, site_id)
 
     existing_names = {d.get("name", "") for d in devices if isinstance(d, dict)}
     name_numbers = _initial_number_map(existing_names)
@@ -501,6 +556,9 @@ def _summarize_site(
     normalized_limit: Optional[Set[str]] = None
     if limit_device_ids is not None:
         normalized_limit = {str(device_id) for device_id in limit_device_ids if str(device_id).strip()}
+
+    stats_cache: Dict[str, Dict[str, Any]] = {}
+    stats_errors: Dict[str, str] = {}
 
     for device in devices:
         if not isinstance(device, dict):
@@ -524,7 +582,33 @@ def _summarize_site(
             summary["skipped"] += 1
             continue
 
-        stats_entry = stats.get(mac_key or "") if mac_key else None
+        if device_id not in stats_cache and device_id not in stats_errors:
+            try:
+                stats_doc = _get_device_stats(base_url, headers, site_id, device_id)
+                stats_cache[device_id] = stats_doc
+                if mac_key:
+                    stats_cache[mac_key] = stats_doc
+            except requests.HTTPError as exc:
+                stats_errors[device_id] = f"Failed to retrieve device stats: {exc}"
+            except requests.RequestException as exc:
+                stats_errors[device_id] = f"Failed to retrieve device stats: {exc}"
+
+        error_reason = stats_errors.get(device_id)
+        if error_reason:
+            summary["failed"] += 1
+            summary["errors"].append(
+                {
+                    "device_id": device_id,
+                    "mac": mac,
+                    "reason": error_reason,
+                }
+            )
+            continue
+
+        stats_entry = stats_cache.get(device_id)
+        if not stats_entry and mac_key:
+            stats_entry = stats_cache.get(mac_key)
+
         neighbor = _neighbor_system_name(stats_entry or {}) if stats_entry else None
         if not neighbor:
             summary["failed"] += 1
@@ -545,7 +629,7 @@ def _summarize_site(
                     "device_id": device_id,
                     "mac": mac,
                     "neighbor": neighbor,
-                    "reason": "Neighbor name does not match required pattern.",
+                    "reason": "Switch name does not meet naming standards. Please correct that first.",
                 }
             )
             continue

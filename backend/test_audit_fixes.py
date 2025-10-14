@@ -37,13 +37,11 @@ def test_execute_action_renames_aps_in_dry_run(monkeypatch):
                 {"id": "dev1", "mac": "AA:BB:CC", "name": "BadAP"},
                 {"id": "dev2", "mac": "DD:EE:FF", "name": "NAABCIDF1AP1"},
             ])
-        if url.endswith("/sites/site-1/stats/devices"):
-            assert params == {"type": "ap", "limit": 1000}
+        if url.endswith("/sites/site-1/devices/dev1/stats"):
             return DummyResponse(
                 {
-                    "results": [
-                        {"mac": "aa:bb:cc", "uplink": {"neighbor": {"system_name": "NACHIIDF1AS1"}}},
-                        {"mac": "dd:ee:ff", "uplink": {"neighbor": {"system_name": "NACHIIDF1AS2"}}},
+                    "lldp_stats": [
+                        {"neighbor": {"system_name": "NACHIIDF1AS1"}},
                     ]
                 }
             )
@@ -91,12 +89,11 @@ def test_execute_action_targets_specific_device(monkeypatch):
                     {"id": "dev2", "mac": "DD:EE:FF", "name": "AlsoBad"},
                 ]
             )
-        if url.endswith("/sites/site-1/stats/devices"):
+        if url.endswith("/sites/site-1/devices/dev2/stats"):
             return DummyResponse(
                 {
-                    "results": [
-                        {"mac": "aa:bb:cc", "uplink": {"neighbor": {"system_name": "NACHIIDF1AS1"}}},
-                        {"mac": "dd:ee:ff", "uplink": {"neighbor": {"system_name": "NACHIIDF1AS2"}}},
+                    "lldp_stats": [
+                        {"neighbor": {"system_name": "NACHIIDF1AS2"}},
                     ]
                 }
             )
