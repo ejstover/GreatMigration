@@ -1002,6 +1002,161 @@ def test_device_naming_convention_provides_ap_fix_action():
     assert actions == []
 
 
+def test_device_naming_convention_detects_ap_switch_location_mismatch():
+    ctx = SiteContext(
+        site_id="site-9d",
+        site_name="Naming Site Location",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-1", "name": "NACHIMDFAS1", "type": "switch", "status": "connected"},
+            {
+                "id": "ap-1",
+                "name": "NACHIIDF1AP1",
+                "type": "ap",
+                "status": "connected",
+                "stats": {"lldp_stats": [{"neighbor": {"system_name": "NACHIMDFAS1"}}]},
+            },
+        ],
+    )
+    check = DeviceNamingConventionCheck()
+    findings = check.run(ctx)
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.device_id == "ap-1"
+    assert "does not match uplink switch" in finding.message
+    assert finding.details
+    assert finding.details.get("neighbor") == "NACHIMDFAS1"
+    mismatch_types = {item.get("type") for item in finding.details.get("mismatches", [])}
+    assert mismatch_types == {"location"}
+    assert finding.actions and finding.actions[0]["id"] == AP_RENAME_ACTION_ID
+
+
+def test_device_naming_convention_detects_ap_switch_site_mismatch():
+    ctx = SiteContext(
+        site_id="site-9e",
+        site_name="Naming Site Region",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-2", "name": "APZENIDF3AS4", "type": "switch", "status": "connected"},
+            {
+                "id": "ap-2",
+                "name": "NACHIIDF1AP1",
+                "type": "ap",
+                "status": "connected",
+                "stats": {"lldp_stats": [{"neighbor": {"system_name": "APZENIDF3AS4"}}]},
+            },
+        ],
+    )
+    check = DeviceNamingConventionCheck()
+    findings = check.run(ctx)
+    assert len(findings) == 1
+    finding = findings[0]
+    mismatch_types = {item.get("type") for item in finding.details.get("mismatches", [])}
+    assert mismatch_types == {"site", "location"}
+    assert finding.details.get("neighbor") == "APZENIDF3AS4"
+
+
+def test_device_naming_convention_allows_matching_ap_switch_alignment():
+    ctx = SiteContext(
+        site_id="site-9f",
+        site_name="Naming Site Match",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-3", "name": "NACHIMDFAS1", "type": "switch", "status": "connected"},
+            {
+                "id": "ap-3",
+                "name": "NACHIMDFAP7",
+                "type": "ap",
+                "status": "connected",
+                "stats": {"lldp_stats": [{"neighbor": {"system_name": "NACHIMDFAS1"}}]},
+            },
+        ],
+    )
+    check = DeviceNamingConventionCheck()
+    findings = check.run(ctx)
+    assert findings == []
+
+
+def test_device_naming_convention_uses_nested_device_stats_for_neighbor():
+    ctx = SiteContext(
+        site_id="site-9g",
+        site_name="Naming Device Stats",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-4", "name": "NACHIMDFAS1", "type": "switch", "status": "connected"},
+            {
+                "id": "ap-4",
+                "name": "NACHIIDF1AP1",
+                "type": "ap",
+                "status": "connected",
+                "device_stats": {
+                    "lldp": {
+                        "ports": [
+                            {
+                                "port_id": "eth0",
+                                "neighbors": [
+                                    {
+                                        "system_name": "NACHIMDFAS1",
+                                        "port_id": "ge-0/0/1",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            },
+        ],
+    )
+
+    check = DeviceNamingConventionCheck()
+    findings = check.run(ctx)
+    assert len(findings) == 1
+    assert findings[0].device_id == "ap-4"
+    assert findings[0].details.get("neighbor") == "NACHIMDFAS1"
+
+
+def test_device_naming_convention_handles_uplink_neighbor_list():
+    ctx = SiteContext(
+        site_id="site-9h",
+        site_name="Naming Uplink List",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-5", "name": "NACHIIDF2AS1", "type": "switch", "status": "connected"},
+            {
+                "id": "ap-5",
+                "name": "NACHIIDF1AP1",
+                "type": "ap",
+                "status": "connected",
+                "stats": {
+                    "uplink": {
+                        "neighbors": [
+                            {
+                                "system_name": "NACHIIDF2AS1",
+                                "port_id": "ge-0/0/2",
+                            }
+                        ]
+                    }
+                },
+            },
+        ],
+    )
+
+    check = DeviceNamingConventionCheck()
+    findings = check.run(ctx)
+    assert len(findings) == 1
+    assert findings[0].details.get("neighbor") == "NACHIIDF2AS1"
+
+
 @pytest.mark.parametrize(
     "env_value",
     [

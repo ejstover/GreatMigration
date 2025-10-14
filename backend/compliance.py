@@ -8,7 +8,7 @@ import os
 import re
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
 
@@ -1364,6 +1364,14 @@ DEFAULT_SWITCH_NAME_PATTERN = (
 DEFAULT_AP_NAME_PATTERN = r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDF|IDF\d+)AP\d+$"
 
 
+SWITCH_LOCATION_EXTRACT_PATTERN = re.compile(
+    r"^(?P<region>NA|LA|EU|AP)(?P<site>[A-Z]{3})(?P<location>MDF|IDF\d+)[A-Z]{2}\d+$"
+)
+AP_LOCATION_EXTRACT_PATTERN = re.compile(
+    r"^(?P<region>NA|LA|EU|AP)(?P<site>[A-Z]{3})(?P<location>MDF|IDF\d+)AP\d+$"
+)
+
+
 DNS_OVERRIDE_TEMPLATE_NAME = "Prod - Standard Template"
 DNS_OVERRIDE_LAB_TEMPLATE_NAME = "Test - Standard Template"
 DNS_OVERRIDE_PROD_TEMPLATE_IDS: Tuple[str, ...] = (
@@ -1449,6 +1457,150 @@ def _ensure_pattern(
 
 ENV_SWITCH_NAME_PATTERN = _load_pattern_from_env("SWITCH_NAME_REGEX_PATTERN", DEFAULT_SWITCH_NAME_PATTERN)
 ENV_AP_NAME_PATTERN = _load_pattern_from_env("AP_NAME_REGEX_PATTERN", DEFAULT_AP_NAME_PATTERN)
+
+
+NEIGHBOR_NAME_KEYS: Tuple[str, ...] = (
+    "system_name",
+    "sys_name",
+    "name",
+    "remote_system_name",
+    "lldp_remote_system_name",
+)
+
+
+def _is_plausible_neighbor_name(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return False
+    if SWITCH_LOCATION_EXTRACT_PATTERN.match(text):
+        return True
+    # Allow custom switch patterns that still expose MDF/IDF tokens
+    return bool(re.search(r"IDF\d+|MDF", text))
+
+
+def _extract_name_from_mapping(data: Mapping[str, Any]) -> Optional[str]:
+    for key in NEIGHBOR_NAME_KEYS:
+        value = data.get(key)
+        if isinstance(value, str) and _is_plausible_neighbor_name(value):
+            return value.strip()
+    # Some APIs return the neighbor directly as a string value
+    if isinstance(data.get("neighbor"), str) and _is_plausible_neighbor_name(data["neighbor"]):
+        return data["neighbor"].strip()
+    return None
+
+
+def _search_neighbor_tree(value: Any, visited: Optional[Set[int]] = None) -> Optional[str]:
+    if visited is None:
+        visited = set()
+    obj_id = id(value)
+    if obj_id in visited:
+        return None
+    visited.add(obj_id)
+
+    if isinstance(value, Mapping):
+        direct = _extract_name_from_mapping(value)
+        if direct:
+            return direct
+
+        # Prioritise typical neighbor containers first
+        for key in (
+            "neighbor",
+            "neighbors",
+            "uplink",
+            "uplinks",
+            "lldp",
+            "lldp_stats",
+            "ports",
+            "interfaces",
+            "wired",
+            "wired_interfaces",
+            "wired_ports",
+        ):
+            if key in value:
+                result = _search_neighbor_tree(value[key], visited)
+                if result:
+                    return result
+
+        for nested in value.values():
+            result = _search_neighbor_tree(nested, visited)
+            if result:
+                return result
+
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            result = _search_neighbor_tree(item, visited)
+            if result:
+                return result
+    elif isinstance(value, str) and _is_plausible_neighbor_name(value):
+        return value.strip()
+    return None
+
+
+def _neighbor_system_name_from_stats(stats: Mapping[str, Any]) -> Optional[str]:
+    if not isinstance(stats, Mapping):
+        return None
+
+    # Common top-level keys returned by Mist device stats APIs
+    for key in ("uplink", "lldp", "lldp_stats", "ports", "interfaces"):
+        if key in stats:
+            result = _search_neighbor_tree(stats.get(key))
+            if result:
+                return result
+
+    return _search_neighbor_tree(stats)
+
+
+def _extract_neighbor_system_name(device: Mapping[str, Any]) -> Optional[str]:
+    candidates: List[Mapping[str, Any]] = []
+
+    for key in ("stats", "device_stats", "stat", "status"):
+        value = device.get(key)
+        if isinstance(value, Mapping):
+            candidates.append(value)
+
+    lldp_value = device.get("lldp_stats")
+    if isinstance(lldp_value, Mapping):
+        candidates.append(lldp_value)
+    elif isinstance(lldp_value, (list, tuple, set)):
+        candidates.append({"lldp_stats": lldp_value})
+
+    uplink_value = device.get("uplink")
+    if isinstance(uplink_value, Mapping):
+        candidates.append({"uplink": uplink_value})
+
+    for stats in candidates:
+        neighbor = _neighbor_system_name_from_stats(stats)
+        if neighbor:
+            return neighbor
+    return None
+
+
+def _parse_switch_location(
+    name: str, pattern: Optional[re.Pattern[str]]
+) -> Optional[Tuple[str, str, str]]:
+    text = (name or "").strip()
+    if not text:
+        return None
+    if pattern is not None and pattern.fullmatch(text) is None:
+        return None
+    match = SWITCH_LOCATION_EXTRACT_PATTERN.match(text)
+    if not match:
+        return None
+    return match.group("region"), match.group("site"), match.group("location")
+
+
+def _parse_ap_location(
+    name: str, pattern: Optional[re.Pattern[str]]
+) -> Optional[Tuple[str, str, str]]:
+    text = (name or "").strip()
+    if not text:
+        return None
+    if pattern is not None and pattern.fullmatch(text) is None:
+        return None
+    match = AP_LOCATION_EXTRACT_PATTERN.match(text)
+    if not match:
+        return None
+    return match.group("region"), match.group("site"), match.group("location")
 
 
 def _load_positive_int_from_env(var_name: str, default: int) -> int:
@@ -1589,6 +1741,84 @@ class DeviceNamingConventionCheck(ComplianceCheck):
         self._ap_issue_counts: Dict[str, int] = {}
         self._ap_issue_sites: Dict[str, str] = {}
 
+    def _build_ap_rename_action(
+        self, context: SiteContext, device_id: Optional[str], device_name: str
+    ) -> Optional[List[Dict[str, Any]]]:
+        if not device_id or not self.ap_pattern:
+            return None
+        return [
+            {
+                "id": AP_RENAME_ACTION_ID,
+                "label": "Rename access point",
+                "button_label": "1 Click Fix Now",
+                "site_ids": [context.site_id],
+                "devices": [
+                    {
+                        "site_id": context.site_id,
+                        "device_id": device_id,
+                    }
+                ],
+                "metadata": {
+                    "device_id": device_id,
+                    "current_name": device_name or "",
+                    "expected_pattern": self.ap_pattern.pattern,
+                },
+            }
+        ]
+
+    def _check_ap_switch_alignment(
+        self, device: Mapping[str, Any], device_name: str
+    ) -> Optional[Tuple[str, Dict[str, Any]]]:
+        neighbor = _extract_neighbor_system_name(device)
+        if not neighbor:
+            return None
+
+        ap_tokens = _parse_ap_location(device_name, self.ap_pattern)
+        if not ap_tokens:
+            return None
+
+        switch_tokens = _parse_switch_location(neighbor, self.switch_pattern)
+        if not switch_tokens:
+            return None
+
+        ap_region, ap_site, ap_location = ap_tokens
+        sw_region, sw_site, sw_location = switch_tokens
+
+        mismatches: List[Tuple[str, str, str]] = []
+        if (ap_region, ap_site) != (sw_region, sw_site):
+            mismatches.append(("site", f"{ap_region}{ap_site}", f"{sw_region}{sw_site}"))
+        if ap_location != sw_location:
+            mismatches.append(("location", ap_location, sw_location))
+
+        if not mismatches:
+            return None
+
+        parts: List[str] = []
+        for category, ap_value, sw_value in mismatches:
+            label = "site prefix" if category == "site" else "location token"
+            parts.append(f"{label} '{ap_value}' vs '{sw_value}'")
+        difference_text = "; ".join(parts)
+
+        message = (
+            "Access point name does not match uplink switch "
+            f"'{neighbor}' ({difference_text})."
+        )
+        details = {
+            "neighbor": neighbor,
+            "ap_name": device_name,
+            "ap_region": ap_region,
+            "ap_site": ap_site,
+            "ap_location": ap_location,
+            "switch_region": sw_region,
+            "switch_site": sw_site,
+            "switch_location": sw_location,
+            "mismatches": [
+                {"type": category, "ap": ap_value, "switch": sw_value}
+                for category, ap_value, sw_value in mismatches
+            ],
+        }
+        return message, details
+
     def _register_ap_issue(self, context: SiteContext, device_name: str) -> None:
         site_id = context.site_id
         self._ap_issue_counts[site_id] = self._ap_issue_counts.get(site_id, 0) + 1
@@ -1631,26 +1861,8 @@ class DeviceNamingConventionCheck(ComplianceCheck):
                     message = f"{label} name does not match required convention."
 
                 actions: Optional[List[Dict[str, Any]]] = None
-                if is_ap and device_id and self.ap_pattern:
-                    actions = [
-                        {
-                            "id": AP_RENAME_ACTION_ID,
-                            "label": "Rename access point",
-                            "button_label": "1 Click Fix Now",
-                            "site_ids": [context.site_id],
-                            "devices": [
-                                {
-                                    "site_id": context.site_id,
-                                    "device_id": device_id,
-                                }
-                            ],
-                            "metadata": {
-                                "device_id": device_id,
-                                "current_name": device_name or "",
-                                "expected_pattern": self.ap_pattern.pattern,
-                            },
-                        }
-                    ]
+                if is_ap:
+                    actions = self._build_ap_rename_action(context, device_id, device_name or "")
                 findings.append(
                     Finding(
                         site_id=context.site_id,
@@ -1664,6 +1876,25 @@ class DeviceNamingConventionCheck(ComplianceCheck):
                 )
                 if is_ap:
                     self._register_ap_issue(context, device_name or (device_id or ""))
+                continue
+
+            if is_ap:
+                alignment_issue = self._check_ap_switch_alignment(device, device_name)
+                if alignment_issue:
+                    message, details = alignment_issue
+                    actions = self._build_ap_rename_action(context, device_id, device_name)
+                    findings.append(
+                        Finding(
+                            site_id=context.site_id,
+                            site_name=context.site_name,
+                            device_id=device_id,
+                            device_name=device_name,
+                            message=message,
+                            details=details,
+                            actions=actions,
+                        )
+                    )
+                    self._register_ap_issue(context, device_name)
         return findings
 
     def suggest_actions(
