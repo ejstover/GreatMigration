@@ -37,14 +37,15 @@ def test_execute_action_renames_aps_in_dry_run(monkeypatch):
                 {"id": "dev1", "mac": "AA:BB:CC", "name": "BadAP"},
                 {"id": "dev2", "mac": "DD:EE:FF", "name": "NAABCIDF1AP1"},
             ])
-        if url.endswith("/sites/site-1/stats/devices"):
-            assert params == {"type": "ap", "limit": 1000}
+        if url.endswith("/sites/site-1/stats/devices/dev1"):
+            assert params == {"type": "ap"}
             return DummyResponse(
                 {
-                    "results": [
-                        {"mac": "aa:bb:cc", "uplink": {"neighbor": {"system_name": "NACHIIDF1AS1"}}},
-                        {"mac": "dd:ee:ff", "uplink": {"neighbor": {"system_name": "NACHIIDF1AS2"}}},
-                    ]
+                    "stats": {
+                        "lldp_stats": [
+                            {"neighbor": {"system_name": "NACHIIDF1AS1"}},
+                        ]
+                    }
                 }
             )
         raise AssertionError(f"Unexpected GET {url}")
@@ -91,13 +92,15 @@ def test_execute_action_targets_specific_device(monkeypatch):
                     {"id": "dev2", "mac": "DD:EE:FF", "name": "AlsoBad"},
                 ]
             )
-        if url.endswith("/sites/site-1/stats/devices"):
+        if url.endswith("/sites/site-1/stats/devices/dev2"):
+            assert params == {"type": "ap"}
             return DummyResponse(
                 {
-                    "results": [
-                        {"mac": "aa:bb:cc", "uplink": {"neighbor": {"system_name": "NACHIIDF1AS1"}}},
-                        {"mac": "dd:ee:ff", "uplink": {"neighbor": {"system_name": "NACHIIDF1AS2"}}},
-                    ]
+                    "stats": {
+                        "lldp_stats": [
+                            {"neighbor": {"system_name": "NACHIIDF1AS2"}},
+                        ]
+                    }
                 }
             )
         raise AssertionError(f"Unexpected GET {url}")
@@ -128,6 +131,71 @@ def test_execute_action_targets_specific_device(monkeypatch):
     assert change["old_name"] == "AlsoBad"
     assert len(calls["put"]) == 1
     assert calls["put"][0][0].endswith("/devices/dev2")
+
+
+def test_execute_action_assigns_unique_suffixes(monkeypatch):
+    calls = {"get": [], "put": []}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["get"].append((url, params))
+        if url.endswith("/sites/site-1"):
+            return DummyResponse({"name": "Site One"})
+        if url.endswith("/sites/site-1/devices"):
+            return DummyResponse(
+                [
+                    {"id": "dev1", "mac": "AA:BB:CC", "name": "BadAP"},
+                    {"id": "dev2", "mac": "DD:EE:FF", "name": "AlsoBad"},
+                    {"id": "dev3", "mac": "11:22:33", "name": "NACHIIDF9AP1"},
+                ]
+            )
+        if url.endswith("/sites/site-1/stats/devices/dev1"):
+            assert params == {"type": "ap"}
+            return DummyResponse(
+                {
+                    "stats": {
+                        "lldp_stats": [
+                            {"neighbor": {"system_name": "NACHIIDF1AS1"}},
+                        ]
+                    }
+                }
+            )
+        if url.endswith("/sites/site-1/stats/devices/dev2"):
+            assert params == {"type": "ap"}
+            return DummyResponse(
+                {
+                    "stats": {
+                        "lldp_stats": [
+                            {"neighbor": {"system_name": "NACHIIDF2AS3"}},
+                        ]
+                    }
+                }
+            )
+        raise AssertionError(f"Unexpected GET {url}")
+
+    def fake_put(url, headers=None, json=None, timeout=None):
+        calls["put"].append((url, json))
+        return DummyResponse({})
+
+    monkeypatch.setattr("audit_fixes.requests.get", fake_get)
+    monkeypatch.setattr("audit_fixes.requests.put", fake_put)
+
+    result = execute_audit_action(
+        AP_RENAME_ACTION_ID,
+        "https://api.mist.test/api/v1",
+        "token",
+        ["site-1"],
+        dry_run=False,
+        pause=0,
+    )
+
+    assert result["ok"] is True
+    summary = result["results"][0]
+    assert summary["renamed"] == 2
+    assert len(calls["put"]) == 2
+    payloads = [payload for _, payload in calls["put"]]
+    new_names = {payload.get("name") for payload in payloads}
+    assert "NACHIIDF1AP2" in new_names
+    assert "NACHIIDF2AP3" in new_names
 
 
 def test_execute_dns_override_action_updates_payload(monkeypatch):
