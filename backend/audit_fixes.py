@@ -425,8 +425,9 @@ def _parse_switch_location(name: str) -> Optional[Tuple[str, str, str]]:
     return match.group("region"), match.group("site"), match.group("location")
 
 
-def _initial_number_map(names: Iterable[str]) -> Dict[str, int]:
+def _initial_number_map(names: Iterable[str]) -> Tuple[Dict[str, int], Set[int]]:
     numbers: Dict[str, int] = {}
+    used_suffixes: Set[int] = set()
     for name in names:
         if not isinstance(name, str):
             continue
@@ -440,16 +441,27 @@ def _initial_number_map(names: Iterable[str]) -> Dict[str, int]:
         except Exception:
             continue
         numbers[base] = max(numbers.get(base, 0), current)
-    return numbers
+        used_suffixes.add(current)
+    return numbers, used_suffixes
 
 
-def _next_available_name(base: str, existing: set[str], numbers: Dict[str, int]) -> str:
+def _next_available_name(
+    base: str,
+    existing: set[str],
+    numbers: Dict[str, int],
+    used_suffixes: Set[int],
+) -> str:
     start = numbers.get(base, 0) + 1
-    candidate = f"{base}{start}"
-    while candidate in existing:
-        start += 1
+    while True:
+        if start in used_suffixes:
+            start += 1
+            continue
         candidate = f"{base}{start}"
+        if candidate not in existing:
+            break
+        start += 1
     numbers[base] = start
+    used_suffixes.add(start)
     existing.add(candidate)
     return candidate
 
@@ -544,7 +556,7 @@ def _summarize_site(
     devices = _list_site_aps(base_url, headers, site_id)
 
     existing_names = {d.get("name", "") for d in devices if isinstance(d, dict)}
-    name_numbers = _initial_number_map(existing_names)
+    name_numbers, used_suffixes = _initial_number_map(existing_names)
 
     summary: Dict[str, Any] = {
         "site_id": site_id,
@@ -582,7 +594,8 @@ def _summarize_site(
         if normalized_limit is not None and device_id not in normalized_limit:
             continue
         current_name = (device.get("name") or "").strip() or None
-        if not _needs_rename(current_name):
+        force_processing = normalized_limit is not None
+        if not _needs_rename(current_name) and not force_processing:
             summary["skipped"] += 1
             continue
 
@@ -640,7 +653,7 @@ def _summarize_site(
 
         region, site, location = parsed
         base = f"{region}{site}{location}AP"
-        candidate = _next_available_name(base, existing_names, name_numbers)
+        candidate = _next_available_name(base, existing_names, name_numbers, used_suffixes)
 
         if not dry_run:
             try:
@@ -653,22 +666,31 @@ def _summarize_site(
                         "device_id": device_id,
                         "mac": mac,
                         "neighbor": neighbor,
-                        "reason": f"Rename failed: {exc}",
+                        "reason": "Change Failed! Please see device logs",
+                        "details": {
+                            "error": f"Rename failed: {exc}",
+                            "attempted_name": candidate,
+                        },
                     }
                 )
                 existing_names.discard(candidate)
                 continue
         summary["renamed"] += 1
         summary["updated"] += 1
-        summary["changes"].append(
-            {
-                "device_id": device_id,
-                "mac": mac,
-                "old_name": current_name,
-                "new_name": candidate,
-                "neighbor": neighbor,
-            }
-        )
+        change_entry = {
+            "device_id": device_id,
+            "mac": mac,
+            "old_name": current_name,
+            "new_name": candidate,
+            "neighbor": neighbor,
+        }
+        if dry_run:
+            change_entry["status"] = "preview"
+            change_entry["message"] = f"Would rename to {candidate}"
+        else:
+            change_entry["status"] = "success"
+            change_entry["message"] = "Success!"
+        summary["changes"].append(change_entry)
     return summary
 
 
