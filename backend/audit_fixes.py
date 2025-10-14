@@ -594,7 +594,8 @@ def _summarize_site(
         if normalized_limit is not None and device_id not in normalized_limit:
             continue
         current_name = (device.get("name") or "").strip() or None
-        if not _needs_rename(current_name):
+        force_processing = normalized_limit is not None
+        if not _needs_rename(current_name) and not force_processing:
             summary["skipped"] += 1
             continue
 
@@ -665,22 +666,31 @@ def _summarize_site(
                         "device_id": device_id,
                         "mac": mac,
                         "neighbor": neighbor,
-                        "reason": f"Rename failed: {exc}",
+                        "reason": "Change Failed! Please see device logs",
+                        "details": {
+                            "error": f"Rename failed: {exc}",
+                            "attempted_name": candidate,
+                        },
                     }
                 )
                 existing_names.discard(candidate)
                 continue
         summary["renamed"] += 1
         summary["updated"] += 1
-        summary["changes"].append(
-            {
-                "device_id": device_id,
-                "mac": mac,
-                "old_name": current_name,
-                "new_name": candidate,
-                "neighbor": neighbor,
-            }
-        )
+        change_entry = {
+            "device_id": device_id,
+            "mac": mac,
+            "old_name": current_name,
+            "new_name": candidate,
+            "neighbor": neighbor,
+        }
+        if dry_run:
+            change_entry["status"] = "preview"
+            change_entry["message"] = f"Would rename to {candidate}"
+        else:
+            change_entry["status"] = "success"
+            change_entry["message"] = "Success!"
+        summary["changes"].append(change_entry)
     return summary
 
 

@@ -200,9 +200,26 @@
         renderSiteList();
       });
 
-      function showStatus(message, isError = false) {
+      function normalizeVariant(value) {
+        const variant = typeof value === 'string' ? value.toLowerCase() : '';
+        if (variant === 'error' || variant === 'success' || variant === 'info') {
+          return variant;
+        }
+        return 'info';
+      }
+
+      function showStatus(message, variant = 'info') {
+        const normalizedVariant = normalizeVariant(variant);
         auditStatus.textContent = message;
-        auditStatus.className = `text-sm ${isError ? 'text-rose-500 dark:text-rose-300' : 'text-slate-600 dark:text-slate-300'}`;
+        let className = 'text-sm ';
+        if (normalizedVariant === 'error') {
+          className += 'text-rose-500 dark:text-rose-300';
+        } else if (normalizedVariant === 'success') {
+          className += 'text-emerald-600 dark:text-emerald-300';
+        } else {
+          className += 'text-slate-600 dark:text-slate-300';
+        }
+        auditStatus.className = className;
       }
 
       function ensureActionStatusElement(button) {
@@ -221,15 +238,18 @@
         return null;
       }
 
-      function applyActionStatus(button, message, isError = false) {
+      function applyActionStatus(button, message, variant = 'info') {
         const el = ensureActionStatusElement(button);
         if (!el) return;
+        const normalizedVariant = normalizeVariant(variant);
         el.classList.remove('text-emerald-600', 'dark:text-emerald-300', 'text-slate-500', 'dark:text-slate-300', 'text-rose-600', 'dark:text-rose-300');
         const text = typeof message === 'string' ? message.trim() : '';
         if (text) {
           el.textContent = text;
-          if (isError) {
+          if (normalizedVariant === 'error') {
             el.classList.add('text-rose-600', 'dark:text-rose-300');
+          } else if (normalizedVariant === 'success') {
+            el.classList.add('text-emerald-600', 'dark:text-emerald-300');
           } else {
             el.classList.add('text-slate-500', 'dark:text-slate-300');
           }
@@ -240,19 +260,19 @@
         }
       }
 
-      function setInitialActionStatus(button, message, isError = false) {
+      function setInitialActionStatus(button, message, variant = 'info') {
         if (!button) return;
         button._initialActionStatus = {
           message: typeof message === 'string' ? message : '',
-          isError: Boolean(isError),
+          variant: normalizeVariant(variant),
         };
-        applyActionStatus(button, button._initialActionStatus.message, button._initialActionStatus.isError);
+        applyActionStatus(button, button._initialActionStatus.message, button._initialActionStatus.variant);
       }
 
       function resetActionStatus(button) {
         if (!button) return;
-        const initial = button._initialActionStatus || { message: '', isError: false };
-        applyActionStatus(button, initial.message, initial.isError);
+        const initial = button._initialActionStatus || { message: '', variant: 'info' };
+        applyActionStatus(button, initial.message, initial.variant);
       }
 
       function evaluateActionPrechecks(action) {
@@ -334,7 +354,7 @@
 
       async function runOneClickFix(action, button) {
         if (!action || !action.id) {
-          showStatus('Unable to start 1 Click Fix (missing action id).', true);
+          showStatus('Unable to start 1 Click Fix (missing action id).', 'error');
           return;
         }
         const deviceTargets = Array.isArray(action.devices)
@@ -348,7 +368,7 @@
           siteIds = Array.from(new Set(deviceTargets.map(item => item.site_id).filter(Boolean)));
         }
         if (!siteIds.length) {
-          showStatus('No sites are eligible for this 1 Click Fix.', true);
+          showStatus('No sites are eligible for this 1 Click Fix.', 'error');
           return;
         }
 
@@ -359,7 +379,7 @@
           button.disabled = true;
           button.textContent = 'Running…';
         }
-        showStatus('Running 1 Click Fix…');
+        showStatus('Running 1 Click Fix…', 'info');
 
         try {
           const response = await fetch('/api/audit/fix', {
@@ -374,9 +394,9 @@
           const data = await response.json().catch(() => ({}));
           if (!response.ok || !data.ok) {
             const message = (data && (data.error || data.message)) || '1 Click Fix failed.';
-            showStatus(message, true);
+            showStatus(message, 'error');
             if (button) {
-              applyActionStatus(button, message, true);
+              applyActionStatus(button, message, 'error');
             }
             return;
           }
@@ -400,13 +420,14 @@
           if (failed) {
             summaryDetails.push(`(${failed} device${failed === 1 ? '' : 's'} could not be updated)`);
           }
-          showStatus(`1 Click Fix completed: ${summaryDetails.join(' ')}.`, false);
+          const summaryVariant = failed ? 'error' : (updated ? 'success' : 'info');
+          showStatus(`1 Click Fix completed: ${summaryDetails.join(' ')}.`, summaryVariant);
 
           if (button) {
             const results = Array.isArray(data.results) ? data.results : [];
             const siteIdSet = new Set(siteIds.map(siteId => String(siteId)));
             const errorMessages = [];
-            const infoMessages = [];
+            const statusMessages = [];
             results.forEach(summary => {
               if (!summary || typeof summary !== 'object') {
                 return;
@@ -436,27 +457,32 @@
                 if (!deviceId || !deviceIdSet.has(deviceId)) {
                   return;
                 }
+                const status = typeof change.status === 'string' ? change.status.trim().toLowerCase() : '';
+                const messageText = typeof change.message === 'string' ? change.message.trim() : '';
                 const reason = typeof change.reason === 'string' ? change.reason.trim() : '';
-                if (reason) {
-                  infoMessages.push(reason);
+                const text = messageText || reason;
+                if (text) {
+                  const variant = status === 'success' ? 'success' : 'info';
+                  statusMessages.push({ text, variant });
                 }
               });
             });
             if (errorMessages.length) {
               const uniqueErrors = Array.from(new Set(errorMessages));
-              applyActionStatus(button, uniqueErrors.join(' '), true);
-            } else if (infoMessages.length) {
-              const uniqueInfo = Array.from(new Set(infoMessages));
-              applyActionStatus(button, uniqueInfo.join(' '), false);
+              applyActionStatus(button, uniqueErrors.join(' '), 'error');
+            } else if (statusMessages.length) {
+              const uniqueStatus = Array.from(new Set(statusMessages.map(item => item.text)));
+              const statusVariant = statusMessages.some(item => item.variant === 'success') ? 'success' : 'info';
+              applyActionStatus(button, uniqueStatus.join(' '), statusVariant);
             } else {
               resetActionStatus(button);
             }
           }
         } catch (error) {
           console.error('1 Click Fix error', error);
-          showStatus('1 Click Fix failed due to a network error.', true);
+          showStatus('1 Click Fix failed due to a network error.', 'error');
           if (button) {
-            applyActionStatus(button, '1 Click Fix failed due to a network error.', true);
+            applyActionStatus(button, '1 Click Fix failed due to a network error.', 'error');
           }
         } finally {
           if (button) {
@@ -540,9 +566,9 @@
               button._actionStatusElement = status;
               const precheckState = evaluateActionPrechecks(action);
               if (precheckState.messages.length) {
-                setInitialActionStatus(button, precheckState.messages.join(' '), !precheckState.canRun);
+                setInitialActionStatus(button, precheckState.messages.join(' '), precheckState.canRun ? 'info' : 'error');
               } else {
-                setInitialActionStatus(button, '', false);
+                setInitialActionStatus(button, '', 'info');
               }
               button._precheckCanRun = precheckState.canRun;
               if (!precheckState.canRun) {
@@ -700,9 +726,9 @@
               button._actionStatusElement = status;
               const precheckState = evaluateActionPrechecks(action);
               if (precheckState.messages.length) {
-                setInitialActionStatus(button, precheckState.messages.join(' '), !precheckState.canRun);
+                setInitialActionStatus(button, precheckState.messages.join(' '), precheckState.canRun ? 'info' : 'error');
               } else {
-                setInitialActionStatus(button, '', false);
+                setInitialActionStatus(button, '', 'info');
               }
               button._precheckCanRun = precheckState.canRun;
               if (!precheckState.canRun) {
@@ -886,7 +912,7 @@
 
       async function loadSites() {
         try {
-          showStatus('Loading sites…');
+          showStatus('Loading sites…', 'info');
           const res = await fetch('/api/sites');
           if (!res.ok) {
             throw new Error('Failed to load sites');
@@ -903,16 +929,16 @@
           allSites.sort((a, b) => a.name.localeCompare(b.name));
           renderSiteList();
           updateSelectionSummary();
-          showStatus('Ready to run audit');
+          showStatus('Ready to run audit', 'success');
         } catch (err) {
           console.error(err);
-          showStatus(`Error loading sites: ${err.message || err}`, true);
+          showStatus(`Error loading sites: ${err.message || err}`, 'error');
         }
       }
 
       runAuditBtn.addEventListener('click', async () => {
         runAuditBtn.disabled = true;
-        showStatus('Running audit…');
+        showStatus('Running audit…', 'info');
         resultsContainer.innerHTML = '';
         try {
           const body = {
@@ -927,14 +953,14 @@
           const data = await res.json().catch(() => ({ ok: false, error: 'Invalid response from server' }));
           if (!res.ok || data.ok === false) {
             const message = data && data.error ? (typeof data.error === 'string' ? data.error : JSON.stringify(data.error)) : res.statusText;
-            showStatus(`Audit failed: ${message}`, true);
+            showStatus(`Audit failed: ${message}`, 'error');
             return;
           }
-          showStatus('Audit complete');
+          showStatus('Audit complete', 'success');
           renderResults(data);
         } catch (err) {
           console.error(err);
-          showStatus(`Audit failed: ${err.message || err}`, true);
+          showStatus(`Audit failed: ${err.message || err}`, 'error');
         } finally {
           runAuditBtn.disabled = false;
         }
