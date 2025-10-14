@@ -1083,6 +1083,80 @@ def test_device_naming_convention_allows_matching_ap_switch_alignment():
     assert findings == []
 
 
+def test_device_naming_convention_uses_nested_device_stats_for_neighbor():
+    ctx = SiteContext(
+        site_id="site-9g",
+        site_name="Naming Device Stats",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-4", "name": "NACHIMDFAS1", "type": "switch", "status": "connected"},
+            {
+                "id": "ap-4",
+                "name": "NACHIIDF1AP1",
+                "type": "ap",
+                "status": "connected",
+                "device_stats": {
+                    "lldp": {
+                        "ports": [
+                            {
+                                "port_id": "eth0",
+                                "neighbors": [
+                                    {
+                                        "system_name": "NACHIMDFAS1",
+                                        "port_id": "ge-0/0/1",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                },
+            },
+        ],
+    )
+
+    check = DeviceNamingConventionCheck()
+    findings = check.run(ctx)
+    assert len(findings) == 1
+    assert findings[0].device_id == "ap-4"
+    assert findings[0].details.get("neighbor") == "NACHIMDFAS1"
+
+
+def test_device_naming_convention_handles_uplink_neighbor_list():
+    ctx = SiteContext(
+        site_id="site-9h",
+        site_name="Naming Uplink List",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-5", "name": "NACHIIDF2AS1", "type": "switch", "status": "connected"},
+            {
+                "id": "ap-5",
+                "name": "NACHIIDF1AP1",
+                "type": "ap",
+                "status": "connected",
+                "stats": {
+                    "uplink": {
+                        "neighbors": [
+                            {
+                                "system_name": "NACHIIDF2AS1",
+                                "port_id": "ge-0/0/2",
+                            }
+                        ]
+                    }
+                },
+            },
+        ],
+    )
+
+    check = DeviceNamingConventionCheck()
+    findings = check.run(ctx)
+    assert len(findings) == 1
+    assert findings[0].details.get("neighbor") == "NACHIIDF2AS1"
+
+
 @pytest.mark.parametrize(
     "env_value",
     [

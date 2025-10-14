@@ -1459,62 +1459,95 @@ ENV_SWITCH_NAME_PATTERN = _load_pattern_from_env("SWITCH_NAME_REGEX_PATTERN", DE
 ENV_AP_NAME_PATTERN = _load_pattern_from_env("AP_NAME_REGEX_PATTERN", DEFAULT_AP_NAME_PATTERN)
 
 
-def _neighbor_system_name_from_stats(stats: Mapping[str, Any]) -> Optional[str]:
-    uplink = stats.get("uplink") if isinstance(stats, Mapping) else None
-    if isinstance(uplink, Mapping):
-        neighbor = uplink.get("neighbor")
-        if isinstance(neighbor, Mapping):
-            for key in ("system_name", "sys_name", "name"):
-                value = neighbor.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
+NEIGHBOR_NAME_KEYS: Tuple[str, ...] = (
+    "system_name",
+    "sys_name",
+    "name",
+    "remote_system_name",
+    "lldp_remote_system_name",
+)
 
-    lldp_stats = stats.get("lldp_stats") if isinstance(stats, Mapping) else None
-    entries: Iterable[Any]
-    if isinstance(lldp_stats, Mapping):
-        entries = list(lldp_stats.values())
-    elif isinstance(lldp_stats, (list, tuple, set)):
-        entries = lldp_stats
-    else:
-        entries = []
 
-    for entry in entries:
-        if not isinstance(entry, Mapping):
-            continue
-        for key in (
-            "system_name",
-            "sys_name",
-            "name",
-            "remote_system_name",
-            "lldp_remote_system_name",
-        ):
-            value = entry.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        neighbor = entry.get("neighbor")
-        if isinstance(neighbor, Mapping):
-            for key in ("system_name", "sys_name", "name"):
-                value = neighbor.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-        neighbors = entry.get("neighbors")
-        if isinstance(neighbors, Mapping):
-            for nested in neighbors.values():
-                if not isinstance(nested, Mapping):
-                    continue
-                for key in ("system_name", "sys_name", "name"):
-                    value = nested.get(key)
-                    if isinstance(value, str) and value.strip():
-                        return value.strip()
-        if isinstance(neighbors, (list, tuple, set)):
-            for nested in neighbors:
-                if not isinstance(nested, Mapping):
-                    continue
-                for key in ("system_name", "sys_name", "name"):
-                    value = nested.get(key)
-                    if isinstance(value, str) and value.strip():
-                        return value.strip()
+def _is_plausible_neighbor_name(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return False
+    if SWITCH_LOCATION_EXTRACT_PATTERN.match(text):
+        return True
+    # Allow custom switch patterns that still expose MDF/IDF tokens
+    return bool(re.search(r"IDF\d+|MDF", text))
+
+
+def _extract_name_from_mapping(data: Mapping[str, Any]) -> Optional[str]:
+    for key in NEIGHBOR_NAME_KEYS:
+        value = data.get(key)
+        if isinstance(value, str) and _is_plausible_neighbor_name(value):
+            return value.strip()
+    # Some APIs return the neighbor directly as a string value
+    if isinstance(data.get("neighbor"), str) and _is_plausible_neighbor_name(data["neighbor"]):
+        return data["neighbor"].strip()
     return None
+
+
+def _search_neighbor_tree(value: Any, visited: Optional[Set[int]] = None) -> Optional[str]:
+    if visited is None:
+        visited = set()
+    obj_id = id(value)
+    if obj_id in visited:
+        return None
+    visited.add(obj_id)
+
+    if isinstance(value, Mapping):
+        direct = _extract_name_from_mapping(value)
+        if direct:
+            return direct
+
+        # Prioritise typical neighbor containers first
+        for key in (
+            "neighbor",
+            "neighbors",
+            "uplink",
+            "uplinks",
+            "lldp",
+            "lldp_stats",
+            "ports",
+            "interfaces",
+            "wired",
+            "wired_interfaces",
+            "wired_ports",
+        ):
+            if key in value:
+                result = _search_neighbor_tree(value[key], visited)
+                if result:
+                    return result
+
+        for nested in value.values():
+            result = _search_neighbor_tree(nested, visited)
+            if result:
+                return result
+
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            result = _search_neighbor_tree(item, visited)
+            if result:
+                return result
+    elif isinstance(value, str) and _is_plausible_neighbor_name(value):
+        return value.strip()
+    return None
+
+
+def _neighbor_system_name_from_stats(stats: Mapping[str, Any]) -> Optional[str]:
+    if not isinstance(stats, Mapping):
+        return None
+
+    # Common top-level keys returned by Mist device stats APIs
+    for key in ("uplink", "lldp", "lldp_stats", "ports", "interfaces"):
+        if key in stats:
+            result = _search_neighbor_tree(stats.get(key))
+            if result:
+                return result
+
+    return _search_neighbor_tree(stats)
 
 
 def _extract_neighbor_system_name(device: Mapping[str, Any]) -> Optional[str]:
