@@ -151,6 +151,7 @@
     const sshProgress = document.getElementById('ssh_progress');
 
     let lastResults = null;
+    let lastProjectName = '';
     let hardwareCollectStartedAt = null;
     let hardwareCollectRequested = 0;
     let getAccessoriesPayload = () => [];
@@ -575,11 +576,16 @@
 
     exportBtn.addEventListener('click', () => {
       if(!lastResults) return;
+      const projectPrompt = window.prompt('Enter a project name for the PDF (optional):', lastProjectName || '');
+      if (projectPrompt !== null) {
+        lastProjectName = projectPrompt.trim();
+      }
+      const projectName = lastProjectName;
       const accessoriesSelection = getAccessoriesPayload();
       fetch('/api/showtech/pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ results: lastResults, generated_by: currentUserName, accessories: accessoriesSelection })
+        body: JSON.stringify({ results: lastResults, generated_by: currentUserName, project_name: projectName || null, accessories: accessoriesSelection })
       })
         .then(res => res.blob())
         .then(blob => {

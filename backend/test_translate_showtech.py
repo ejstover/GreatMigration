@@ -196,6 +196,7 @@ def test_api_showtech_pdf_includes_accessories():
         {
             "results": [],
             "generated_by": "Tester",
+            "project_name": "Campus Core Upgrade",
             "accessories": [
                 {"name": "SFPP-10G-T", "quantity": 4},
                 {"name": "Rack Mount Kit"},
@@ -208,3 +209,4 @@ def test_api_showtech_pdf_includes_accessories():
     assert "SFPP-10G-T" in text
     assert "Rack Mount Kit" in text
     assert "Qty: 4" in text
+    assert "Campus Core Upgrade" in text
