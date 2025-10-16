@@ -107,6 +107,17 @@
     </div>
     </div>
 
+    <div id="project_modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div class="bg-white dark:bg-slate-800 p-6 rounded shadow-lg w-80">
+        <h3 class="text-lg font-medium mb-3">Project name</h3>
+        <input id="project_modal_input" type="text" class="w-full border rounded p-2 mb-4 dark:bg-slate-900 dark:border-slate-700" placeholder="Optional project name" />
+        <div class="flex justify-end gap-2">
+          <button id="project_modal_cancel" class="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700">Cancel</button>
+          <button id="project_modal_ok" class="px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700">OK</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       const menuBtn = document.getElementById('menu_btn');
       const menu = document.getElementById('menu');
@@ -143,6 +154,10 @@
     const addAccessoryBtn = document.getElementById('add_accessory_btn');
     const exportBtn = document.getElementById('export_pdf');
     const clearBtn = document.getElementById('clear_all');
+    const projectModal = document.getElementById('project_modal');
+    const projectModalInput = document.getElementById('project_modal_input');
+    const projectModalOk = document.getElementById('project_modal_ok');
+    const projectModalCancel = document.getElementById('project_modal_cancel');
     const sshDevices = document.getElementById('ssh_devices');
     const sshUsername = document.getElementById('ssh_username');
     const sshPassword = document.getElementById('ssh_password');
@@ -574,27 +589,64 @@
       });
     }
 
+    let resolveProjectModal;
+
+    function openProjectModal() {
+      return new Promise((resolve) => {
+        resolveProjectModal = resolve;
+        if (projectModal) {
+          projectModalInput.value = lastProjectName || '';
+          projectModal.classList.remove('hidden');
+          window.setTimeout(() => projectModalInput.focus(), 0);
+        } else {
+          resolve({ confirmed: true, value: lastProjectName || '' });
+        }
+      });
+    }
+
+    function closeProjectModal(confirmed) {
+      if (!resolveProjectModal) return;
+      const value = projectModalInput.value.trim();
+      projectModal?.classList.add('hidden');
+      const resolver = resolveProjectModal;
+      resolveProjectModal = null;
+      resolver({ confirmed, value });
+    }
+
+    projectModalOk?.addEventListener('click', () => closeProjectModal(true));
+    projectModalCancel?.addEventListener('click', () => closeProjectModal(false));
+    projectModalInput?.addEventListener('keydown', (evt) => {
+      if (evt.key === 'Enter') {
+        evt.preventDefault();
+        closeProjectModal(true);
+      } else if (evt.key === 'Escape') {
+        evt.preventDefault();
+        closeProjectModal(false);
+      }
+    });
+
     exportBtn.addEventListener('click', () => {
       if(!lastResults) return;
-      const projectPrompt = window.prompt('Enter a project name for the PDF (optional):', lastProjectName || '');
-      if (projectPrompt !== null) {
-        lastProjectName = projectPrompt.trim();
-      }
-      const projectName = lastProjectName;
-      const accessoriesSelection = getAccessoriesPayload();
-      fetch('/api/showtech/pdf', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ results: lastResults, generated_by: currentUserName, project_name: projectName || null, accessories: accessoriesSelection })
-      })
-        .then(res => res.blob())
-        .then(blob => {
-          const url = window.URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url; a.download = 'hardware_conversion_report.pdf';
-          document.body.appendChild(a); a.click(); a.remove();
-          window.URL.revokeObjectURL(url);
-        });
+      openProjectModal().then(({ confirmed, value }) => {
+        if (confirmed) {
+          lastProjectName = value;
+        }
+        const projectName = lastProjectName;
+        const accessoriesSelection = getAccessoriesPayload();
+        fetch('/api/showtech/pdf', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ results: lastResults, generated_by: currentUserName, project_name: projectName || null, accessories: accessoriesSelection })
+        })
+          .then(res => res.blob())
+          .then(blob => {
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'hardware_conversion_report.pdf';
+            document.body.appendChild(a); a.click(); a.remove();
+            window.URL.revokeObjectURL(url);
+          });
+      });
     });
   </script>
 </body>
