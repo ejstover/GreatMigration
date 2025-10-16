@@ -972,7 +972,6 @@ async def api_showtech(files: List[UploadFile] = File(...)):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
-@app.post("/api/showtech/pdf")
 def _safe_project_filename_fragment(value: str, max_length: int = 64) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value or "").strip("._-")
     if not cleaned:
@@ -982,6 +981,7 @@ def _safe_project_filename_fragment(value: str, max_length: int = 64) -> str:
     return cleaned
 
 
+@app.post("/api/showtech/pdf")
 def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
     pdf = FPDF()
     try:
