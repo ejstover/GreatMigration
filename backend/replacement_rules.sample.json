@@ -1,5 +1,8 @@
 {
   "rules": [
     {"cisco": "WS-C2960X-48FPD-L", "juniper": "EX4100-48MP"}
+  ],
+  "accessories": [
+    "SFPP-10G-T"
   ]
 }

@@ -35,34 +35,55 @@
       </div>
     </header>
 
-    <div class="max-w-5xl mx-auto p-6">
-    <div class="mb-4 flex items-center justify-between">
-      <h2 class="text-lg font-medium">Rules</h2>
-      <div class="flex items-center gap-2">
-        <button id="add_rule" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
-        <button id="save_rules" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
-        <button id="cancel_rules" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
-      </div>
+    <div class="max-w-5xl mx-auto p-6 space-y-8">
+      <section class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-6">
+        <div class="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <h2 class="text-lg font-medium">Replacement Rules</h2>
+          <div class="flex items-center gap-2">
+            <button id="add_rule" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+            <button id="save_rules" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+            <button id="cancel_rules" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
+          </div>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="min-w-full divide-y divide-slate-300 dark:divide-slate-700 text-sm">
+            <thead class="bg-slate-100 dark:bg-slate-800">
+              <tr>
+                <th class="p-2 text-left">Cisco Model</th>
+                <th class="p-2 text-left">Juniper Model</th>
+                <th class="p-2"></th>
+              </tr>
+            </thead>
+            <tbody id="rules_tbody" class="divide-y divide-slate-200 dark:divide-slate-700"></tbody>
+          </table>
+        </div>
+        <div class="mt-4 flex justify-end gap-2">
+          <button id="add_rule_bottom" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+          <button id="save_rules_bottom" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+          <button id="cancel_rules_bottom" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
+        </div>
+      </section>
+
+      <section class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-6">
+        <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between mb-4">
+          <div>
+            <h3 class="text-lg font-medium">Accessories</h3>
+            <p class="text-sm text-slate-600 dark:text-slate-300">Manage the list of approved accessories available on the hardware conversion page.</p>
+          </div>
+        </div>
+        <div class="flex flex-col gap-3 md:flex-row md:items-end">
+          <div class="flex-1">
+            <label for="accessory_name" class="block text-sm font-medium mb-1">Accessory name</label>
+            <input id="accessory_name" type="text" class="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700" placeholder="e.g. SFPP-10G-T" />
+          </div>
+          <button id="accessory_add_btn" class="px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Accessory</button>
+        </div>
+        <div class="mt-4 space-y-2" id="accessories_list"></div>
+        <p id="accessories_empty" class="text-sm text-slate-600 dark:text-slate-300 mt-2">No accessories defined yet.</p>
+      </section>
+
+      <div id="save_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
     </div>
-    <div class="overflow-x-auto">
-      <table class="min-w-full divide-y divide-slate-300 dark:divide-slate-700 text-sm">
-        <thead class="bg-slate-100 dark:bg-slate-800">
-          <tr>
-            <th class="p-2 text-left">Cisco Model</th>
-            <th class="p-2 text-left">Juniper Model</th>
-            <th class="p-2"></th>
-          </tr>
-        </thead>
-        <tbody id="rules_tbody" class="divide-y divide-slate-200 dark:divide-slate-700"></tbody>
-      </table>
-    </div>
-    <div class="mt-4 flex justify-end gap-2">
-      <button id="add_rule_bottom" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
-      <button id="save_rules_bottom" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
-      <button id="cancel_rules_bottom" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
-    </div>
-    <div id="save_status" class="text-sm mt-4"></div>
-  </div>
 
   <div id="model_modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center">
     <div class="bg-white dark:bg-slate-800 p-6 rounded shadow-lg w-80">
@@ -108,6 +129,10 @@ const addRuleBtns = document.querySelectorAll('.add_rule');
 const saveBtns = document.querySelectorAll('.save_rules');
 const cancelBtns = document.querySelectorAll('.cancel_rules');
 const saveStatus = document.getElementById('save_status');
+const accessoriesList = document.getElementById('accessories_list');
+const accessoriesEmpty = document.getElementById('accessories_empty');
+const accessoryInput = document.getElementById('accessory_name');
+const accessoryAddBtn = document.getElementById('accessory_add_btn');
 const modal = document.getElementById('model_modal');
 const modalTitle = document.getElementById('modal_title');
 const modalInput = document.getElementById('modal_input');
@@ -115,7 +140,7 @@ const modalOk = document.getElementById('modal_ok');
 const modalCancel = document.getElementById('modal_cancel');
 let pendingSelect = null;
 let pendingVendor = '';
-let rulesDoc = {rules: []};
+let rulesDoc = {rules: [], accessories: []};
 let ciscoTypes = [];
 let juniperTypes = [];
 
@@ -137,6 +162,87 @@ function decorateSelect(sel, vendor){
     }
   });
 }
+
+function updateAccessoriesEmptyState(){
+  if(!accessoriesEmpty) return;
+  const hasItems = Array.isArray(rulesDoc.accessories) && rulesDoc.accessories.length > 0;
+  if(hasItems){
+    accessoriesEmpty.classList.add('hidden');
+  } else {
+    accessoriesEmpty.textContent = 'No accessories defined yet.';
+    accessoriesEmpty.classList.remove('hidden');
+  }
+}
+
+function renderAccessories(){
+  if(!accessoriesList) return;
+  accessoriesList.innerHTML = '';
+  const items = Array.isArray(rulesDoc.accessories) ? rulesDoc.accessories : [];
+  if(!items.length){
+    updateAccessoriesEmptyState();
+    return;
+  }
+  items.forEach((name, idx) => {
+    const row = document.createElement('div');
+    row.className = 'flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2';
+    const label = document.createElement('span');
+    label.className = 'text-sm';
+    label.textContent = name;
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'text-sm text-red-600 hover:text-red-700';
+    removeBtn.textContent = 'Remove';
+    removeBtn.addEventListener('click', () => {
+      if(Array.isArray(rulesDoc.accessories)){
+        rulesDoc.accessories.splice(idx, 1);
+      }
+      renderAccessories();
+    });
+    row.appendChild(label);
+    row.appendChild(removeBtn);
+    accessoriesList.appendChild(row);
+  });
+  updateAccessoriesEmptyState();
+}
+
+if (accessoryAddBtn && accessoryInput) {
+  accessoryAddBtn.addEventListener('click', () => {
+    const value = accessoryInput.value.trim();
+    if(!value){
+      accessoryInput.focus();
+      return;
+    }
+    if(!Array.isArray(rulesDoc.accessories)){
+      rulesDoc.accessories = [];
+    }
+    const duplicate = rulesDoc.accessories.some((item) => item.toLowerCase() === value.toLowerCase());
+    if(duplicate){
+      if(saveStatus){
+        saveStatus.textContent = 'Accessory already exists.';
+        setTimeout(() => {
+          if(saveStatus.textContent === 'Accessory already exists.'){
+            saveStatus.textContent = '';
+          }
+        }, 2000);
+      }
+      accessoryInput.focus();
+      return;
+    }
+    rulesDoc.accessories.push(value);
+    rulesDoc.accessories.sort((a,b)=>a.localeCompare(b));
+    accessoryInput.value = '';
+    renderAccessories();
+  });
+
+  accessoryInput.addEventListener('keydown', (event) => {
+    if(event.key === 'Enter'){
+      event.preventDefault();
+      accessoryAddBtn.click();
+    }
+  });
+}
+
+updateAccessoriesEmptyState();
 
 function renderRules(){
   tbody.innerHTML='';
@@ -178,7 +284,19 @@ addRuleBtns.forEach(btn=>btn.addEventListener('click',()=>{ syncRulesFromDOM(); 
 
 saveBtns.forEach(btn=>btn.addEventListener('click',()=>{
   syncRulesFromDOM();
-  const payload = {rules: rulesDoc.rules.filter(r=>r.cisco && r.juniper)};
+  const filteredRules = rulesDoc.rules.filter(r=>r.cisco && r.juniper);
+  const accessoriesPayload = Array.isArray(rulesDoc.accessories)
+    ? Array.from(
+        new Map(
+          rulesDoc.accessories
+            .filter(name=>typeof name === 'string')
+            .map(name=>name.trim())
+            .filter(Boolean)
+            .map(name=>[name.toLowerCase(), name])
+        ).values()
+      ).sort((a,b)=>a.localeCompare(b))
+    : [];
+  const payload = {rules: filteredRules, accessories: accessoriesPayload};
   fetch('/api/replacements',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
     .then(async r=>{const txt=await r.text(); try{return JSON.parse(txt);}catch{return {ok:false,error:txt};}})
     .then(resp=>{
@@ -197,16 +315,34 @@ Promise.all([
   if(cisco.ok) ciscoTypes=cisco.items; else console.error(cisco.error);
   if(juniper.ok) juniperTypes=juniper.items; else console.error(juniper.error);
   if(rules.ok){
-    rulesDoc=rules.doc;
+    const doc = rules.doc || {};
+    const incomingRules = Array.isArray(doc.rules) ? doc.rules : [];
+    const accessoriesMap = new Map();
+    if(Array.isArray(doc.accessories)){
+      doc.accessories.forEach(name=>{
+        if(typeof name !== 'string') return;
+        const trimmed = name.trim();
+        if(!trimmed) return;
+        const key = trimmed.toLowerCase();
+        if(!accessoriesMap.has(key)) accessoriesMap.set(key, trimmed);
+      });
+    }
+    rulesDoc = {
+      rules: incomingRules,
+      accessories: Array.from(accessoriesMap.values()).sort((a,b)=>a.localeCompare(b))
+    };
     rulesDoc.rules.forEach(r=>{
       if(r.cisco && !ciscoTypes.includes(r.cisco)) ciscoTypes.push(r.cisco);
       if(r.juniper && !juniperTypes.includes(r.juniper)) juniperTypes.push(r.juniper);
     });
+  } else {
+    rulesDoc = {rules: [], accessories: []};
   }
   ciscoTypes.sort((a,b)=>a.localeCompare(b));
   juniperTypes.sort((a,b)=>a.localeCompare(b));
   renderRules();
-}).catch(err=>{ console.error(err); });
+  renderAccessories();
+}).catch(err=>{ console.error(err); renderRules(); renderAccessories(); });
 
 modalOk.addEventListener('click', () => {
   const val = modalInput.value.trim();

@@ -11,7 +11,7 @@ import asyncio
 from fastapi import UploadFile
 
 from backend.translate_showtech import build_report, find_copper_10g_ports, parse_showtech
-from backend.app import api_showtech
+from backend.app import api_showtech, api_showtech_pdf
 
 
 def test_find_copper_10g_ports():
@@ -189,3 +189,42 @@ def test_parse_showtech_counts_sfps_without_interface_status():
             "SFP-H10GB-CU3M": 2,
         },
     }
+
+
+def test_api_showtech_pdf_includes_accessories():
+    response = api_showtech_pdf(
+        {
+            "results": [],
+            "generated_by": "Tester",
+            "project_name": "Campus Core Upgrade",
+            "accessories": [
+                {"name": "SFPP-10G-T", "quantity": 4},
+                {"name": "Rack Mount Kit"},
+            ],
+        }
+    )
+
+    assert response.media_type == "application/pdf"
+    text = response.body.decode("latin-1", errors="ignore")
+    assert "SFPP-10G-T" in text
+    assert "Rack Mount Kit" in text
+    assert "Qty: 4" in text
+    assert "Campus Core Upgrade" in text
+    assert response.headers.get("content-disposition") == (
+        "attachment; filename=hardware_conversion_report_Campus_Core_Upgrade.pdf"
+    )
+
+
+def test_api_showtech_pdf_filename_sanitizes_project_name():
+    response = api_showtech_pdf(
+        {
+            "results": [],
+            "generated_by": "Tester",
+            "project_name": "***New! Campus/Edge???",
+            "accessories": [],
+        }
+    )
+
+    assert response.headers.get("content-disposition") == (
+        "attachment; filename=hardware_conversion_report_New_Campus_Edge.pdf"
+    )
