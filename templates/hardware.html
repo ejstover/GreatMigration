@@ -625,6 +625,25 @@
       }
     });
 
+    function buildReportFilename(projectName) {
+      const base = 'hardware_conversion_report';
+      if (!projectName) return `${base}.pdf`;
+      let fragment = projectName.trim().replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[_\.-]+|[_\.-]+$/g, '');
+      if (!fragment) return `${base}.pdf`;
+      if (fragment.length > 64) {
+        fragment = fragment.slice(0, 64).replace(/[_\.-]+$/g, '');
+      }
+      if (!fragment) return `${base}.pdf`;
+      return `${base}_${fragment}.pdf`;
+    }
+
+    function extractFilenameFromDisposition(disposition) {
+      if (!disposition) return null;
+      const match = disposition.match(/filename=([^;]+)/i);
+      if (!match || !match[1]) return null;
+      return match[1].trim().replace(/^"|"$/g, '');
+    }
+
     exportBtn.addEventListener('click', () => {
       if(!lastResults) return;
       openProjectModal().then(({ confirmed, value }) => {
@@ -638,11 +657,15 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ results: lastResults, generated_by: currentUserName, project_name: projectName || null, accessories: accessoriesSelection })
         })
-          .then(res => res.blob())
-          .then(blob => {
+          .then(res => Promise.all([res.blob(), Promise.resolve(res.headers.get('Content-Disposition'))]))
+          .then(([blob, disposition]) => {
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.href = url; a.download = 'hardware_conversion_report.pdf';
+            let downloadName = extractFilenameFromDisposition(disposition) || buildReportFilename(projectName);
+            if (!downloadName || typeof downloadName !== 'string') {
+              downloadName = 'hardware_conversion_report.pdf';
+            }
+            a.href = url; a.download = downloadName;
             document.body.appendChild(a); a.click(); a.remove();
             window.URL.revokeObjectURL(url);
           });

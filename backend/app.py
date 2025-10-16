@@ -973,6 +973,15 @@ async def api_showtech(files: List[UploadFile] = File(...)):
 
 
 @app.post("/api/showtech/pdf")
+def _safe_project_filename_fragment(value: str, max_length: int = 64) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value or "").strip("._-")
+    if not cleaned:
+        return ""
+    if len(cleaned) > max_length:
+        cleaned = cleaned[:max_length].rstrip("._-")
+    return cleaned
+
+
 def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
     pdf = FPDF()
     try:
@@ -1052,7 +1061,12 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
         pdf.ln(5)
     # fpdf2 returns a bytearray; convert it to bytes for the response
     pdf_bytes = bytes(pdf.output())
-    headers = {"Content-Disposition": "attachment; filename=hardware_conversion_report.pdf"}
+    filename_fragment = _safe_project_filename_fragment(project_name)
+    if filename_fragment:
+        download_name = f"hardware_conversion_report_{filename_fragment}.pdf"
+    else:
+        download_name = "hardware_conversion_report.pdf"
+    headers = {"Content-Disposition": f"attachment; filename={download_name}"}
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 

@@ -210,3 +210,21 @@ def test_api_showtech_pdf_includes_accessories():
     assert "Rack Mount Kit" in text
     assert "Qty: 4" in text
     assert "Campus Core Upgrade" in text
+    assert response.headers.get("content-disposition") == (
+        "attachment; filename=hardware_conversion_report_Campus_Core_Upgrade.pdf"
+    )
+
+
+def test_api_showtech_pdf_filename_sanitizes_project_name():
+    response = api_showtech_pdf(
+        {
+            "results": [],
+            "generated_by": "Tester",
+            "project_name": "***New! Campus/Edge???",
+            "accessories": [],
+        }
+    )
+
+    assert response.headers.get("content-disposition") == (
+        "attachment; filename=hardware_conversion_report_New_Campus_Edge.pdf"
+    )
