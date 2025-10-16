@@ -842,7 +842,29 @@ def api_get_replacements():
     try:
         data = json.loads(REPLACEMENTS_PATH.read_text(encoding="utf-8"))
     except Exception:
-        data = {"rules": []}
+        data = {}
+
+    if not isinstance(data, dict):
+        data = {}
+
+    rules = data.get("rules")
+    if not isinstance(rules, list):
+        rules = []
+
+    accessories_raw = data.get("accessories")
+    accessories: List[str]
+    if isinstance(accessories_raw, list):
+        accessories = []
+        for item in accessories_raw:
+            if isinstance(item, str):
+                name = item.strip()
+                if name:
+                    accessories.append(name)
+    else:
+        accessories = []
+
+    data["rules"] = rules
+    data["accessories"] = accessories
     return {"ok": True, "doc": data}
 
 
@@ -850,7 +872,36 @@ def api_get_replacements():
 def api_save_replacements(request: Request, doc: Dict[str, Any] = Body(...)):
     try:
         current_user(request)
-        REPLACEMENTS_PATH.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        payload = doc if isinstance(doc, dict) else {}
+
+        cleaned_rules: List[Dict[str, str]] = []
+        for item in payload.get("rules", []) if isinstance(payload.get("rules"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            cisco = str(item.get("cisco", "")).strip()
+            juniper = str(item.get("juniper", "")).strip()
+            if cisco and juniper:
+                cleaned_rules.append({"cisco": cisco, "juniper": juniper})
+
+        accessories_input = payload.get("accessories", [])
+        cleaned_accessories: List[str] = []
+        seen = set()
+        if isinstance(accessories_input, list):
+            for accessory in accessories_input:
+                if not isinstance(accessory, str):
+                    continue
+                name = accessory.strip()
+                if not name:
+                    continue
+                key = name.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                cleaned_accessories.append(name)
+
+        cleaned_doc = {"rules": cleaned_rules, "accessories": cleaned_accessories}
+
+        REPLACEMENTS_PATH.write_text(json.dumps(cleaned_doc, indent=2), encoding="utf-8")
         return {"ok": True}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
@@ -924,6 +975,10 @@ async def api_showtech(files: List[UploadFile] = File(...)):
 @app.post("/api/showtech/pdf")
 def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
     pdf = FPDF()
+    try:
+        pdf.set_compression(False)
+    except AttributeError:
+        pass
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     logo_path = static_path / "reportlogo.png"
@@ -962,6 +1017,34 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
         copper_total = file.get("copper_10g_ports", {}).get("total")
         if copper_total:
             line = f"10Gb copper ports requiring SFPs (SFPP-10G-T): {copper_total}"
+            pdf.cell(0, 10, line, ln=True)
+        pdf.ln(5)
+
+    accessories_output = []
+    for item in data.get("accessories", []) or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        quantity = item.get("quantity")
+        quantity_text = ""
+        if isinstance(quantity, (int, float)):
+            if isinstance(quantity, float) and not quantity.is_integer():
+                quantity_text = str(quantity)
+            else:
+                quantity_text = str(int(quantity))
+        elif isinstance(quantity, str):
+            quantity_text = quantity.strip()
+        accessories_output.append((name, quantity_text))
+
+    if accessories_output:
+        pdf.ln(3)
+        pdf.set_font("Helvetica", "B", 14)
+        pdf.cell(0, 10, "Accessories", ln=True)
+        pdf.set_font("Helvetica", size=12)
+        for name, qty_text in accessories_output:
+            line = f"{name} (Qty: {qty_text})" if qty_text else name
             pdf.cell(0, 10, line, ln=True)
         pdf.ln(5)
     # fpdf2 returns a bytearray; convert it to bytes for the response

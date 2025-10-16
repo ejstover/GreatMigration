@@ -86,6 +86,23 @@
       </div>
     </section>
 
+    <section class="mb-6">
+      <div class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-6">
+        <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-4">
+          <div>
+            <h2 class="text-lg font-medium">Accessories</h2>
+            <p class="text-sm text-slate-600 dark:text-slate-300">Add approved accessories to include them in the bill of materials export.</p>
+          </div>
+          <button id="add_accessory_btn" type="button" class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+            <span class="text-lg leading-none">+</span>
+            Add accessory
+          </button>
+        </div>
+        <div id="accessories_list" class="space-y-3"></div>
+        <p id="accessories_empty" class="mt-3 text-sm text-slate-600 dark:text-slate-300">Loading approved accessories…</p>
+      </div>
+    </section>
+
     <section id="results" class="hidden space-y-4"></section>
     </div>
     </div>
@@ -121,6 +138,9 @@
     const chooseBtn = document.getElementById('choose_files');
     const uploadStatus = document.getElementById('upload_status');
     const results = document.getElementById('results');
+    const accessoriesList = document.getElementById('accessories_list');
+    const accessoriesEmpty = document.getElementById('accessories_empty');
+    const addAccessoryBtn = document.getElementById('add_accessory_btn');
     const exportBtn = document.getElementById('export_pdf');
     const clearBtn = document.getElementById('clear_all');
     const sshDevices = document.getElementById('ssh_devices');
@@ -133,6 +153,210 @@
     let lastResults = null;
     let hardwareCollectStartedAt = null;
     let hardwareCollectRequested = 0;
+    let getAccessoriesPayload = () => [];
+
+    if (accessoriesList && accessoriesEmpty && addAccessoryBtn) {
+      let availableAccessories = [];
+      let accessoryRowCounter = 0;
+
+      const disableAddAccessory = () => {
+        addAccessoryBtn.disabled = true;
+        addAccessoryBtn.classList.add('opacity-50', 'cursor-not-allowed');
+      };
+
+      const enableAddAccessory = () => {
+        addAccessoryBtn.disabled = false;
+        addAccessoryBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+      };
+
+      const updateAccessoriesEmptyState = () => {
+        const rows = accessoriesList.querySelectorAll('[data-accessory-row]').length;
+        if (rows === 0) {
+          accessoriesEmpty.textContent = availableAccessories.length
+            ? 'No accessories added yet. Use the button above to include them.'
+            : 'No approved accessories available yet. Manage accessories on the Replacement Rules page.';
+          accessoriesEmpty.classList.remove('hidden');
+        } else {
+          accessoriesEmpty.classList.add('hidden');
+        }
+      };
+
+      const fillAccessoryOptions = (select, selectedValue = '') => {
+        const sortedAccessories = [...availableAccessories].sort((a, b) => a.localeCompare(b));
+        select.innerHTML = '';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = sortedAccessories.length ? 'Select accessory' : 'No accessories available';
+        placeholder.disabled = true;
+        placeholder.selected = !selectedValue;
+        select.appendChild(placeholder);
+        sortedAccessories.forEach((name) => {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          if (name === selectedValue) opt.selected = true;
+          select.appendChild(opt);
+        });
+        if (selectedValue && !sortedAccessories.includes(selectedValue)) {
+          const opt = document.createElement('option');
+          opt.value = selectedValue;
+          opt.textContent = `${selectedValue} (no longer approved)`;
+          opt.selected = true;
+          select.appendChild(opt);
+        }
+      };
+
+      const refreshAccessorySelects = () => {
+        accessoriesList.querySelectorAll('select').forEach((select) => {
+          const current = select.value;
+          fillAccessoryOptions(select, current);
+        });
+      };
+
+      const createAccessoryRow = (initial = {}) => {
+        accessoryRowCounter += 1;
+        const row = document.createElement('div');
+        row.dataset.accessoryRow = 'true';
+        row.className = 'grid gap-3 md:grid-cols-[minmax(0,1fr)_120px_auto] items-end p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40';
+
+        const selectId = `accessory_select_${accessoryRowCounter}`;
+        const qtyId = `accessory_qty_${accessoryRowCounter}`;
+
+        const selectWrapper = document.createElement('div');
+        selectWrapper.className = 'flex flex-col gap-1';
+        const selectLabel = document.createElement('label');
+        selectLabel.className = 'text-xs font-semibold uppercase text-slate-500';
+        selectLabel.htmlFor = selectId;
+        selectLabel.textContent = 'Accessory';
+        const select = document.createElement('select');
+        select.id = selectId;
+        select.className = 'border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700';
+        fillAccessoryOptions(select, initial.name || '');
+        selectWrapper.append(selectLabel, select);
+        row.appendChild(selectWrapper);
+
+        const qtyWrapper = document.createElement('div');
+        qtyWrapper.className = 'flex flex-col gap-1';
+        const qtyLabel = document.createElement('label');
+        qtyLabel.className = 'text-xs font-semibold uppercase text-slate-500';
+        qtyLabel.htmlFor = qtyId;
+        qtyLabel.textContent = 'Quantity';
+        const qtyInput = document.createElement('input');
+        qtyInput.id = qtyId;
+        qtyInput.type = 'number';
+        qtyInput.min = '1';
+        qtyInput.step = '1';
+        qtyInput.className = 'border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700';
+        qtyInput.placeholder = 'Qty';
+        if (initial.quantity !== undefined && initial.quantity !== null && initial.quantity !== '') {
+          qtyInput.value = String(initial.quantity);
+        } else {
+          qtyInput.value = '1';
+        }
+        qtyWrapper.append(qtyLabel, qtyInput);
+        row.appendChild(qtyWrapper);
+
+        const actions = document.createElement('div');
+        actions.className = 'flex items-center justify-end md:justify-center';
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'text-sm text-red-600 hover:text-red-700';
+        removeBtn.textContent = 'Remove';
+        actions.appendChild(removeBtn);
+        row.appendChild(actions);
+
+        select.addEventListener('change', updateAccessoriesEmptyState);
+        qtyInput.addEventListener('input', () => {
+          if (qtyInput.value === '') return;
+          const value = Number.parseInt(qtyInput.value, 10);
+          if (Number.isNaN(value) || value < 1) {
+            qtyInput.value = '';
+          }
+        });
+        removeBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          row.remove();
+          updateAccessoriesEmptyState();
+        });
+
+        return row;
+      };
+
+      const addAccessoryRow = (initial = {}) => {
+        const row = createAccessoryRow(initial);
+        accessoriesList.appendChild(row);
+        updateAccessoriesEmptyState();
+        return row;
+      };
+
+      getAccessoriesPayload = () => {
+        const rows = Array.from(accessoriesList.querySelectorAll('[data-accessory-row]'));
+        return rows
+          .map((row) => {
+            const select = row.querySelector('select');
+            const qtyInput = row.querySelector('input[type="number"]');
+            if (!select) return null;
+            const name = select.value.trim();
+            if (!name) return null;
+            let quantityValue = '';
+            if (qtyInput) {
+              const parsed = Number.parseInt(qtyInput.value, 10);
+              if (!Number.isNaN(parsed) && parsed > 0) {
+                quantityValue = parsed;
+              }
+            }
+            return quantityValue ? { name, quantity: quantityValue } : { name };
+          })
+          .filter(Boolean);
+      };
+
+      addAccessoryBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        if (addAccessoryBtn.disabled) return;
+        addAccessoryRow();
+      });
+
+      disableAddAccessory();
+      if (accessoriesEmpty) {
+        accessoriesEmpty.textContent = 'Loading approved accessories…';
+        accessoriesEmpty.classList.remove('hidden');
+      }
+
+      fetch('/api/replacements')
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.ok) {
+            const accessories = Array.isArray(data.doc?.accessories)
+              ? data.doc.accessories
+              : [];
+            availableAccessories = Array.from(
+              new Set(
+                accessories
+                  .filter((item) => typeof item === 'string')
+                  .map((item) => item.trim())
+                  .filter(Boolean)
+              )
+            );
+            if (availableAccessories.length) {
+              enableAddAccessory();
+            } else {
+              disableAddAccessory();
+            }
+            refreshAccessorySelects();
+            updateAccessoriesEmptyState();
+          } else {
+            accessoriesEmpty.textContent = data.error || 'Unable to load accessories.';
+            disableAddAccessory();
+            accessoriesEmpty.classList.remove('hidden');
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to load accessories', err);
+          accessoriesEmpty.textContent = 'Unable to load accessories. Refresh the page or manage them on the Replacement Rules page.';
+          disableAddAccessory();
+          accessoriesEmpty.classList.remove('hidden');
+        });
+    }
 
     async function logTiming(eventName, durationMs, metadata = {}){
       try {
@@ -351,10 +575,11 @@
 
     exportBtn.addEventListener('click', () => {
       if(!lastResults) return;
+      const accessoriesSelection = getAccessoriesPayload();
       fetch('/api/showtech/pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ results: lastResults, generated_by: currentUserName })
+        body: JSON.stringify({ results: lastResults, generated_by: currentUserName, accessories: accessoriesSelection })
       })
         .then(res => res.blob())
         .then(blob => {
