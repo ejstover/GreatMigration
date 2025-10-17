@@ -68,6 +68,10 @@
           <button id="ssh_collect" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Collect hardware</button>
           <span id="ssh_progress" class="text-sm text-slate-600 dark:text-slate-300"></span>
         </div>
+        <div id="ssh_failure_panel" class="hidden mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/70 dark:text-rose-100">
+          <div id="ssh_failure_summary" class="font-semibold"></div>
+          <ul id="ssh_failure_list" class="mt-3 space-y-3"></ul>
+        </div>
       </div>
     </section>
 
@@ -180,6 +184,9 @@
     const sshTogglePassword = document.getElementById('ssh_toggle_password');
     const sshCollectBtn = document.getElementById('ssh_collect');
     const sshProgress = document.getElementById('ssh_progress');
+    const sshFailurePanel = document.getElementById('ssh_failure_panel');
+    const sshFailureSummary = document.getElementById('ssh_failure_summary');
+    const sshFailureList = document.getElementById('ssh_failure_list');
 
     let lastResults = null;
     let lastProjectName = '';
@@ -200,6 +207,62 @@
         }, 50);
       };
     })();
+
+    function resetFailurePanel() {
+      if (!sshFailurePanel) return;
+      sshFailurePanel.classList.add('hidden');
+      if (sshFailureSummary) sshFailureSummary.textContent = '';
+      if (sshFailureList) sshFailureList.innerHTML = '';
+    }
+
+    function renderFailureDetails(failures, totalRequested) {
+      if (!sshFailurePanel || !sshFailureList) return;
+      if (!failures?.length) {
+        resetFailurePanel();
+        return;
+      }
+
+      sshFailureList.innerHTML = '';
+      const totalText = totalRequested ? `Unable to collect hardware from ${failures.length} of ${totalRequested} device(s).` : `Unable to collect hardware from ${failures.length} device(s).`;
+      if (sshFailureSummary) {
+        sshFailureSummary.textContent = `${totalText} Review the details below.`;
+      }
+
+      failures.forEach((item) => {
+        const li = document.createElement('li');
+        li.className = 'rounded-lg border border-rose-200 bg-white/70 px-3 py-2 text-rose-700 dark:border-rose-900 dark:bg-rose-900/40 dark:text-rose-100';
+
+        const title = document.createElement('div');
+        title.className = 'font-semibold';
+        title.textContent = item.label || item.host || 'Device';
+        li.appendChild(title);
+
+        const info = item.error_info || {};
+        const reasonText = info.reason || item.error || 'Connection failed.';
+        const reasonEl = document.createElement('div');
+        reasonEl.className = 'text-sm';
+        reasonEl.textContent = reasonText;
+        li.appendChild(reasonEl);
+
+        if (info.suggestion) {
+          const suggestionEl = document.createElement('div');
+          suggestionEl.className = 'text-xs text-rose-600 dark:text-rose-200';
+          suggestionEl.textContent = info.suggestion;
+          li.appendChild(suggestionEl);
+        }
+
+        if (info.detail && info.detail !== reasonText) {
+          const detailEl = document.createElement('div');
+          detailEl.className = 'text-xs text-rose-500 dark:text-rose-300 break-words';
+          detailEl.textContent = `Detail: ${info.detail}`;
+          li.appendChild(detailEl);
+        }
+
+        sshFailureList.appendChild(li);
+      });
+
+      sshFailurePanel.classList.remove('hidden');
+    }
 
     const parseQuantity = (value) => {
       if (typeof value === 'number') {
@@ -550,6 +613,7 @@
         return;
       }
 
+      resetFailurePanel();
       sshCollectBtn.disabled = true;
       sshCollectBtn.classList.add('opacity-70', 'cursor-not-allowed');
       sshProgress.textContent = 'Starting SSH collection…';
@@ -575,6 +639,7 @@
         sshProgress.textContent = '';
         hardwareCollectStartedAt = null;
         hardwareCollectRequested = 0;
+        resetFailurePanel();
       }
     });
 
@@ -613,6 +678,7 @@
           sshProgress.textContent = '';
           hardwareCollectStartedAt = null;
           hardwareCollectRequested = 0;
+          resetFailurePanel();
         }
       };
       fetchStatus();
@@ -623,11 +689,12 @@
       const resultsArr = (job.results || []);
       const successes = resultsArr.filter(r => r.status === 'ok' && r.hardware);
       const failures = resultsArr.filter(r => r.status !== 'ok');
+      const totalDevices = Number(job?.total || 0) || (successes.length + failures.length) || hardwareCollectRequested || 0;
 
       if (successes.length){
         lastResults = successes.map(r => r.hardware);
         renderResults(lastResults);
-        uploadStatus.textContent = `Collected hardware from ${successes.length} device(s).` + (failures.length ? ` ${failures.length} failed.` : '');
+        uploadStatus.textContent = `Collected hardware from ${successes.length} device(s).` + (failures.length ? ` ${failures.length} failed – see details below.` : '');
         exportBtn.classList.remove('hidden');
         if (hardwareCollectStartedAt !== null){
           const duration = performance.now() - hardwareCollectStartedAt;
@@ -642,13 +709,14 @@
         results.innerHTML = '';
         results.classList.add('hidden');
         exportBtn.classList.add('hidden');
-        uploadStatus.textContent = failures.length ? `All devices failed (${failures.length}).` : 'No hardware data collected.';
+        uploadStatus.textContent = failures.length ? `Unable to collect hardware from any devices (${failures.length} failed). See details below.` : 'No hardware data collected.';
         updateSummaryDisplay();
       }
 
       hardwareCollectStartedAt = null;
       hardwareCollectRequested = 0;
 
+      renderFailureDetails(failures, totalDevices);
       if (failures.length){
         const lines = failures.map(f => `${f.label || f.host}: ${f.error || 'Unknown error'}`);
         const msg = `Failed devices:\n${lines.join('\n')}`;
@@ -670,10 +738,12 @@
       exportBtn.classList.add('hidden');
       lastResults = null;
       updateSummaryDisplay();
+      resetFailurePanel();
     });
 
     function handleFiles(files){
       if(!files.length) return;
+      resetFailurePanel();
       const fd = new FormData();
       files.forEach(f => fd.append('files', f));
       uploadStatus.textContent = 'Processing...';

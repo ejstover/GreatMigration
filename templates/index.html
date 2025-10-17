@@ -84,6 +84,10 @@
             <button id="cfg_ssh_collect" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Fetch configs</button>
             <span id="cfg_ssh_progress" class="text-sm text-slate-600 dark:text-slate-300"></span>
           </div>
+          <div id="cfg_ssh_failure_panel" class="hidden mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/70 dark:text-rose-100">
+            <div id="cfg_ssh_failure_summary" class="font-semibold"></div>
+            <ul id="cfg_ssh_failure_list" class="mt-3 space-y-3"></ul>
+          </div>
         </div>
       </section>
 
@@ -211,6 +215,9 @@
     const sshToggleBtn = document.getElementById('cfg_ssh_toggle_password');
     const sshCollectBtn = document.getElementById('cfg_ssh_collect');
     const sshProgress = document.getElementById('cfg_ssh_progress');
+    const sshFailurePanel = document.getElementById('cfg_ssh_failure_panel');
+    const sshFailureSummary = document.getElementById('cfg_ssh_failure_summary');
+    const sshFailureList = document.getElementById('cfg_ssh_failure_list');
 
     const dz = document.getElementById('dz');
     const fileInput = document.getElementById('file_input');
@@ -262,6 +269,62 @@
       }
     }
 
+    function resetSshFailurePanel(){
+      if (!sshFailurePanel) return;
+      sshFailurePanel.classList.add('hidden');
+      if (sshFailureSummary) sshFailureSummary.textContent = '';
+      if (sshFailureList) sshFailureList.innerHTML = '';
+    }
+
+    function renderSshFailures(failures, totalRequested){
+      if (!sshFailurePanel || !sshFailureList) return;
+      if (!failures?.length){
+        resetSshFailurePanel();
+        return;
+      }
+
+      sshFailureList.innerHTML = '';
+      const totalText = totalRequested ? `Unable to collect configs from ${failures.length} of ${totalRequested} device(s).` : `Unable to collect configs from ${failures.length} device(s).`;
+      if (sshFailureSummary){
+        sshFailureSummary.textContent = `${totalText} Review the device details below.`;
+      }
+
+      failures.forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'rounded-lg border border-rose-200 bg-white/70 px-3 py-2 text-rose-700 dark:border-rose-900 dark:bg-rose-900/40 dark:text-rose-100';
+
+        const title = document.createElement('div');
+        title.className = 'font-semibold';
+        title.textContent = item.label || item.host || 'Device';
+        li.appendChild(title);
+
+        const info = item.error_info || {};
+        const reasonText = info.reason || item.error || 'Connection failed.';
+        const reasonEl = document.createElement('div');
+        reasonEl.className = 'text-sm';
+        reasonEl.textContent = reasonText;
+        li.appendChild(reasonEl);
+
+        if (info.suggestion){
+          const suggestionEl = document.createElement('div');
+          suggestionEl.className = 'text-xs text-rose-600 dark:text-rose-200';
+          suggestionEl.textContent = info.suggestion;
+          li.appendChild(suggestionEl);
+        }
+
+        if (info.detail && info.detail !== reasonText){
+          const detailEl = document.createElement('div');
+          detailEl.className = 'text-xs text-rose-500 dark:text-rose-300 break-words';
+          detailEl.textContent = `Detail: ${info.detail}`;
+          li.appendChild(detailEl);
+        }
+
+        sshFailureList.appendChild(li);
+      });
+
+      sshFailurePanel.classList.remove('hidden');
+    }
+
     const savedSshUser = localStorage.getItem('ssh_username');
     if (savedSshUser && sshUsernameInput) sshUsernameInput.value = savedSshUser;
 
@@ -290,6 +353,7 @@
           return;
         }
 
+        resetSshFailurePanel();
         sshCollectBtn.disabled = true;
         sshCollectBtn.classList.add('opacity-70', 'cursor-not-allowed');
         if (sshProgress) sshProgress.textContent = 'Starting SSH collection…';
@@ -315,6 +379,7 @@
           if (sshProgress) sshProgress.textContent = '';
           sshCollectStartedAt = null;
           sshCollectRequested = 0;
+          resetSshFailurePanel();
         }
       });
     }
@@ -358,6 +423,7 @@
           if (sshProgress) sshProgress.textContent = '';
           sshCollectStartedAt = null;
           sshCollectRequested = 0;
+          resetSshFailurePanel();
         }
       };
       fetchStatus();
@@ -368,15 +434,17 @@
       const resultsArr = job.results || [];
       const successes = resultsArr.filter(r => r.status === 'ok' && r.running_config && r.running_config.text);
       const failures = resultsArr.filter(r => r.status !== 'ok');
+      const totalDevices = Number(job?.total || 0) || (successes.length + failures.length) || sshCollectRequested || 0;
 
       if (!successes.length){
         if (failures.length){
-          convertStatus.textContent = `SSH collection failed for ${failures.length} device(s).`;
+          convertStatus.textContent = `SSH collection failed for ${failures.length} device(s). Review the details below.`;
         } else {
           convertStatus.textContent = 'No configs collected via SSH.';
         }
         sshCollectStartedAt = null;
         sshCollectRequested = 0;
+        renderSshFailures(failures, totalDevices);
         return;
       }
 
@@ -406,8 +474,9 @@
       sshCollectStartedAt = null;
       sshCollectRequested = 0;
 
+      renderSshFailures(failures, totalDevices);
       if (failures.length){
-        convertStatus.textContent += ` ${failures.length} device(s) failed.`;
+        convertStatus.textContent += ` ${failures.length} device(s) failed – see details below.`;
         console.warn('SSH config collection failures:', failures);
       }
     }
@@ -441,6 +510,7 @@
       batchStatus.textContent = '';
       dryRun.checked = true;
       pushBatchBtn.textContent = 'Test configuration for all';
+      resetSshFailurePanel();
     });
 
     // --- Sites/Devices ---
