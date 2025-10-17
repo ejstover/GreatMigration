@@ -103,6 +103,19 @@
       </div>
     </section>
 
+    <section id="bom_summary_section" class="hidden mb-6">
+      <div class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-6">
+        <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 class="text-lg font-medium">Bill of Materials Summary</h2>
+            <p class="text-sm text-slate-600 dark:text-slate-300">Combined count of recommended replacements and selected accessories.</p>
+          </div>
+        </div>
+        <ul id="bom_summary_list" class="mt-4 space-y-2 text-sm"></ul>
+        <p id="bom_summary_empty" class="mt-4 text-sm text-slate-600 dark:text-slate-300">Process hardware results or add accessories to build a bill of materials.</p>
+      </div>
+    </section>
+
     <section id="results" class="hidden space-y-4"></section>
     </div>
     </div>
@@ -149,6 +162,9 @@
     const chooseBtn = document.getElementById('choose_files');
     const uploadStatus = document.getElementById('upload_status');
     const results = document.getElementById('results');
+    const bomSummarySection = document.getElementById('bom_summary_section');
+    const bomSummaryList = document.getElementById('bom_summary_list');
+    const bomSummaryEmpty = document.getElementById('bom_summary_empty');
     const accessoriesList = document.getElementById('accessories_list');
     const accessoriesEmpty = document.getElementById('accessories_empty');
     const addAccessoryBtn = document.getElementById('add_accessory_btn');
@@ -170,6 +186,119 @@
     let hardwareCollectStartedAt = null;
     let hardwareCollectRequested = 0;
     let getAccessoriesPayload = () => [];
+    let updateSummaryDisplay = () => {};
+
+    const scheduleSummaryUpdate = (() => {
+      let timer = null;
+      return () => {
+        if (timer !== null) {
+          window.clearTimeout(timer);
+        }
+        timer = window.setTimeout(() => {
+          timer = null;
+          updateSummaryDisplay();
+        }, 50);
+      };
+    })();
+
+    const parseQuantity = (value) => {
+      if (typeof value === 'number') {
+        if (!Number.isFinite(value) || value <= 0) return null;
+        return value;
+      }
+      if (typeof value === 'string') {
+        const cleaned = value.trim();
+        if (!cleaned) return null;
+        const parsed = Number.parseFloat(cleaned);
+        if (!Number.isFinite(parsed) || parsed <= 0) return null;
+        return parsed;
+      }
+      return null;
+    };
+
+    const formatQuantity = (value) => {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '';
+      if (Number.isInteger(value)) return value.toString();
+      return value.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 0 });
+    };
+
+    const buildBillOfMaterialsSummary = (resultsData, accessoriesData) => {
+      const totals = new Map();
+      const addToTotals = (name, amount) => {
+        if (!name) return;
+        const trimmed = name.trim();
+        if (!trimmed) return;
+        const qty = parseQuantity(amount);
+        if (qty === null) return;
+        const existing = totals.get(trimmed) || 0;
+        totals.set(trimmed, existing + qty);
+      };
+
+      if (Array.isArray(resultsData)) {
+        resultsData.forEach((file) => {
+          const switches = Array.isArray(file?.switches) ? file.switches : [];
+          switches.forEach((sw) => {
+            const items = Array.isArray(sw?.items) ? sw.items : [];
+            items.forEach((item) => {
+              const replacement = typeof item?.replacement === 'string' ? item.replacement : '';
+              addToTotals(replacement, item?.count);
+            });
+          });
+          const copperTotal = file?.copper_10g_ports?.total;
+          const copperQty = parseQuantity(copperTotal);
+          if (copperQty !== null) {
+            addToTotals('SFPP-10G-T', copperQty);
+          }
+        });
+      }
+
+      if (Array.isArray(accessoriesData)) {
+        accessoriesData.forEach((item) => {
+          if (!item) return;
+          const name = typeof item.name === 'string' ? item.name : '';
+          const quantity = item.quantity;
+          if (parseQuantity(quantity) !== null) {
+            addToTotals(name, quantity);
+          } else {
+            addToTotals(name, 1);
+          }
+        });
+      }
+
+      return Array.from(totals.entries())
+        .map(([name, quantity]) => ({ name, quantity }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    };
+
+    const renderBillOfMaterialsSummary = (items) => {
+      if (!bomSummarySection || !bomSummaryList || !bomSummaryEmpty) return;
+      bomSummaryList.innerHTML = '';
+      if (!items.length) {
+        bomSummarySection.classList.add('hidden');
+        bomSummaryEmpty.classList.remove('hidden');
+        return;
+      }
+      bomSummarySection.classList.remove('hidden');
+      bomSummaryEmpty.classList.add('hidden');
+      items.forEach(({ name, quantity }) => {
+        const li = document.createElement('li');
+        li.className = 'flex items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-700 pb-2 last:border-0 last:pb-0';
+        const qtySpan = document.createElement('span');
+        qtySpan.className = 'font-semibold text-slate-900 dark:text-slate-100';
+        qtySpan.textContent = formatQuantity(quantity);
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'flex-1 text-right md:text-left text-slate-700 dark:text-slate-200';
+        nameSpan.textContent = name;
+        li.append(qtySpan, nameSpan);
+        bomSummaryList.appendChild(li);
+      });
+    };
+
+    updateSummaryDisplay = () => {
+      const accessoriesSelection = getAccessoriesPayload();
+      const summaryItems = buildBillOfMaterialsSummary(lastResults, accessoriesSelection);
+      renderBillOfMaterialsSummary(summaryItems);
+    };
 
     if (accessoriesList && accessoriesEmpty && addAccessoryBtn) {
       let availableAccessories = [];
@@ -281,18 +410,23 @@
         actions.appendChild(removeBtn);
         row.appendChild(actions);
 
-        select.addEventListener('change', updateAccessoriesEmptyState);
+        select.addEventListener('change', () => {
+          updateAccessoriesEmptyState();
+          scheduleSummaryUpdate();
+        });
         qtyInput.addEventListener('input', () => {
           if (qtyInput.value === '') return;
           const value = Number.parseInt(qtyInput.value, 10);
           if (Number.isNaN(value) || value < 1) {
             qtyInput.value = '';
           }
+          scheduleSummaryUpdate();
         });
         removeBtn.addEventListener('click', (event) => {
           event.preventDefault();
           row.remove();
           updateAccessoriesEmptyState();
+          scheduleSummaryUpdate();
         });
 
         return row;
@@ -302,6 +436,7 @@
         const row = createAccessoryRow(initial);
         accessoriesList.appendChild(row);
         updateAccessoriesEmptyState();
+        scheduleSummaryUpdate();
         return row;
       };
 
@@ -373,6 +508,8 @@
           accessoriesEmpty.classList.remove('hidden');
         });
     }
+
+    scheduleSummaryUpdate();
 
     async function logTiming(eventName, durationMs, metadata = {}){
       try {
@@ -506,6 +643,7 @@
         results.classList.add('hidden');
         exportBtn.classList.add('hidden');
         uploadStatus.textContent = failures.length ? `All devices failed (${failures.length}).` : 'No hardware data collected.';
+        updateSummaryDisplay();
       }
 
       hardwareCollectStartedAt = null;
@@ -531,6 +669,7 @@
       uploadStatus.textContent = '';
       exportBtn.classList.add('hidden');
       lastResults = null;
+      updateSummaryDisplay();
     });
 
     function handleFiles(files){
@@ -554,7 +693,7 @@
 
     function renderResults(items){
       results.innerHTML='';
-      if(!items?.length){ results.classList.add('hidden'); return; }
+      if(!items?.length){ results.classList.add('hidden'); updateSummaryDisplay(); return; }
       results.classList.remove('hidden');
       items.forEach(file => {
         const wrap = document.createElement('div');
@@ -587,6 +726,7 @@
         }
         results.appendChild(wrap);
       });
+      updateSummaryDisplay();
     }
 
     let resolveProjectModal;

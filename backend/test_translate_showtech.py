@@ -209,10 +209,57 @@ def test_api_showtech_pdf_includes_accessories():
     assert "SFPP-10G-T" in text
     assert "Rack Mount Kit" in text
     assert "Qty: 4" in text
+    assert "4 - SFPP-10G-T" in text
+    assert "1 - Rack Mount Kit" in text
     assert "Campus Core Upgrade" in text
     assert response.headers.get("content-disposition") == (
         "attachment; filename=hardware_conversion_report_Campus_Core_Upgrade.pdf"
     )
+
+
+def test_api_showtech_pdf_includes_bom_summary():
+    response = api_showtech_pdf(
+        {
+            "results": [
+                {
+                    "filename": "site_a.txt",
+                    "switches": [
+                        {
+                            "switch": "Switch A",
+                            "items": [
+                                {"pid": "OLD-1", "count": 2, "replacement": "EX4100-48MP"},
+                                {"pid": "OLD-2", "count": 1, "replacement": "EX2300-24P"},
+                            ],
+                        }
+                    ],
+                    "copper_10g_ports": {"total": 3},
+                },
+                {
+                    "filename": "site_b.txt",
+                    "switches": [
+                        {
+                            "switch": "Switch B",
+                            "items": [
+                                {"pid": "OLD-3", "count": 3, "replacement": "EX4100-48MP"},
+                            ],
+                        }
+                    ],
+                    "copper_10g_ports": {"total": 1},
+                },
+            ],
+            "generated_by": "Tester",
+            "project_name": "Campus Edge Upgrade",
+            "accessories": [{"name": "Rack Mount Kit", "quantity": 2}],
+        }
+    )
+
+    assert response.media_type == "application/pdf"
+    text = response.body.decode("latin-1", errors="ignore")
+    assert "5 - EX4100-48MP" in text
+    assert "1 - EX2300-24P" in text
+    assert "4 - SFPP-10G-T" in text
+    assert "2 - Rack Mount Kit" in text
+    assert "Campus Edge Upgrade" in text
 
 
 def test_api_showtech_pdf_filename_sanitizes_project_name():
