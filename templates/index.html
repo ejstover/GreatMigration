@@ -84,6 +84,10 @@
             <button id="cfg_ssh_collect" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Fetch configs</button>
             <span id="cfg_ssh_progress" class="text-sm text-slate-600 dark:text-slate-300"></span>
           </div>
+          <div id="cfg_ssh_failure_panel" class="hidden mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/70 dark:text-rose-100">
+            <div id="cfg_ssh_failure_summary" class="font-semibold"></div>
+            <ul id="cfg_ssh_failure_list" class="mt-3 space-y-3"></ul>
+          </div>
         </div>
       </section>
 
@@ -211,6 +215,9 @@
     const sshToggleBtn = document.getElementById('cfg_ssh_toggle_password');
     const sshCollectBtn = document.getElementById('cfg_ssh_collect');
     const sshProgress = document.getElementById('cfg_ssh_progress');
+    const sshFailurePanel = document.getElementById('cfg_ssh_failure_panel');
+    const sshFailureSummary = document.getElementById('cfg_ssh_failure_summary');
+    const sshFailureList = document.getElementById('cfg_ssh_failure_list');
 
     const dz = document.getElementById('dz');
     const fileInput = document.getElementById('file_input');
@@ -262,6 +269,64 @@
       }
     }
 
+    function resetSshFailurePanel(){
+      if (!sshFailurePanel) return;
+      sshFailurePanel.classList.add('hidden');
+      if (sshFailureSummary) sshFailureSummary.textContent = '';
+      if (sshFailureList) sshFailureList.innerHTML = '';
+    }
+
+    function renderSshFailures(failures, totalRequested){
+      if (!sshFailurePanel || !sshFailureList) return;
+      if (!failures?.length){
+        resetSshFailurePanel();
+        return;
+      }
+
+      sshFailureList.innerHTML = '';
+      const totalText = totalRequested ? `Unable to collect configs from ${failures.length} of ${totalRequested} device(s).` : `Unable to collect configs from ${failures.length} device(s).`;
+      if (sshFailureSummary){
+        sshFailureSummary.textContent = `${totalText} Hover or tap each device for troubleshooting tips.`;
+      }
+
+      failures.forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'flex items-center gap-2 rounded-lg border border-rose-200 bg-white/70 px-3 py-2 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-900/40 dark:text-rose-100';
+
+        const label = item.label || item.host || 'Device';
+        const info = item.error_info || {};
+        const reasonText = info.reason || item.error || 'Connection failed.';
+        const summaryText = `${label} - ${reasonText}`;
+
+        const textSpan = document.createElement('span');
+        textSpan.className = 'flex-1';
+        textSpan.textContent = summaryText;
+        li.appendChild(textSpan);
+
+        const tooltipLines = [];
+        if (info.suggestion){
+          tooltipLines.push(`Suggestion: ${info.suggestion}`);
+        }
+        if (info.detail && info.detail !== reasonText){
+          tooltipLines.push(`Detail: ${info.detail}`);
+        }
+        const tooltipText = tooltipLines.length ? `${reasonText}\n\n${tooltipLines.join('\n')}` : reasonText;
+        li.title = tooltipText;
+
+        if (tooltipLines.length){
+          const icon = document.createElement('span');
+          icon.className = 'shrink-0 text-xs font-semibold uppercase tracking-wide text-rose-600 dark:text-rose-200 cursor-help';
+          icon.textContent = 'Details';
+          icon.title = tooltipText;
+          li.appendChild(icon);
+        }
+
+        sshFailureList.appendChild(li);
+      });
+
+      sshFailurePanel.classList.remove('hidden');
+    }
+
     const savedSshUser = localStorage.getItem('ssh_username');
     if (savedSshUser && sshUsernameInput) sshUsernameInput.value = savedSshUser;
 
@@ -290,6 +355,7 @@
           return;
         }
 
+        resetSshFailurePanel();
         sshCollectBtn.disabled = true;
         sshCollectBtn.classList.add('opacity-70', 'cursor-not-allowed');
         if (sshProgress) sshProgress.textContent = 'Starting SSH collection…';
@@ -315,6 +381,7 @@
           if (sshProgress) sshProgress.textContent = '';
           sshCollectStartedAt = null;
           sshCollectRequested = 0;
+          resetSshFailurePanel();
         }
       });
     }
@@ -358,6 +425,7 @@
           if (sshProgress) sshProgress.textContent = '';
           sshCollectStartedAt = null;
           sshCollectRequested = 0;
+          resetSshFailurePanel();
         }
       };
       fetchStatus();
@@ -368,15 +436,17 @@
       const resultsArr = job.results || [];
       const successes = resultsArr.filter(r => r.status === 'ok' && r.running_config && r.running_config.text);
       const failures = resultsArr.filter(r => r.status !== 'ok');
+      const totalDevices = Number(job?.total || 0) || (successes.length + failures.length) || sshCollectRequested || 0;
 
       if (!successes.length){
         if (failures.length){
-          convertStatus.textContent = `SSH collection failed for ${failures.length} device(s).`;
+          convertStatus.textContent = `SSH collection failed for ${failures.length} device(s). Hover over the entries below for tips.`;
         } else {
           convertStatus.textContent = 'No configs collected via SSH.';
         }
         sshCollectStartedAt = null;
         sshCollectRequested = 0;
+        renderSshFailures(failures, totalDevices);
         return;
       }
 
@@ -406,8 +476,9 @@
       sshCollectStartedAt = null;
       sshCollectRequested = 0;
 
+      renderSshFailures(failures, totalDevices);
       if (failures.length){
-        convertStatus.textContent += ` ${failures.length} device(s) failed.`;
+        convertStatus.textContent += ` ${failures.length} device(s) failed – hover over the entries below for tips.`;
         console.warn('SSH config collection failures:', failures);
       }
     }
@@ -441,6 +512,7 @@
       batchStatus.textContent = '';
       dryRun.checked = true;
       pushBatchBtn.textContent = 'Test configuration for all';
+      resetSshFailurePanel();
     });
 
     // --- Sites/Devices ---

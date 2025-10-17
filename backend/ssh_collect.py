@@ -25,9 +25,15 @@ from typing import Dict, Iterable, List, Optional
 
 try:
     from netmiko import ConnectHandler  # type: ignore
+    from netmiko import (  # type: ignore
+        NetmikoAuthenticationException,
+        NetmikoTimeoutException,
+    )
 except Exception as exc:  # pragma: no cover - optional dependency
     ConnectHandler = None  # type: ignore
     NETMIKO_IMPORT_ERROR = exc
+    NetmikoAuthenticationException = None  # type: ignore
+    NetmikoTimeoutException = None  # type: ignore
 else:
     NETMIKO_IMPORT_ERROR = None
 
@@ -55,6 +61,7 @@ class DeviceResult:
     label: str
     status: str
     error: Optional[str] = None
+    error_info: Optional[Dict[str, str]] = None
     command_outputs: Dict[str, str] = field(default_factory=dict)
     temp_files: Dict[str, str] = field(default_factory=dict)
     hardware: Optional[Dict[str, object]] = None
@@ -91,6 +98,7 @@ class JobState:
                     "label": r.label,
                     "status": r.status,
                     "error": r.error,
+                    "error_info": r.error_info,
                     "hardware": r.hardware,
                     "running_config": r.running_config,
                     "temp_files": r.temp_files,
@@ -121,6 +129,54 @@ def build_showtech_text(outputs: Dict[str, str]) -> str:
         sections.append(f"{'-' * 26} {title} {'-' * 26}")
         sections.append(data)
     return "\n".join(sections)
+
+
+def _describe_exception(exc: Exception) -> Dict[str, str]:
+    message = str(exc).strip() or exc.__class__.__name__
+    lower = message.lower()
+
+    reason = "Unable to connect to the device over SSH."
+    suggestion = "Verify network connectivity, credentials, and that SSH is enabled."
+    code = "unknown"
+
+    auth_match = "auth" in lower and ("fail" in lower or "denied" in lower)
+    if NetmikoAuthenticationException is not None and isinstance(exc, NetmikoAuthenticationException):
+        auth_match = True
+    if auth_match:
+        code = "auth_failure"
+        reason = "Authentication failed while connecting to the device."
+        suggestion = "Confirm the SSH username/password and that the device allows remote logins."
+    elif NetmikoTimeoutException is not None and isinstance(exc, NetmikoTimeoutException):
+        code = "timeout"
+        reason = "The device did not respond before the SSH timeout."
+        suggestion = "Check reachability, latency, and firewall rules for SSH (TCP 22)."
+    elif any(keyword in lower for keyword in ("timed out", "timeout", "expired")):
+        code = "timeout"
+        reason = "The device did not respond before the SSH timeout."
+        suggestion = "Check reachability, latency, and firewall rules for SSH (TCP 22)."
+    elif any(keyword in lower for keyword in ("name or service not known", "unknown host", "not known", "getaddrinfo failed", "temporary failure in name resolution", "could not resolve")):
+        code = "dns_lookup_failed"
+        reason = "The device hostname could not be resolved."
+        suggestion = "Verify DNS settings or use the IP address instead of the hostname."
+    elif "connection refused" in lower or "refused" in lower and "ssh" in lower:
+        code = "connection_refused"
+        reason = "The device refused the SSH connection."
+        suggestion = "Ensure SSH is enabled and listening on the device and that ACLs allow access."
+    elif "no route to host" in lower or "network is unreachable" in lower:
+        code = "unreachable"
+        reason = "The device was unreachable on the network."
+        suggestion = "Verify network connectivity and routing to the device."
+    elif "read timed out" in lower or "banner timeout" in lower or "ssh protocol banner" in lower:
+        code = "timeout"
+        reason = "The SSH handshake timed out."
+        suggestion = "Confirm the device is reachable and responding to SSH."
+
+    return {
+        "code": code,
+        "reason": reason,
+        "suggestion": suggestion,
+        "detail": message,
+    }
 
 
 def _collect_one_device(
@@ -244,8 +300,10 @@ def _collect_one_device(
         result.status = "ok"
         return result
     except Exception as exc:  # pragma: no cover - network dependent
+        info = _describe_exception(exc)
         result.status = "error"
-        result.error = str(exc)
+        result.error = info.get("detail")
+        result.error_info = info
         return result
     finally:
         try:
@@ -310,11 +368,13 @@ def start_job(
                     try:
                         result = fut.result()
                     except Exception as exc:  # pragma: no cover
+                        info = _describe_exception(exc)
                         result = DeviceResult(
                             host=device.host,
                             label=device.label or device.host,
                             status="error",
-                            error=str(exc),
+                            error=info.get("detail"),
+                            error_info=info,
                         )
 
                     with job._lock:
