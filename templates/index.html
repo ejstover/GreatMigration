@@ -286,37 +286,39 @@
       sshFailureList.innerHTML = '';
       const totalText = totalRequested ? `Unable to collect configs from ${failures.length} of ${totalRequested} device(s).` : `Unable to collect configs from ${failures.length} device(s).`;
       if (sshFailureSummary){
-        sshFailureSummary.textContent = `${totalText} Review the device details below.`;
+        sshFailureSummary.textContent = `${totalText} Hover or tap each device for troubleshooting tips.`;
       }
 
       failures.forEach(item => {
         const li = document.createElement('li');
-        li.className = 'rounded-lg border border-rose-200 bg-white/70 px-3 py-2 text-rose-700 dark:border-rose-900 dark:bg-rose-900/40 dark:text-rose-100';
+        li.className = 'flex items-center gap-2 rounded-lg border border-rose-200 bg-white/70 px-3 py-2 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-900/40 dark:text-rose-100';
 
-        const title = document.createElement('div');
-        title.className = 'font-semibold';
-        title.textContent = item.label || item.host || 'Device';
-        li.appendChild(title);
-
+        const label = item.label || item.host || 'Device';
         const info = item.error_info || {};
         const reasonText = info.reason || item.error || 'Connection failed.';
-        const reasonEl = document.createElement('div');
-        reasonEl.className = 'text-sm';
-        reasonEl.textContent = reasonText;
-        li.appendChild(reasonEl);
+        const summaryText = `${label} - ${reasonText}`;
 
+        const textSpan = document.createElement('span');
+        textSpan.className = 'flex-1';
+        textSpan.textContent = summaryText;
+        li.appendChild(textSpan);
+
+        const tooltipLines = [];
         if (info.suggestion){
-          const suggestionEl = document.createElement('div');
-          suggestionEl.className = 'text-xs text-rose-600 dark:text-rose-200';
-          suggestionEl.textContent = info.suggestion;
-          li.appendChild(suggestionEl);
+          tooltipLines.push(`Suggestion: ${info.suggestion}`);
         }
-
         if (info.detail && info.detail !== reasonText){
-          const detailEl = document.createElement('div');
-          detailEl.className = 'text-xs text-rose-500 dark:text-rose-300 break-words';
-          detailEl.textContent = `Detail: ${info.detail}`;
-          li.appendChild(detailEl);
+          tooltipLines.push(`Detail: ${info.detail}`);
+        }
+        const tooltipText = tooltipLines.length ? `${reasonText}\n\n${tooltipLines.join('\n')}` : reasonText;
+        li.title = tooltipText;
+
+        if (tooltipLines.length){
+          const icon = document.createElement('span');
+          icon.className = 'shrink-0 text-xs font-semibold uppercase tracking-wide text-rose-600 dark:text-rose-200 cursor-help';
+          icon.textContent = 'Details';
+          icon.title = tooltipText;
+          li.appendChild(icon);
         }
 
         sshFailureList.appendChild(li);
@@ -438,7 +440,7 @@
 
       if (!successes.length){
         if (failures.length){
-          convertStatus.textContent = `SSH collection failed for ${failures.length} device(s). Review the details below.`;
+          convertStatus.textContent = `SSH collection failed for ${failures.length} device(s). Hover over the entries below for tips.`;
         } else {
           convertStatus.textContent = 'No configs collected via SSH.';
         }
@@ -476,7 +478,7 @@
 
       renderSshFailures(failures, totalDevices);
       if (failures.length){
-        convertStatus.textContent += ` ${failures.length} device(s) failed – see details below.`;
+        convertStatus.textContent += ` ${failures.length} device(s) failed – hover over the entries below for tips.`;
         console.warn('SSH config collection failures:', failures);
       }
     }
