@@ -2518,7 +2518,7 @@ def _apply_temporary_config_for_rows(
         return {
             "ok": True,
             "skipped": True,
-            "message": "Skipped applying temporary config for {total} device(s) while in Test mode.".format(total=total),
+            "message": "Skipped applying temporary config for {total} device(s) during a preview-only run.".format(total=total),
             "successes": 0,
             "failures": [],
             "total": total,
@@ -2673,7 +2673,7 @@ def _finalize_assignments_for_rows(
         path_template="/sites/{site_id}/devices/{device_id}/temp_port_config/apply",
         success_template="Finalized temporary assignments for {count} device(s).",
         partial_template="Finalized temporary assignments for {successes}/{total} device(s). Manual follow-up required.",
-        skip_message="Skipped finalizing assignments for {total} device(s) while in Test mode.",
+        skip_message="Skipped finalizing assignments for {total} device(s) during a preview-only run.",
         empty_message="No completed rows available to finalize assignments.",
         body_getter=lambda _: {"temporary": True},
     )
@@ -2695,7 +2695,7 @@ def _remove_temporary_config_for_rows(
         path_template="/sites/{site_id}/devices/{device_id}/temp_port_config",
         success_template="Removed temporary config from {count} device(s).",
         partial_template="Removed temporary config from {successes}/{total} device(s). Manual follow-up required.",
-        skip_message="Skipped removing temporary config for {total} device(s) while in Test mode.",
+        skip_message="Skipped removing temporary config for {total} device(s) during a preview-only run.",
         empty_message="No temporary config records to remove for the submitted batch.",
     )
 
@@ -2719,8 +2719,6 @@ async def api_push(
     """
     Single push. Response includes `payload` (the exact body to Mist) and `validation`.
     """
-    _ensure_push_allowed(request, dry_run=dry_run)
-
     try:
         payload_in = json.loads(input_json)
     except Exception as e:
@@ -2747,7 +2745,6 @@ async def api_push(
 async def api_push_batch(
     request: Request,
     rows: str = Form(...),  # JSON array of rows
-    dry_run: bool = Form(True),
     base_url: str = Form(DEFAULT_BASE_URL),
     tz: str = Form(DEFAULT_TZ),
     model_override: Optional[str] = Form(None),  # optional global override (row can still override)
@@ -2766,16 +2763,22 @@ async def api_push_batch(
     NOTE: Duplicate devices ARE allowed as long as (device_id, member_offset, port_offset) triples are unique.
     If the same triple appears more than once, those rows are rejected with a clear error.
     """
-    _ensure_push_allowed(request, dry_run=dry_run)
-
     token = _load_mist_token()
     base_url = base_url.rstrip("/")
 
-    dry_run_bool = bool(dry_run)
     stage_site_deployment = bool(stage_site_deployment)
     push_site_deployment = bool(push_site_deployment)
+    apply_temp_config = bool(apply_temp_config)
+    finalize_assignments = bool(finalize_assignments)
+    remove_temp_config = bool(remove_temp_config)
     site_actions_selected = stage_site_deployment or push_site_deployment
     lcm_actions_selected = bool(apply_temp_config or finalize_assignments or remove_temp_config)
+
+    preview_only = not (
+        push_site_deployment or apply_temp_config or finalize_assignments or remove_temp_config
+    )
+
+    _ensure_push_allowed(request, dry_run=preview_only)
 
     if site_actions_selected and lcm_actions_selected:
         return JSONResponse(
@@ -2786,7 +2789,7 @@ async def api_push_batch(
             status_code=400,
         )
 
-    should_push_live = push_site_deployment and not dry_run_bool
+    should_push_live = push_site_deployment
     effective_dry_run = not should_push_live
 
     try:
@@ -2925,11 +2928,11 @@ async def api_push_batch(
                 }
 
         if push_site_deployment:
-            if dry_run_bool:
+            if not should_push_live:
                 phase_status["site_push"] = {
                     "ok": True,
                     "skipped": True,
-                    "message": "Skipped pushing converted config while in Test mode.",
+                    "message": "Skipped pushing converted config during a preview-only run.",
                     "successes": 0,
                     "failures": [],
                     "total": len(results),
@@ -2969,7 +2972,7 @@ async def api_push_batch(
             base_url=base_url,
             token=token,
             results=results,
-            dry_run=dry_run_bool,
+            dry_run=preview_only,
         )
 
     if finalize_assignments:
@@ -2977,7 +2980,7 @@ async def api_push_batch(
             base_url=base_url,
             token=token,
             results=results,
-            dry_run=dry_run_bool,
+            dry_run=preview_only,
         )
 
     if remove_temp_config:
@@ -2985,7 +2988,7 @@ async def api_push_batch(
             base_url=base_url,
             token=token,
             results=results,
-            dry_run=dry_run_bool,
+            dry_run=preview_only,
         )
 
     for row in results:
@@ -2999,7 +3002,7 @@ async def api_push_batch(
     return JSONResponse(
         {
             "ok": overall_ok,
-            "dry_run": dry_run_bool,
+            "dry_run": preview_only,
             "results": results,
             "phase_status": phase_status,
         }

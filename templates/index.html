@@ -128,15 +128,6 @@
           <div class="flex items-center gap-6 mt-6 md:mt-0">
             <label class="tooltip">
               <span class="inline-flex items-center gap-2">
-                <input id="dry_run" type="checkbox" class="w-4 h-4" checked />
-                <span class="text-sm">Test mode (no changes)</span>
-              </span>
-              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
-              <span class="tip">Sends the exact payload to Mist <em>without</em> applying changes. You’ll see the JSON and any warnings, but devices aren’t modified.</span>
-            </label>
-
-            <label class="tooltip">
-              <span class="inline-flex items-center gap-2">
                 <input id="strict_overflow" type="checkbox" class="w-4 h-4" />
                 <span class="text-sm">Strict overflow (convert)</span>
               </span>
@@ -180,7 +171,7 @@
                   </span>
                 </span>
                 <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-200 text-xs font-bold text-emerald-700 dark:bg-emerald-900 dark:text-emerald-200">?</span>
-                <span class="tip">Sends the converted port configuration to Mist. Disable Test mode to perform a live push.</span>
+                <span class="tip">Sends the converted port configuration to Mist. Select only this push option when you are ready for a live update.</span>
               </label>
             </div>
           </div>
@@ -243,7 +234,7 @@
       <div id="batch_rows" class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow divide-y dark:divide-slate-700"></div>
 
       <div class="flex items-center gap-3 mt-4">
-        <button id="push_batch_btn" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Test configuration for all</button>
+        <button id="push_batch_btn" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Run selected automation</button>
         <div id="batch_status" class="text-sm text-slate-600 dark:text-slate-300 ml-2"></div>
       </div>
 
@@ -290,13 +281,15 @@
       });
 
       if (readOnly) {
-        dryRun.checked = true;
-        dryRun.disabled = true;
-        dryRun.setAttribute('data-readonly', 'true');
-        dryRun.removeAttribute('data-locked');
-        dryRun.setAttribute('aria-disabled', 'true');
-        dryRun.title = 'Read-only accounts can only run in Test mode.';
-        syncPushBtnLabel();
+        liveChangeCheckboxes.forEach(cb => {
+          if (!cb) return;
+          cb.checked = false;
+          cb.disabled = true;
+          const label = cb.closest('label');
+          label?.classList.add('opacity-50', 'pointer-events-none');
+          label?.setAttribute('title', 'Read-only accounts cannot apply live changes.');
+        });
+        updateAutomationLocks();
       }
     }).catch(() => {
       window.location.href = '/login';
@@ -330,7 +323,6 @@
     const batchPhaseStatus = document.getElementById('batch_phase_status');
 
     const strictOverflow = document.getElementById('strict_overflow');
-    const dryRun = document.getElementById('dry_run');
     const tz = document.getElementById('tz');
     const modelOverride = document.getElementById('model_override');
     const applyTempConfig = document.getElementById('apply_temp_config');
@@ -349,43 +341,27 @@
     let sshCollectRequested = 0;
     const siteAutomationCheckboxes = [siteStage, sitePush].filter(Boolean);
     const lcmAutomationCheckboxes = [applyTempConfig, finalizeAssignments, removeTempConfig].filter(Boolean);
+    const liveChangeCheckboxes = [sitePush, applyTempConfig, finalizeAssignments, removeTempConfig].filter(Boolean);
 
     // --- Utils ---
     function show(el){ el.classList.remove('hidden'); }
     function hide(el){ el.classList.add('hidden'); }
     function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
 
-    function updateDryRunLock(){
-      const readOnlyLocked = dryRun.hasAttribute('data-readonly');
-      if (readOnlyLocked){
-        dryRun.checked = true;
-        dryRun.disabled = true;
-        syncPushBtnLabel();
-        return;
-      }
+    function isPreviewOnly(){
+      return !liveChangeCheckboxes.some(cb => cb && cb.checked);
+    }
 
-      const siteStageChecked = siteStage?.checked;
-      const sitePushChecked = sitePush?.checked;
-      const lcmActive = lcmAutomationCheckboxes.some(cb => cb && cb.checked);
-
-      if (siteStageChecked && !sitePushChecked){
-        dryRun.checked = true;
-        dryRun.disabled = true;
-        dryRun.setAttribute('data-locked', 'site-stage');
-      } else if (sitePushChecked && !siteStageChecked){
-        dryRun.checked = false;
-        dryRun.disabled = true;
-        dryRun.setAttribute('data-locked', 'site-push');
-      } else if (lcmActive){
-        dryRun.checked = true;
-        dryRun.disabled = true;
-        dryRun.setAttribute('data-locked', 'lcm');
+    function syncPushBtnLabel(){
+      const preview = isPreviewOnly();
+      const anySelected = siteAutomationCheckboxes.some(cb => cb && cb.checked) || lcmAutomationCheckboxes.some(cb => cb && cb.checked);
+      if (!anySelected){
+        pushBatchBtn.textContent = 'Run selected automation';
+      } else if (preview){
+        pushBatchBtn.textContent = 'Stage/test selected automation';
       } else {
-        dryRun.disabled = false;
-        dryRun.removeAttribute('data-locked');
+        pushBatchBtn.textContent = 'Apply selected automation';
       }
-
-      syncPushBtnLabel();
     }
 
     function updateAutomationLocks(){
@@ -420,7 +396,7 @@
         label?.classList.toggle('pointer-events-none', disable);
       });
 
-      updateDryRunLock();
+      syncPushBtnLabel();
       renderConvertedList();
     }
 
@@ -681,8 +657,7 @@
       hide(batchSection);
       hide(rowsWarning);
       batchStatus.textContent = '';
-      dryRun.checked = true;
-      pushBatchBtn.textContent = 'Test configuration for all';
+      syncPushBtnLabel();
       resetSshFailurePanel();
     });
 
@@ -1038,8 +1013,6 @@
     }
 
     // --- Batch push ---
-    function syncPushBtnLabel(){ pushBatchBtn.textContent = dryRun.checked ? 'Test configuration for all' : 'Push configuration for all'; }
-    dryRun.addEventListener('change', syncPushBtnLabel);
     syncPushBtnLabel();
 
     function renderPhaseStatus(statusMap){
@@ -1155,6 +1128,8 @@
       }
       if (pushBatchBtn.disabled) return;
 
+      const previewOnly = isPreviewOnly();
+
       const payloadRows = rows.map(r => ({
         site_id: r.site_id,
         device_id: r.device_id,
@@ -1168,7 +1143,6 @@
 
       const form = new FormData();
       form.append('rows', JSON.stringify(payloadRows));
-      form.append('dry_run', dryRun.checked ? 'true' : 'false');
       form.append('tz', tz.value.trim());
       const mo = (modelOverride.value || '').trim();
       if (mo) form.append('model_override', mo);
@@ -1179,7 +1153,7 @@
       form.append('push_site_deployment', sitePush?.checked ? 'true' : 'false');
 
       pushBatchBtn.disabled = true;
-      pushBatchBtn.textContent = dryRun.checked ? 'Testing…' : 'Applying…';
+      pushBatchBtn.textContent = previewOnly ? 'Staging…' : 'Applying…';
 
       try {
         const res = await fetch('/api/push_batch', { method: 'POST', body: form });
@@ -1193,7 +1167,7 @@
         const siteActive = siteAutomationCheckboxes.some(cb => cb && cb.checked);
         const lcmActive = lcmAutomationCheckboxes.some(cb => cb && cb.checked);
         if (siteActive){
-          const label = dryRun.checked ? 'stage/test run' : 'push';
+          const label = previewOnly ? 'stage/test run' : 'push';
           batchStatus.textContent = `${okCount}/${total} ${label}${total === 1 ? '' : 's'} succeeded.`;
         } else if (lcmActive){
           batchStatus.textContent = `${okCount}/${total} configs ready for Lifecycle automation.`;
@@ -1304,8 +1278,7 @@
     // --- Init ---
     window.addEventListener('load', async () => {
       await fetchSites();
-      dryRun.checked = true;
-      pushBatchBtn.textContent = 'Test configuration for all';
+      syncPushBtnLabel();
       updateAutomationLocks();
     });
 
