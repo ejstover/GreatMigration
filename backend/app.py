@@ -3,13 +3,15 @@ import json
 import tempfile
 import re
 import math
+import hashlib
 from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set
+from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set, Tuple
 from zoneinfo import ZoneInfo
 from time import perf_counter
+import copy
 
 import requests
 from fastapi import FastAPI, UploadFile, File, Form, Request, Body, HTTPException
@@ -404,6 +406,14 @@ def _site_display_name(data: Dict[str, Any], fallback: str = "") -> str:
         return fallback
     value = data.get("id")
     return str(value) if value is not None else ""
+
+
+def _mist_headers(token: str) -> Dict[str, str]:
+    return {
+        "Authorization": f"Token {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
 
 
 def _mist_get_json(
@@ -1740,6 +1750,13 @@ def _prepare_switch_port_profile_payload(
 
     if exclude_set:
         port_config = {k: v for k, v in port_config.items() if k not in exclude_set}
+        if isinstance(temp_source, dict) and isinstance(temp_source.get("interfaces"), list):
+            filtered_interfaces = [
+                intf
+                for intf in temp_source.get("interfaces", [])
+                if isinstance(intf, Mapping) and str(intf.get("juniper_if") or "").strip() not in exclude_set
+            ]
+            temp_source["interfaces"] = filtered_interfaces
 
     validation = validate_port_config_against_model(port_config, model)
 
@@ -1903,8 +1920,6 @@ async def api_push(
     """
     Single push. Response includes `payload` (the exact body to Mist) and `validation`.
     """
-    _ensure_push_allowed(request, dry_run=dry_run)
-
     try:
         payload_in = json.loads(input_json)
     except Exception as e:
@@ -1931,11 +1946,15 @@ async def api_push(
 async def api_push_batch(
     request: Request,
     rows: str = Form(...),  # JSON array of rows
-    dry_run: bool = Form(True),
     base_url: str = Form(DEFAULT_BASE_URL),
     tz: str = Form(DEFAULT_TZ),
     model_override: Optional[str] = Form(None),  # optional global override (row can still override)
     normalize_modules: bool = Form(True),
+    apply_temp_config: bool = Form(False),
+    finalize_assignments: bool = Form(False),
+    remove_temp_config: bool = Form(False),
+    stage_site_deployment: bool = Form(False),
+    push_site_deployment: bool = Form(False),
 ) -> JSONResponse:
     """
     Batch push. Each row can specify: site_id, device_id, input_json (object),
@@ -1945,10 +1964,54 @@ async def api_push_batch(
     NOTE: Duplicate devices ARE allowed as long as (device_id, member_offset, port_offset) triples are unique.
     If the same triple appears more than once, those rows are rejected with a clear error.
     """
-    _ensure_push_allowed(request, dry_run=dry_run)
-
     token = _load_mist_token()
     base_url = base_url.rstrip("/")
+
+    stage_site_deployment = bool(stage_site_deployment)
+    push_site_deployment = bool(push_site_deployment)
+    apply_temp_config = bool(apply_temp_config)
+    finalize_assignments = bool(finalize_assignments)
+    remove_temp_config = bool(remove_temp_config)
+    site_selection_count = int(stage_site_deployment) + int(push_site_deployment)
+    lcm_selection_count = int(apply_temp_config) + int(finalize_assignments) + int(remove_temp_config)
+    site_actions_selected = stage_site_deployment or push_site_deployment
+    lcm_actions_selected = bool(apply_temp_config or finalize_assignments or remove_temp_config)
+
+    preview_only = not (
+        push_site_deployment or apply_temp_config or finalize_assignments or remove_temp_config
+    )
+
+    _ensure_push_allowed(request, dry_run=preview_only)
+
+    if site_actions_selected and lcm_actions_selected:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Select either Site Deployment Automation or Lifecycle Automation actions, not both."
+            },
+            status_code=400,
+        )
+
+    if site_selection_count > 1:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Select only one Site Deployment Automation phase per run.",
+            },
+            status_code=400,
+        )
+
+    if lcm_selection_count > 1:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Select only one Lifecycle Automation phase per run.",
+            },
+            status_code=400,
+        )
+
+    should_push_live = push_site_deployment
+    effective_dry_run = not should_push_live
 
     try:
         row_list = json.loads(rows)
@@ -2004,7 +2067,7 @@ async def api_push_batch(
                 payload_in=payload_in, model_override=row_model_override,
                 excludes=excludes, exclude_uplinks=exclude_uplinks,
                 member_offset=member_offset, port_offset=port_offset, normalize_modules=normalize_modules,
-                dry_run=dry_run,
+                dry_run=effective_dry_run,
             )
             row_result["row_index"] = i
             row_result["site_id"] = site_id
@@ -2023,5 +2086,145 @@ async def api_push_batch(
         except Exception as e:
             results.append({"ok": False, "row_index": i, "error": f"Server error: {e}"})
 
+    phase_status: Dict[str, Dict[str, Any]] = {}
+
+    if site_actions_selected:
+        total_rows = len(results)
+        successes = sum(1 for r in results if r.get("ok"))
+        failures: List[Dict[str, Any]] = []
+        for r in results:
+            if r.get("ok"):
+                continue
+            message = ""
+            error_text = r.get("error")
+            if isinstance(error_text, str) and error_text.strip():
+                message = error_text.strip()
+            else:
+                validation_data = r.get("validation")
+                if isinstance(validation_data, Mapping):
+                    errors_list = validation_data.get("errors")
+                    if isinstance(errors_list, Sequence) and not isinstance(errors_list, (str, bytes, bytearray)):
+                        joined = "; ".join(
+                            str(item).strip() for item in errors_list if str(item).strip()
+                        )
+                        if joined:
+                            message = joined
+            status_val = r.get("status") if isinstance(r.get("status"), int) else None
+            if not message:
+                if status_val is not None:
+                    message = f"Mist API returned HTTP {status_val}"
+                else:
+                    message = "Conversion failed."
+            failures.append(
+                {
+                    "site_id": r.get("site_id"),
+                    "device_id": r.get("device_id"),
+                    "status": status_val,
+                    "message": message,
+                }
+            )
+
+        if stage_site_deployment:
+            if total_rows == 0:
+                phase_status["site_stage"] = {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "No rows submitted for Site Deployment staging.",
+                    "successes": 0,
+                    "failures": [],
+                    "total": 0,
+                }
+            else:
+                phase_status["site_stage"] = {
+                    "ok": successes == total_rows,
+                    "skipped": False,
+                    "message": (
+                        "Prepared converted Mist payloads for {count} device(s)."
+                        if successes == total_rows
+                        else "Prepared converted Mist payloads for {successes}/{total} device(s). Check batch results for details."
+                    ).format(count=successes, successes=successes, total=total_rows),
+                    "successes": successes,
+                    "failures": failures,
+                    "total": total_rows,
+                }
+
+        if push_site_deployment:
+            if not should_push_live:
+                phase_status["site_push"] = {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "Skipped pushing converted config during a preview-only run.",
+                    "successes": 0,
+                    "failures": [],
+                    "total": len(results),
+                }
+            elif len(results) == 0:
+                phase_status["site_push"] = {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "No rows available to push converted config.",
+                    "successes": 0,
+                    "failures": [],
+                    "total": 0,
+                }
+            else:
+                phase_status["site_push"] = {
+                    "ok": successes == len(results),
+                    "skipped": False,
+                    "message": (
+                        "Pushed converted config to {count} device(s)."
+                        if successes == len(results)
+                        else "Pushed converted config to {successes}/{total} device(s). Check batch results for details."
+                    ).format(count=successes, successes=successes, total=len(results)),
+                    "successes": successes,
+                    "failures": failures,
+                    "total": len(results),
+                }
+
+    if not site_actions_selected:
+        for row in results:
+            if isinstance(row, dict):
+                row.pop("payload", None)
+                row.pop("response", None)
+                row.pop("status", None)
+
+    if apply_temp_config:
+        phase_status["apply_temporary_config"] = _apply_temporary_config_for_rows(
+            base_url=base_url,
+            token=token,
+            results=results,
+            dry_run=preview_only,
+        )
+
+    if finalize_assignments:
+        phase_status["finalize_assignments"] = _finalize_assignments_for_rows(
+            base_url=base_url,
+            token=token,
+            results=results,
+            dry_run=preview_only,
+        )
+
+    if remove_temp_config:
+        phase_status["remove_temporary_config"] = _remove_temporary_config_for_rows(
+            base_url=base_url,
+            token=token,
+            results=results,
+            dry_run=preview_only,
+        )
+
+    for row in results:
+        if isinstance(row, dict):
+            row.pop("_temp_config_source", None)
+
     top_ok = all(r.get("ok") for r in results) if results else False
-    return JSONResponse({"ok": top_ok, "dry_run": bool(dry_run), "results": results})
+    phase_ok = all(status.get("ok") or status.get("skipped") for status in phase_status.values())
+    overall_ok = top_ok and phase_ok
+
+    return JSONResponse(
+        {
+            "ok": overall_ok,
+            "dry_run": preview_only,
+            "results": results,
+            "phase_status": phase_status,
+        }
+    )
