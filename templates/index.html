@@ -285,6 +285,7 @@
           if (!cb) return;
           cb.checked = false;
           cb.disabled = true;
+          cb.dataset.forceDisabled = 'readonly';
           const label = cb.closest('label');
           label?.classList.add('opacity-50', 'pointer-events-none');
           label?.setAttribute('title', 'Read-only accounts cannot apply live changes.');
@@ -365,35 +366,41 @@
     }
 
     function updateAutomationLocks(){
-      const siteActive = siteAutomationCheckboxes.some(cb => cb && cb.checked);
-      const lcmActive = lcmAutomationCheckboxes.some(cb => cb && cb.checked);
+      const siteChecked = siteAutomationCheckboxes.filter(cb => cb && cb.checked);
+      const lcmChecked = lcmAutomationCheckboxes.filter(cb => cb && cb.checked);
 
-      if (siteActive){
+      if (siteChecked.length){
         lcmAutomationCheckboxes.forEach(cb => { if (cb) cb.checked = false; });
       }
-      if (lcmActive){
+      if (lcmChecked.length){
         siteAutomationCheckboxes.forEach(cb => { if (cb) cb.checked = false; });
       }
 
-      const finalSiteActive = siteAutomationCheckboxes.some(cb => cb && cb.checked);
-      const finalLcmActive = lcmAutomationCheckboxes.some(cb => cb && cb.checked);
+      const finalSiteChecked = siteAutomationCheckboxes.filter(cb => cb && cb.checked);
+      const finalLcmChecked = lcmAutomationCheckboxes.filter(cb => cb && cb.checked);
+
+      function applyAvailability(cb, disable){
+        if (!cb) return;
+        const forced = cb.dataset.forceDisabled === 'readonly';
+        const label = cb.closest('label');
+        const finalDisable = forced || disable;
+        cb.disabled = finalDisable;
+        if (label && !forced){
+          label.classList.toggle('opacity-50', finalDisable);
+          label.classList.toggle('pointer-events-none', finalDisable);
+        }
+      }
 
       siteAutomationCheckboxes.forEach(cb => {
         if (!cb) return;
-        const disable = finalLcmActive && !cb.checked;
-        cb.disabled = disable;
-        const label = cb.closest('label');
-        label?.classList.toggle('opacity-50', disable);
-        label?.classList.toggle('pointer-events-none', disable);
+        const disable = (!!finalLcmChecked.length && !cb.checked) || (!!finalSiteChecked.length && !cb.checked);
+        applyAvailability(cb, disable);
       });
 
       lcmAutomationCheckboxes.forEach(cb => {
         if (!cb) return;
-        const disable = finalSiteActive && !cb.checked;
-        cb.disabled = disable;
-        const label = cb.closest('label');
-        label?.classList.toggle('opacity-50', disable);
-        label?.classList.toggle('pointer-events-none', disable);
+        const disable = (!!finalSiteChecked.length && !cb.checked) || (!!finalLcmChecked.length && !cb.checked);
+        applyAvailability(cb, disable);
       });
 
       syncPushBtnLabel();

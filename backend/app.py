@@ -2771,6 +2771,8 @@ async def api_push_batch(
     apply_temp_config = bool(apply_temp_config)
     finalize_assignments = bool(finalize_assignments)
     remove_temp_config = bool(remove_temp_config)
+    site_selection_count = int(stage_site_deployment) + int(push_site_deployment)
+    lcm_selection_count = int(apply_temp_config) + int(finalize_assignments) + int(remove_temp_config)
     site_actions_selected = stage_site_deployment or push_site_deployment
     lcm_actions_selected = bool(apply_temp_config or finalize_assignments or remove_temp_config)
 
@@ -2785,6 +2787,24 @@ async def api_push_batch(
             {
                 "ok": False,
                 "error": "Select either Site Deployment Automation or Lifecycle Automation actions, not both."
+            },
+            status_code=400,
+        )
+
+    if site_selection_count > 1:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Select only one Site Deployment Automation phase per run.",
+            },
+            status_code=400,
+        )
+
+    if lcm_selection_count > 1:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Select only one Lifecycle Automation phase per run.",
             },
             status_code=400,
         )
