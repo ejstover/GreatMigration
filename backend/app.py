@@ -1721,6 +1721,14 @@ def _prepare_switch_port_profile_payload(
 
     model = model_override or get_device_model(base_url, site_id, device_id, token)
 
+    temp_source: Optional[Dict[str, Any]]
+    if isinstance(payload_in, Mapping):
+        temp_source = copy.deepcopy(payload_in)
+    elif isinstance(payload_in, list):
+        temp_source = {"interfaces": copy.deepcopy(payload_in)}
+    else:
+        temp_source = None
+
     port_config = ensure_port_config(payload_in, model)
     port_config = remap_members(
         port_config,
@@ -1779,6 +1787,7 @@ def _prepare_switch_port_profile_payload(
         "member_offset": int(member_offset or 0),
         "port_offset": int(port_offset or 0),
         "normalize_modules": bool(normalize_modules),
+        "_temp_config_source": temp_source,
     }
 
 
@@ -1820,7 +1829,7 @@ def _configure_switch_port_profile_override(
     url = prepared["url"]
 
     if dry_run:
-        return {
+        result = {
             "ok": True,
             "dry_run": True,
             "device_model": prepared["device_model"],
@@ -1831,15 +1840,21 @@ def _configure_switch_port_profile_override(
             "validation": validation,
             "payload": put_body,
         }
+        if prepared.get("_temp_config_source") is not None:
+            result["_temp_config_source"] = prepared["_temp_config_source"]
+        return result
 
     if not validation.get("ok"):
-        return {
+        result = {
             "ok": False,
             "dry_run": False,
             "error": "Model capacity mismatch",
             "validation": validation,
             "payload": put_body,
         }
+        if prepared.get("_temp_config_source") is not None:
+            result["_temp_config_source"] = prepared["_temp_config_source"]
+        return result
 
     headers = {
         "Authorization": f"Token {token}",
@@ -1853,12 +1868,298 @@ def _configure_switch_port_profile_override(
     except Exception:
         content = {"text": resp.text}
 
-    return {
+    result = {
         "ok": 200 <= resp.status_code < 300,
         "dry_run": False,
         "status": resp.status_code,
         "response": content,
         "payload": put_body,
+    }
+    if prepared.get("_temp_config_source") is not None:
+        result["_temp_config_source"] = prepared["_temp_config_source"]
+    return result
+
+
+def _collect_lcm_rows(results: Sequence[Any]) -> List[Mapping[str, Any]]:
+    eligible: List[Mapping[str, Any]] = []
+    for row in results:
+        if not isinstance(row, Mapping):
+            continue
+        if not row.get("ok"):
+            continue
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        if not site_id or not device_id:
+            continue
+        eligible.append(row)
+    return eligible
+
+
+def _extract_lcm_payload(row: Mapping[str, Any]) -> Dict[str, Any]:
+    body: Dict[str, Any] = {}
+    payload = row.get("payload")
+    if isinstance(payload, Mapping):
+        port_cfg = payload.get("port_config")
+        if isinstance(port_cfg, Mapping):
+            body["port_config"] = port_cfg
+    temp_source = row.get("_temp_config_source")
+    if isinstance(temp_source, Mapping):
+        body["temporary_config"] = temp_source
+    return body
+
+
+def _mist_response_error(resp: requests.Response) -> str:
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+
+    if isinstance(data, Mapping):
+        for key in ("detail", "error", "message", "msg"):
+            val = data.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        errors_field = data.get("errors")
+        if isinstance(errors_field, Sequence):
+            joined = "; ".join(str(item).strip() for item in errors_field if str(item).strip())
+            if joined:
+                return joined
+
+    text = (resp.text or "").strip()
+    if text:
+        return text
+    return f"Mist API returned HTTP {resp.status_code}"
+
+
+def _lcm_failure_entry(row: Mapping[str, Any], message: str, status: Optional[int] = None) -> Dict[str, Any]:
+    entry: Dict[str, Any] = {
+        "site_id": row.get("site_id"),
+        "device_id": row.get("device_id"),
+        "message": message,
+    }
+    if status is not None:
+        entry["status"] = status
+    if row.get("row_index") is not None:
+        entry["row_index"] = row.get("row_index")
+    return entry
+
+
+def _apply_temporary_config_for_rows(
+    *,
+    base_url: str,
+    token: str,
+    results: Sequence[Any],
+    dry_run: bool,
+) -> Dict[str, Any]:
+    eligible = _collect_lcm_rows(results)
+    total = len(eligible)
+    if total == 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "No rows available to stage temporary config.",
+            "successes": 0,
+            "failures": [],
+            "total": 0,
+        }
+
+    if dry_run:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "Skipped staging temporary config during a preview-only run.",
+            "successes": 0,
+            "failures": [],
+            "total": total,
+        }
+
+    headers = {
+        "Authorization": f"Token {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    successes = 0
+    failures: List[Dict[str, Any]] = []
+    for row in eligible:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        url = f"{base_url}/sites/{site_id}/devices/{device_id}/lcm/apply"
+        body = _extract_lcm_payload(row)
+        if not body:
+            failures.append(_lcm_failure_entry(row, "No temporary configuration payload available."))
+            continue
+
+        try:
+            resp = requests.post(url, headers=headers, json=body, timeout=60)
+        except requests.RequestException as exc:
+            failures.append(_lcm_failure_entry(row, f"Request failed: {exc}"))
+            continue
+
+        if 200 <= resp.status_code < 300:
+            successes += 1
+        else:
+            failures.append(
+                _lcm_failure_entry(row, _mist_response_error(resp), status=resp.status_code)
+            )
+
+    message = (
+        "Applied temporary config to {count} device(s).".format(count=successes)
+        if successes == total
+        else "Applied temporary config to {successes}/{total} device(s). Check batch results for details.".format(
+            successes=successes, total=total
+        )
+    )
+
+    return {
+        "ok": successes == total,
+        "skipped": False,
+        "message": message,
+        "successes": successes,
+        "failures": failures,
+        "total": total,
+    }
+
+
+def _finalize_assignments_for_rows(
+    *,
+    base_url: str,
+    token: str,
+    results: Sequence[Any],
+    dry_run: bool,
+) -> Dict[str, Any]:
+    eligible = _collect_lcm_rows(results)
+    total = len(eligible)
+    if total == 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "No rows available to finalize assignments.",
+            "successes": 0,
+            "failures": [],
+            "total": 0,
+        }
+
+    if dry_run:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "Skipped finalizing assignments during a preview-only run.",
+            "successes": 0,
+            "failures": [],
+            "total": total,
+        }
+
+    headers = {
+        "Authorization": f"Token {token}",
+        "Accept": "application/json",
+    }
+
+    successes = 0
+    failures: List[Dict[str, Any]] = []
+    for row in eligible:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        url = f"{base_url}/sites/{site_id}/devices/{device_id}/lcm/finalize"
+        try:
+            resp = requests.post(url, headers=headers, timeout=60)
+        except requests.RequestException as exc:
+            failures.append(_lcm_failure_entry(row, f"Request failed: {exc}"))
+            continue
+
+        if 200 <= resp.status_code < 300:
+            successes += 1
+        else:
+            failures.append(
+                _lcm_failure_entry(row, _mist_response_error(resp), status=resp.status_code)
+            )
+
+    message = (
+        "Finalized temporary assignments on {count} device(s).".format(count=successes)
+        if successes == total
+        else "Finalized temporary assignments on {successes}/{total} device(s). Check batch results for details.".format(
+            successes=successes, total=total
+        )
+    )
+
+    return {
+        "ok": successes == total,
+        "skipped": False,
+        "message": message,
+        "successes": successes,
+        "failures": failures,
+        "total": total,
+    }
+
+
+def _remove_temporary_config_for_rows(
+    *,
+    base_url: str,
+    token: str,
+    results: Sequence[Any],
+    dry_run: bool,
+) -> Dict[str, Any]:
+    eligible = _collect_lcm_rows(results)
+    total = len(eligible)
+    if total == 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "No rows available to remove temporary config.",
+            "successes": 0,
+            "failures": [],
+            "total": 0,
+        }
+
+    if dry_run:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "Skipped removing temporary config during a preview-only run.",
+            "successes": 0,
+            "failures": [],
+            "total": total,
+        }
+
+    headers = {
+        "Authorization": f"Token {token}",
+        "Accept": "application/json",
+    }
+
+    successes = 0
+    failures: List[Dict[str, Any]] = []
+    for row in eligible:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        url = f"{base_url}/sites/{site_id}/devices/{device_id}/lcm/remove"
+        try:
+            resp = requests.post(url, headers=headers, timeout=60)
+        except requests.RequestException as exc:
+            failures.append(_lcm_failure_entry(row, f"Request failed: {exc}"))
+            continue
+
+        if 200 <= resp.status_code < 300:
+            successes += 1
+        else:
+            failures.append(
+                _lcm_failure_entry(row, _mist_response_error(resp), status=resp.status_code)
+            )
+
+    message = (
+        "Removed temporary config from {count} device(s).".format(count=successes)
+        if successes == total
+        else "Removed temporary config from {successes}/{total} device(s). Check batch results for details.".format(
+            successes=successes, total=total
+        )
+    )
+
+    return {
+        "ok": successes == total,
+        "skipped": False,
+        "message": message,
+        "successes": successes,
+        "failures": failures,
+        "total": total,
     }
 
 
