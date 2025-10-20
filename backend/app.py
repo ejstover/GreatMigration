@@ -2077,8 +2077,22 @@ def _generate_temp_network_name(vlan_id: int, raw_name: Optional[str]) -> str:
     lowered = base.lower()
     if not lowered.startswith("old_"):
         base = f"old_{base}"
-    # Mist network names are case-sensitive but favour lower-case for readability
-    return base.lower()
+
+    name = base.lower()
+
+    if len(name) > 32:
+        digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]
+        # Leave space for underscore + digest (7 characters)
+        prefix = name[: max(32 - 7, 4)].rstrip("-_")
+        name = f"{prefix}_{digest}" if prefix else f"old_{digest}"
+
+    # Mist network names must start with a letter; ensure the prefix guarantees it
+    if not name or not name[0].isalpha():
+        name = f"old_{name}"
+        if len(name) > 32:
+            name = name[:32]
+
+    return name
 
 
 def _generate_temp_usage_name(key: tuple, *, network_labels: Mapping[str, Optional[str]]) -> str:
@@ -2123,8 +2137,10 @@ def _add_network(
     if vid is None:
         return None
 
-    name = str(vlan_entry.get("name") or "").strip() or f"LCM Temp VLAN {vid}"
-    payload = {"name": name, "vlan_id": vid}
+    generated_name = _generate_temp_network_name(
+        vid, str(vlan_entry.get("name") or "").strip() or None
+    )
+    payload = {"name": generated_name, "vlan_id": vid}
 
     url = f"{base_url}/sites/{site_id}/networks"
     headers = _mist_headers(token)
