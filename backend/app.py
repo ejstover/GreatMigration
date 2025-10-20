@@ -1692,7 +1692,7 @@ async def api_convert(
     return JSONResponse({"ok": True, "items": results})
 
 
-def _build_payload_for_row(
+def _prepare_switch_port_profile_payload(
     *,
     base_url: str,
     tz: str,
@@ -1702,28 +1702,22 @@ def _build_payload_for_row(
     payload_in: Dict[str, Any],
     model_override: Optional[str],
     excludes: Optional[str],
-    exclude_uplinks: bool,
+    exclude_uplinks: bool = False,
     member_offset: int,
     port_offset: int,
     normalize_modules: bool,
-    dry_run: bool,
 ) -> Dict[str, Any]:
-    """
-    Shared logic used by both /api/push and /api/push_batch for a single row.
-    Returns a dict with keys: ok, payload, validation, device_model,
-    (and for live push: status/response)
-    """
-    # Resolve model
+    """Build the Mist payload used to configure switch port profile overrides."""
+
     model = model_override or get_device_model(base_url, site_id, device_id, token)
 
-    # Build port_config
     port_config = ensure_port_config(payload_in, model)
-
-    # Apply member/port remap BEFORE excludes
-    port_config = remap_members(port_config, member_offset=int(member_offset or 0), normalize=bool(normalize_modules))
+    port_config = remap_members(
+        port_config,
+        member_offset=int(member_offset or 0),
+        normalize=bool(normalize_modules),
+    )
     port_config = remap_ports(port_config, port_offset=int(port_offset or 0), model=model)
-
-    # Apply excludes AFTER remap
 
     def _expand_if_range(val: str) -> List[str]:
         m = re.search(r"\[(\d+)-(\d+)\]", val)
@@ -1747,10 +1741,8 @@ def _build_payload_for_row(
     if exclude_set:
         port_config = {k: v for k, v in port_config.items() if k not in exclude_set}
 
-    # Capacity validation (block live push; warn on dry-run)
     validation = validate_port_config_against_model(port_config, model)
 
-    # Timestamp descriptions
     ts = timestamp_str(tz)
     final_port_config: Dict[str, Dict[str, Any]] = {}
     for ifname, cfg in port_config.items():
@@ -1761,30 +1753,82 @@ def _build_payload_for_row(
 
     put_body = {"port_config": final_port_config}
     url = f"{base_url}/sites/{site_id}/devices/{device_id}"
-    headers = {"Authorization": f"Token {token}", "Content-Type": "application/json", "Accept": "application/json"}
+
+    return {
+        "device_model": model,
+        "validation": validation,
+        "payload": put_body,
+        "url": url,
+        "member_offset": int(member_offset or 0),
+        "port_offset": int(port_offset or 0),
+        "normalize_modules": bool(normalize_modules),
+    }
+
+
+def _configure_switch_port_profile_override(
+    *,
+    base_url: str,
+    tz: str,
+    token: str,
+    site_id: str,
+    device_id: str,
+    payload_in: Dict[str, Any],
+    model_override: Optional[str],
+    excludes: Optional[str],
+    exclude_uplinks: bool = False,
+    member_offset: int,
+    port_offset: int,
+    normalize_modules: bool,
+    dry_run: bool,
+) -> Dict[str, Any]:
+    """Configure a switch port profile override and return Mist response details."""
+
+    prepared = _prepare_switch_port_profile_payload(
+        base_url=base_url,
+        tz=tz,
+        token=token,
+        site_id=site_id,
+        device_id=device_id,
+        payload_in=payload_in,
+        model_override=model_override,
+        excludes=excludes,
+        exclude_uplinks=exclude_uplinks,
+        member_offset=member_offset,
+        port_offset=port_offset,
+        normalize_modules=normalize_modules,
+    )
+
+    put_body = prepared["payload"]
+    validation = prepared["validation"]
+    url = prepared["url"]
 
     if dry_run:
         return {
             "ok": True,
             "dry_run": True,
-            "device_model": model,
+            "device_model": prepared["device_model"],
             "url": url,
-            "member_offset": int(member_offset or 0),
-            "port_offset": int(port_offset or 0),
-            "normalize_modules": bool(normalize_modules),
+            "member_offset": prepared["member_offset"],
+            "port_offset": prepared["port_offset"],
+            "normalize_modules": prepared["normalize_modules"],
             "validation": validation,
-            "payload": put_body
+            "payload": put_body,
         }
 
-    # live push
     if not validation.get("ok"):
         return {
             "ok": False,
             "dry_run": False,
             "error": "Model capacity mismatch",
             "validation": validation,
-            "payload": put_body
+            "payload": put_body,
         }
+
+    headers = {
+        "Authorization": f"Token {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
 
     resp = requests.put(url, headers=headers, json=put_body, timeout=60)
     try:
@@ -1797,8 +1841,47 @@ def _build_payload_for_row(
         "dry_run": False,
         "status": resp.status_code,
         "response": content,
-        "payload": put_body
+        "payload": put_body,
     }
+
+
+def _build_payload_for_row(
+    *,
+    base_url: str,
+    tz: str,
+    token: str,
+    site_id: str,
+    device_id: str,
+    payload_in: Dict[str, Any],
+    model_override: Optional[str],
+    excludes: Optional[str],
+    exclude_uplinks: bool = False,
+    member_offset: int,
+    port_offset: int,
+    normalize_modules: bool,
+    dry_run: bool,
+) -> Dict[str, Any]:
+    """
+    Shared logic used by both /api/push and /api/push_batch for a single row.
+    Returns a dict with keys: ok, payload, validation, device_model,
+    (and for live push: status/response)
+    """
+
+    return _configure_switch_port_profile_override(
+        base_url=base_url,
+        tz=tz,
+        token=token,
+        site_id=site_id,
+        device_id=device_id,
+        payload_in=payload_in,
+        model_override=model_override,
+        excludes=excludes,
+        exclude_uplinks=exclude_uplinks,
+        member_offset=member_offset,
+        port_offset=port_offset,
+        normalize_modules=normalize_modules,
+        dry_run=dry_run,
+    )
 
 
 @app.post("/api/push")
