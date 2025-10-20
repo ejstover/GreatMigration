@@ -145,6 +145,57 @@
             </label>
           </div>
         </div>
+
+        <div class="mt-6 border-t border-slate-200 dark:border-slate-700 pt-4">
+          <div class="flex items-start gap-3 mb-4">
+            <span class="mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-100 text-xs font-bold tracking-wide text-sky-700 dark:bg-sky-900/40 dark:text-sky-200">LCM</span>
+            <div>
+              <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Lifecycle automation</p>
+              <h3 class="text-base font-semibold text-slate-800 dark:text-slate-100">Mist LCM actions for Cisco → Juniper swaps</h3>
+              <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Pick the automation phases that stage, cut over, and clean up the migration so operators know exactly which Life Cycle Management (LCM) tasks will run.</p>
+            </div>
+          </div>
+          <div class="grid gap-4 md:grid-cols-3">
+            <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+              <span class="flex items-start gap-3">
+                <input id="apply_temp_config" type="checkbox" class="mt-1 h-4 w-4" />
+                <span>
+                  <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 1 · Stage</span>
+                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Stage the temporary Cisco layout</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Create VLANs, port profiles, and switchport assignments that mirror the legacy Cisco network on the Juniper hardware.</span>
+                </span>
+              </span>
+              <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
+              <span class="tip">Stages the generated payload as a temporary config on each switch after a successful push. This is the LCM staging step for the Cisco → Juniper migration.</span>
+            </label>
+
+            <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+              <span class="flex items-start gap-3">
+                <input id="finalize_assignments" type="checkbox" class="mt-1 h-4 w-4" />
+                <span>
+                  <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 2 · Finalize</span>
+                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Commit LCM assignments</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Move the staged temporary assignments into production once you are ready to complete the cutover.</span>
+                </span>
+              </span>
+              <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
+              <span class="tip">Moves the temporary port assignments into production after staging completes. Use this when the LCM workflow is ready to finalize.</span>
+            </label>
+
+            <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+              <span class="flex items-start gap-3">
+                <input id="remove_temp_config" type="checkbox" class="mt-1 h-4 w-4" />
+                <span>
+                  <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 3 · Clean up</span>
+                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Remove temporary config</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Strip out any temporary LCM configuration that was used during staging after the network is fully converted.</span>
+                </span>
+              </span>
+              <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
+              <span class="tip">Cleans up any temporary configuration left on the device once finalization completes so the LCM process can wrap up cleanly.</span>
+            </label>
+          </div>
+        </div>
       </div>
 
       <!-- Rows -->
@@ -158,6 +209,7 @@
 
       <!-- Results -->
       <div id="batch_output" class="mt-4 space-y-4"></div>
+      <div id="batch_phase_status" class="mt-4 space-y-3 hidden"></div>
     </section>
   </div>
   </div>
@@ -233,11 +285,15 @@
     const pushBatchBtn = document.getElementById('push_batch_btn');
     const batchStatus = document.getElementById('batch_status');
     const batchOutput = document.getElementById('batch_output');
+    const batchPhaseStatus = document.getElementById('batch_phase_status');
 
     const strictOverflow = document.getElementById('strict_overflow');
     const dryRun = document.getElementById('dry_run');
     const tz = document.getElementById('tz');
     const modelOverride = document.getElementById('model_override');
+    const applyTempConfig = document.getElementById('apply_temp_config');
+    const finalizeAssignments = document.getElementById('finalize_assignments');
+    const removeTempConfig = document.getElementById('remove_temp_config');
 
     // --- Data ---
     let convertedItems = []; // [{ source_file, output_file, json }]
@@ -603,15 +659,19 @@
       convertedItems.forEach((it, idx) => {
         const card = document.createElement('div');
         card.className = 'rounded-xl border bg-white dark:bg-slate-800 dark:border-slate-700 p-4';
+        const showConversionPreview = !(applyTempConfig?.checked);
+        const previewSection = showConversionPreview
+          ? `<details class="mt-2">
+              <summary class="cursor-pointer text-sm text-slate-600 dark:text-slate-300">Preview JSON</summary>
+              <pre class="text-xs mt-2 p-2 bg-slate-50 dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80">${escapeHtml(JSON.stringify(it.json, null, 2))}</pre>
+            </details>`
+          : `<p class="mt-2 text-xs text-slate-600 dark:text-slate-300">Run a test with the LCM staging checkbox enabled to review the Mist request that stages VLANs, port profiles, and switchport assignments for the existing network.</p>`;
         card.innerHTML = `
           <div class="flex items-center justify-between">
             <div class="text-sm font-medium">${escapeHtml(it.source_file)}</div>
             <div class="text-xs text-slate-500 dark:text-slate-300">Row ${idx+1}</div>
           </div>
-          <details class="mt-2">
-            <summary class="cursor-pointer text-sm text-slate-600 dark:text-slate-300">Preview JSON</summary>
-            <pre class="text-xs mt-2 p-2 bg-slate-50 dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80">${escapeHtml(JSON.stringify(it.json, null, 2))}</pre>
-          </details>
+          ${previewSection}
         `;
         resultsList.appendChild(card);
       });
@@ -860,9 +920,108 @@
     dryRun.addEventListener('change', syncPushBtnLabel);
     syncPushBtnLabel();
 
+    function renderPhaseStatus(statusMap){
+      batchPhaseStatus.innerHTML = '';
+      if (!statusMap || typeof statusMap !== 'object' || !Object.keys(statusMap).length){
+        hide(batchPhaseStatus);
+        return;
+      }
+
+      const labelMap = {
+        apply_temporary_config: 'LCM Step 1 · Stage temporary config',
+        finalize_assignments: 'LCM Step 2 · Finalize assignments',
+        remove_temporary_config: 'LCM Step 3 · Remove temporary config'
+      };
+
+      Object.entries(statusMap).forEach(([key, info]) => {
+        const label = labelMap[key] || key;
+        const ok = Boolean(info?.ok);
+        const skipped = Boolean(info?.skipped);
+        const failures = Array.isArray(info?.failures) ? info.failures : [];
+        const message = info?.message ? escapeHtml(String(info.message)) : '';
+        const total = typeof info?.total === 'number' ? info.total : undefined;
+        const successes = typeof info?.successes === 'number' ? info.successes : undefined;
+        const payloads = Array.isArray(info?.payloads) ? info.payloads : [];
+
+        const card = document.createElement('div');
+        const baseClass = skipped ? 'status-info dark:bg-slate-800/60' : ok ? 'status-success dark:bg-emerald-900/40' : 'status-error dark:bg-rose-950';
+        card.className = `rounded-lg border p-4 text-sm ${baseClass}`;
+
+        const meta = [];
+        if (typeof successes === 'number' && typeof total === 'number'){
+          meta.push(`${successes}/${total} device${total === 1 ? '' : 's'} processed`);
+        }
+
+        const header = document.createElement('div');
+        header.className = 'font-semibold mb-1 flex items-center justify-between gap-2';
+        header.innerHTML = `<span>${escapeHtml(label)}</span>` + (meta.length ? `<span class="text-xs font-normal text-slate-600 dark:text-slate-300">${escapeHtml(meta.join(' • '))}</span>` : '');
+        card.appendChild(header);
+
+        if (message){
+          const msgEl = document.createElement('div');
+          msgEl.className = 'mb-2';
+          msgEl.innerHTML = message;
+          card.appendChild(msgEl);
+        }
+
+        if (failures.length){
+          const list = document.createElement('ul');
+          list.className = 'space-y-1 text-xs';
+          failures.forEach(f => {
+            const site = f?.site_id ? `Site ${escapeHtml(String(f.site_id))}` : '';
+            const device = f?.device_id ? `Device ${escapeHtml(String(f.device_id))}` : '';
+            const statusText = typeof f?.status === 'number' ? ` (HTTP ${f.status})` : '';
+            const context = [site, device].filter(Boolean).join(' • ');
+            const detail = f?.message ? escapeHtml(String(f.message)) : 'Unknown error';
+            const line = document.createElement('li');
+            line.innerHTML = `${context ? `${context}: ` : ''}${detail}${statusText}`;
+            list.appendChild(line);
+          });
+          card.appendChild(list);
+        }
+
+        if (payloads.length){
+          const details = document.createElement('details');
+          details.className = 'mt-3';
+          const summaryLabel = key === 'apply_temporary_config'
+            ? 'Temporary config payloads sent to Mist'
+            : 'Request payloads';
+          details.innerHTML = `<summary class="cursor-pointer text-xs text-slate-600 dark:text-slate-300">${escapeHtml(summaryLabel)}</summary>`;
+
+          const payloadWrap = document.createElement('div');
+          payloadWrap.className = 'mt-2 space-y-3';
+
+          payloads.forEach(item => {
+            const site = item?.site_id ? `Site ${escapeHtml(String(item.site_id))}` : '';
+            const device = item?.device_id ? `Device ${escapeHtml(String(item.device_id))}` : '';
+            const headerParts = [site, device].filter(Boolean).join(' • ');
+            const payloadPre = document.createElement('pre');
+            payloadPre.className = 'text-xs p-2 bg-white dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80';
+            payloadPre.textContent = JSON.stringify(item?.payload ?? {}, null, 2);
+
+            const block = document.createElement('div');
+            block.className = 'rounded-lg border dark:border-slate-700 bg-white/70 dark:bg-slate-900/50 p-2';
+            block.innerHTML = headerParts
+              ? `<div class="text-xs font-medium mb-1 text-slate-600 dark:text-slate-300">${headerParts}</div>`
+              : '';
+            block.appendChild(payloadPre);
+            payloadWrap.appendChild(block);
+          });
+
+          details.appendChild(payloadWrap);
+          card.appendChild(details);
+        }
+
+        batchPhaseStatus.appendChild(card);
+      });
+
+      show(batchPhaseStatus);
+    }
+
     pushBatchBtn.addEventListener('click', async () => {
       batchOutput.innerHTML = '';
       batchStatus.textContent = '';
+      renderPhaseStatus({});
 
       for (const r of rows){
         if (!r.site_id || !r.device_id){
@@ -889,6 +1048,9 @@
       form.append('tz', tz.value.trim());
       const mo = (modelOverride.value || '').trim();
       if (mo) form.append('model_override', mo);
+      form.append('apply_temp_config', applyTempConfig?.checked ? 'true' : 'false');
+      form.append('finalize_assignments', finalizeAssignments?.checked ? 'true' : 'false');
+      form.append('remove_temp_config', removeTempConfig?.checked ? 'true' : 'false');
 
       pushBatchBtn.disabled = true;
       pushBatchBtn.textContent = dryRun.checked ? 'Testing…' : 'Applying…';
@@ -902,6 +1064,7 @@
         batchStatus.textContent = `${okCount}/${total} ${dryRun.checked ? 'tests' : 'pushes'} succeeded.`;
 
         renderBatchResults(data.results || []);
+        renderPhaseStatus(data.phase_status || {});
 
       } catch (e){
         batchOutput.innerHTML = `
@@ -909,6 +1072,7 @@
             <div class="font-medium">Unexpected error</div>
             <div class="text-sm mt-1">${escapeHtml(String(e))}</div>
           </div>`;
+        renderPhaseStatus({});
       } finally {
         pushBatchBtn.disabled = false;
         syncPushBtnLabel();
@@ -973,6 +1137,10 @@
       await fetchSites();
       dryRun.checked = true;
       pushBatchBtn.textContent = 'Test configuration for all';
+    });
+
+    applyTempConfig?.addEventListener('change', () => {
+      renderConvertedList();
     });
   </script>
 </body>
