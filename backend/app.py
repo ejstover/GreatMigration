@@ -2766,7 +2766,14 @@ def _finalize_assignments_for_rows(
             return None
 
         sanitized: Dict[str, Any] = {}
-        for key in ("port_profiles", "port_usages", "port_overrides", "port_config"):
+        for key in (
+            "port_profiles",
+            "port_usages",
+            "port_overrides",
+            "port_config",
+            "networks",
+            "vlans",
+        ):
             value = payload.get(key)
             if value:
                 sanitized[key] = copy.deepcopy(value)
@@ -2802,40 +2809,78 @@ def _finalize_assignments_for_rows(
 
     successes = 0
     failures: List[Dict[str, Any]] = []
+    records: List[Dict[str, Any]] = []
 
     for row in ok_rows:
         site_id = str(row.get("site_id") or "").strip()
         device_id = str(row.get("device_id") or "").strip()
         payload_obj = _prepare_finalize_payload(row)
 
-        record = {
+        record: Dict[str, Any] = {
             "site_id": site_id,
             "device_id": device_id,
             "payload": payload_obj or {},
         }
         payload_records.append(record)
+        records.append(record)
+
+        errors: List[Tuple[str, Optional[int]]] = []
+        record["_errors"] = errors  # type: ignore[assignment]
 
         if not site_id or not device_id:
-            failures.append(
-                {
-                    "site_id": site_id,
-                    "device_id": device_id,
-                    "message": "Missing site or device identifier while finalizing.",
-                    "status": None,
-                }
-            )
-            continue
+            errors.append(("Missing site or device identifier while finalizing.", None))
 
         if not payload_obj:
-            failures.append(
-                {
-                    "site_id": site_id,
-                    "device_id": device_id,
-                    "message": "No staged temporary configuration is available to finalize.",
-                    "status": None,
-                }
-            )
+            errors.append(("No staged temporary configuration is available to finalize.", None))
+
+        networks_to_create: List[Mapping[str, Any]] = []
+        if isinstance(payload_obj, Mapping):
+            if isinstance(payload_obj.get("networks"), Sequence):
+                vlan_entries = payload_obj.get("networks")
+            else:
+                vlan_entries = payload_obj.get("vlans")
+            if isinstance(vlan_entries, Sequence) and not isinstance(vlan_entries, (str, bytes, bytearray)):
+                networks_to_create = [v for v in vlan_entries if isinstance(v, Mapping)]
+        record["_networks_to_create"] = networks_to_create  # type: ignore[index]
+
+    for record in records:
+        payload = record.get("payload")
+        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
+
+        network_results: List[Dict[str, Any]] = []
+        record["network_results"] = network_results
+
+        if not payload or errors:
             continue
+
+        site_id = str(record.get("site_id") or "")
+        networks_to_create = record.get("_networks_to_create", [])
+
+        for vlan in networks_to_create:
+            try:
+                result = _add_network(base_url, token, site_id, vlan)
+                if result:
+                    network_results.append(result)
+            except MistAPIError as exc:
+                network_results.append(
+                    {
+                        "ok": False,
+                        "status": exc.status_code,
+                        "message": str(exc),
+                        "vlan": {"id": vlan.get("id"), "name": vlan.get("name")},
+                    }
+                )
+                errors.append((str(exc), exc.status_code))
+
+    for record in records:
+        payload = record.get("payload")
+        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
+
+        if not payload or errors:
+            continue
+
+        site_id = str(record.get("site_id") or "")
+        device_id = str(record.get("device_id") or "")
 
         try:
             device_result = _configure_switch_port_profile_override(
@@ -2843,19 +2888,15 @@ def _finalize_assignments_for_rows(
                 token,
                 site_id,
                 device_id,
-                payload_obj,
+                payload,
             )
             record["device_result"] = device_result
-            if device_result.get("ok"):
-                successes += 1
-            else:
-                failures.append(
-                    {
-                        "site_id": site_id,
-                        "device_id": device_id,
-                        "message": str(device_result.get("message") or "Device update failed."),
-                        "status": device_result.get("status"),
-                    }
+            if not device_result.get("ok"):
+                errors.append(
+                    (
+                        str(device_result.get("message") or "Device update failed."),
+                        _int_or_none(device_result.get("status")),
+                    )
                 )
         except MistAPIError as exc:
             record["device_result"] = {
@@ -2864,14 +2905,28 @@ def _finalize_assignments_for_rows(
                 "message": str(exc),
                 "response": exc.response,
             }
+            errors.append((str(exc), exc.status_code))
+
+    for record in records:
+        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
+        site_id = record.get("site_id")
+        device_id = record.get("device_id")
+
+        if errors:
+            message, status = errors[0]
             failures.append(
                 {
                     "site_id": site_id,
                     "device_id": device_id,
-                    "message": str(exc),
-                    "status": exc.status_code,
+                    "message": message,
+                    "status": status,
                 }
             )
+        else:
+            successes += 1
+
+        record.pop("_errors", None)
+        record.pop("_networks_to_create", None)
 
     ok = successes == total
     return {
