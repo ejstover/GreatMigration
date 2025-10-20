@@ -2348,17 +2348,17 @@ def _configure_switch_port_profile_override(
     if not request_body:
         return {"ok": True, "skipped": True, "message": "No temporary config updates."}
 
-    url = f"{base_url}/sites/{site_id}/devices/{device_id}"
+    url = f"{base_url}/sites/{site_id}/devices/{device_id}/port_config"
     headers = _mist_headers(token)
 
-    resp_put = requests.put(url, headers=headers, json=request_body, timeout=60)
-    data = _safe_json_response(resp_put)
-    if not (200 <= resp_put.status_code < 300):
-        raise MistAPIError(resp_put.status_code, _extract_mist_error(resp_put), response=data)
+    resp_post = requests.post(url, headers=headers, json=request_body, timeout=60)
+    data = _safe_json_response(resp_post)
+    if not (200 <= resp_post.status_code < 300):
+        raise MistAPIError(resp_post.status_code, _extract_mist_error(resp_post), response=data)
 
     return {
         "ok": True,
-        "status": resp_put.status_code,
+        "status": resp_post.status_code,
         "request": request_body,
         "response": data,
     }
