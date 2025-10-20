@@ -24,9 +24,10 @@ import argparse
 import json
 import os
 import re
+import time
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
@@ -491,13 +492,435 @@ def get_device_model(base_url: str, site_id: str, device_id: str, token: str) ->
     return None
 
 # -------------------------------
+# Mist site helpers for staged pushes
+# -------------------------------
+
+class MistSiteClient:
+    """Small helper around the Mist site APIs used for staged pushes."""
+
+    def __init__(self, base_url: str, site_id: str, token: str, timeout: int = 30):
+        self.base_url = base_url.rstrip("/")
+        self.site_id = site_id
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "Authorization": f"Token {token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            }
+        )
+        self.timeout = timeout
+
+    # ---- generic helpers ----
+
+    def _url(self, path: str) -> str:
+        return f"{self.base_url}{path}"
+
+    def request(self, method: str, path: str, **kwargs) -> requests.Response:
+        timeout = kwargs.pop("timeout", self.timeout)
+        resp = self.session.request(method, self._url(path), timeout=timeout, **kwargs)
+        if resp.status_code >= 400:
+            try:
+                payload: Any = resp.json()
+            except Exception:
+                payload = resp.text
+            msg = f"{method.upper()} {path} failed with status {resp.status_code}: {payload}"
+            raise requests.HTTPError(msg, response=resp)
+        return resp
+
+    # ---- VLAN helpers ----
+
+    def list_vlans(self) -> List[Dict[str, Any]]:
+        resp = self.request("GET", f"/sites/{self.site_id}/vlans")
+        data = resp.json() or []
+        return data if isinstance(data, list) else []
+
+    def ensure_vlan(
+        self,
+        vlan_payload: Dict[str, Any],
+        dry_run: bool = False,
+        existing_vlans: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[str]:
+        vlan_id = vlan_payload.get("vlan_id") or vlan_payload.get("id")
+        name = vlan_payload.get("name")
+        existing_id: Optional[str] = None
+        for vlan in (existing_vlans if existing_vlans is not None else self.list_vlans()):
+            if vlan_id and vlan.get("vlan_id") == vlan_id:
+                existing_id = vlan.get("id")
+                break
+            if name and (vlan.get("name") or "").strip().lower() == str(name).strip().lower():
+                existing_id = vlan.get("id")
+                break
+
+        if existing_id:
+            payload = dict(vlan_payload)
+            payload.pop("id", None)
+            if dry_run:
+                print(f"DRY-RUN: would update VLAN {existing_id} with {payload}")
+            else:
+                self.request("PUT", f"/sites/{self.site_id}/vlans/{existing_id}", json=payload)
+            return existing_id
+
+        if dry_run:
+            print(f"DRY-RUN: would create VLAN {vlan_payload}")
+            return None
+
+        resp = self.request("POST", f"/sites/{self.site_id}/vlans", json=vlan_payload)
+        created = resp.json() or {}
+        return created.get("id")
+
+    def delete_vlan(self, vlan_id: str, dry_run: bool = False) -> None:
+        if dry_run:
+            print(f"DRY-RUN: would delete VLAN {vlan_id}")
+            return
+        self.request("DELETE", f"/sites/{self.site_id}/vlans/{vlan_id}")
+
+    # ---- Port profile helpers ----
+
+    def list_port_profiles(self) -> List[Dict[str, Any]]:
+        resp = self.request("GET", f"/sites/{self.site_id}/portprofiles")
+        data = resp.json() or []
+        return data if isinstance(data, list) else []
+
+    def ensure_port_profile(
+        self,
+        profile_payload: Dict[str, Any],
+        dry_run: bool = False,
+        existing_profiles: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[str]:
+        name = (profile_payload.get("name") or "").strip()
+        existing_id: Optional[str] = None
+        profiles = existing_profiles if existing_profiles is not None else self.list_port_profiles()
+        for profile in profiles:
+            if profile.get("name", "").strip().lower() == name.lower() and name:
+                existing_id = profile.get("id")
+                break
+
+        payload = dict(profile_payload)
+        payload.pop("id", None)
+
+        if existing_id:
+            if dry_run:
+                print(f"DRY-RUN: would update port profile {existing_id} with {payload}")
+            else:
+                self.request("PUT", f"/sites/{self.site_id}/portprofiles/{existing_id}", json=payload)
+            return existing_id
+
+        if dry_run:
+            print(f"DRY-RUN: would create port profile {payload}")
+            return None
+
+        resp = self.request("POST", f"/sites/{self.site_id}/portprofiles", json=payload)
+        created = resp.json() or {}
+        return created.get("id")
+
+    def delete_port_profile(self, profile_id: str, dry_run: bool = False) -> None:
+        if dry_run:
+            print(f"DRY-RUN: would delete port profile {profile_id}")
+            return
+        self.request("DELETE", f"/sites/{self.site_id}/portprofiles/{profile_id}")
+
+    # ---- Device helpers ----
+
+    def get_device(self, device_id: str) -> Dict[str, Any]:
+        resp = self.request("GET", f"/sites/{self.site_id}/devices/{device_id}")
+        data = resp.json() or {}
+        return data if isinstance(data, dict) else {}
+
+    def update_device(self, device_id: str, payload: Dict[str, Any], dry_run: bool = False) -> None:
+        if dry_run:
+            print(f"DRY-RUN: would update device {device_id} with {payload}")
+            return
+        self.request("PATCH", f"/sites/{self.site_id}/devices/{device_id}", json=payload)
+
+    def push_port_config(self, device_id: str, port_config: Dict[str, Any], dry_run: bool = False) -> Dict[str, Any]:
+        payload = {"port_config": port_config}
+        if dry_run:
+            print(f"DRY-RUN: would push port_config to {device_id}: {json.dumps(payload, indent=2)}")
+            return {}
+        resp = self.request("PUT", f"/sites/{self.site_id}/devices/{device_id}", json=payload, timeout=60)
+        try:
+            return resp.json() or {}
+        except Exception:
+            return {"status_code": resp.status_code}
+
+
+def _load_json_file(path: Optional[str]) -> Dict[str, Any]:
+    if not path:
+        raise ValueError("Path to JSON document was not provided.")
+    document_path = Path(path)
+    with document_path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON document at {path} must be an object at the top level.")
+    return data
+
+
+def _iter_switch_entries(doc: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+    switches = doc.get("switches")
+    if isinstance(switches, list):
+        for entry in switches:
+            if isinstance(entry, dict):
+                yield entry
+
+
+def _extract_port_config(entry: Dict[str, Any], keys: Iterable[str]) -> Optional[Dict[str, Any]]:
+    for key in keys:
+        cfg = entry.get(key)
+        if isinstance(cfg, dict):
+            return cfg
+    return None
+
+
+def _extract_vlan_id(entry: Dict[str, Any], keys: Iterable[str]) -> Optional[int]:
+    for key in keys:
+        if key in entry and entry[key] is not None:
+            try:
+                return int(entry[key])
+            except Exception:
+                continue
+    return None
+
+
+def _port_config_uses_profile(port_config: Dict[str, Any], profile_name: str, profile_id: Optional[str] = None) -> bool:
+    prof_name = profile_name.strip().lower()
+    for cfg in port_config.values():
+        if not isinstance(cfg, dict):
+            continue
+        usage = cfg.get("usage")
+        if isinstance(usage, str) and usage.strip().lower() == prof_name:
+            return True
+        if profile_id and cfg.get("port_profile_id") == profile_id:
+            return True
+    return False
+
+
+def _port_config_uses_vlan(port_config: Dict[str, Any], vlan_id: int) -> bool:
+    for cfg in port_config.values():
+        if not isinstance(cfg, dict):
+            continue
+        for key in ("vlan_id", "data_vlan", "voice_vlan", "native_vlan"):
+            if cfg.get(key) == vlan_id:
+                return True
+        allowed = cfg.get("allowed_vlans")
+        if isinstance(allowed, list) and vlan_id in allowed:
+            return True
+    return False
+
+
+def ensure_temp_resources(client: MistSiteClient, plan_doc: Dict[str, Any], dry_run: bool = False) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Ensure temporary VLANs and port profiles exist.
+
+    Returns tuples mapping (vlan_name -> id, profile_name -> id).
+    """
+
+    vlan_map: Dict[str, str] = {}
+    existing_vlans = client.list_vlans()
+    for vlan in plan_doc.get("vlans", []) or []:
+        if not isinstance(vlan, dict):
+            continue
+        name = str(vlan.get("name") or vlan.get("id") or vlan.get("vlan_id") or "temp-vlan")
+        created_id = client.ensure_vlan(vlan, dry_run=dry_run, existing_vlans=existing_vlans)
+        if created_id:
+            vlan_map[name] = created_id
+
+    profile_map: Dict[str, str] = {}
+    existing_profiles = client.list_port_profiles()
+    for profile in plan_doc.get("port_profiles", []) or []:
+        if not isinstance(profile, dict):
+            continue
+        name = str(profile.get("name") or "").strip()
+        created_id = client.ensure_port_profile(profile, dry_run=dry_run, existing_profiles=existing_profiles)
+        if name and created_id:
+            profile_map[name] = created_id
+
+    return vlan_map, profile_map
+
+
+def apply_temp_assignments(client: MistSiteClient, plan_doc: Dict[str, Any], dry_run: bool = False) -> None:
+    ensure_temp_resources(client, plan_doc, dry_run=dry_run)
+
+    for entry in _iter_switch_entries(plan_doc):
+        device_id = entry.get("device_id") or entry.get("id")
+        if not device_id:
+            continue
+        port_config = _extract_port_config(entry, ("temp_port_config", "port_config"))
+        if not port_config:
+            continue
+        client.push_port_config(device_id, port_config, dry_run=dry_run)
+
+
+def _wait_for_heartbeat(
+    client: MistSiteClient,
+    device_id: str,
+    previous_last_seen: Optional[int],
+    target_vlan: int,
+    timeout: int = 300,
+    interval: int = 15,
+) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(interval)
+        device = client.get_device(device_id)
+        last_seen = device.get("last_seen")
+        mgmt_vlan = device.get("mgmt_vlan_id")
+        if mgmt_vlan != target_vlan:
+            continue
+        if last_seen is None:
+            continue
+        if previous_last_seen is None or last_seen > previous_last_seen:
+            return True
+    return False
+
+
+def flip_management_vlan(
+    client: MistSiteClient,
+    device_id: str,
+    new_vlan_id: int,
+    dry_run: bool = False,
+    heartbeat_timeout: int = 300,
+    heartbeat_interval: int = 15,
+) -> None:
+    device = client.get_device(device_id)
+    current_vlan = device.get("mgmt_vlan_id")
+    if current_vlan == new_vlan_id:
+        return
+
+    last_seen = device.get("last_seen")
+    payload = {"mgmt_vlan_id": new_vlan_id}
+    client.update_device(device_id, payload, dry_run=dry_run)
+
+    if dry_run:
+        return
+
+    success = _wait_for_heartbeat(
+        client,
+        device_id,
+        previous_last_seen=last_seen,
+        target_vlan=new_vlan_id,
+        timeout=heartbeat_timeout,
+        interval=heartbeat_interval,
+    )
+
+    if success:
+        return
+
+    # Roll back on failure
+    rollback_payload = {"mgmt_vlan_id": current_vlan}
+    client.update_device(device_id, rollback_payload, dry_run=False)
+    raise RuntimeError(
+        f"Device {device_id} did not report a heartbeat after moving to management VLAN {new_vlan_id}; rolled back to {current_vlan}."
+    )
+
+
+def apply_final_assignments(
+    client: MistSiteClient,
+    final_doc: Dict[str, Any],
+    dry_run: bool = False,
+    heartbeat_timeout: int = 300,
+    heartbeat_interval: int = 15,
+) -> None:
+    for entry in _iter_switch_entries(final_doc):
+        device_id = entry.get("device_id") or entry.get("id")
+        if not device_id:
+            continue
+        target_vlan = _extract_vlan_id(
+            entry,
+            (
+                "final_mgmt_vlan_id",
+                "management_vlan_id",
+                "mgmt_vlan_id",
+                "final_management_vlan",
+            ),
+        )
+        if target_vlan is not None:
+            flip_management_vlan(
+                client,
+                device_id,
+                target_vlan,
+                dry_run=dry_run,
+                heartbeat_timeout=heartbeat_timeout,
+                heartbeat_interval=heartbeat_interval,
+            )
+
+        port_config = _extract_port_config(entry, ("final_port_config", "port_config"))
+        if port_config:
+            client.push_port_config(device_id, port_config, dry_run=dry_run)
+
+
+def cleanup_temp_resources(
+    client: MistSiteClient,
+    plan_doc: Dict[str, Any],
+    final_doc: Optional[Dict[str, Any]] = None,
+    dry_run: bool = False,
+) -> None:
+    final_port_configs: List[Dict[str, Any]] = []
+    if final_doc:
+        for entry in _iter_switch_entries(final_doc):
+            cfg = _extract_port_config(entry, ("final_port_config", "port_config"))
+            if cfg:
+                final_port_configs.append(cfg)
+
+    # Port profiles
+    existing_profiles = {p.get("name"): p for p in client.list_port_profiles()}
+    for profile in plan_doc.get("port_profiles", []) or []:
+        if not isinstance(profile, dict):
+            continue
+        if not profile.get("temporary", True) and not profile.get("temp", False):
+            continue
+        name = (profile.get("name") or "").strip()
+        if not name:
+            continue
+        current = existing_profiles.get(name)
+        if not current:
+            continue
+        profile_id = current.get("id")
+        still_referenced = False
+        for cfg in final_port_configs:
+            if _port_config_uses_profile(cfg, name, profile_id):
+                still_referenced = True
+                break
+        if still_referenced:
+            continue
+        if profile_id:
+            client.delete_port_profile(profile_id, dry_run=dry_run)
+
+    # VLANs
+    existing_vlans = {v.get("vlan_id"): v for v in client.list_vlans()}
+    for vlan in plan_doc.get("vlans", []) or []:
+        if not isinstance(vlan, dict):
+            continue
+        if not vlan.get("temporary", True) and not vlan.get("temp", False):
+            continue
+        vlan_id = vlan.get("vlan_id") or vlan.get("id")
+        try:
+            vlan_id_int = int(vlan_id)
+        except Exception:
+            vlan_id_int = None
+        existing = None
+        if vlan_id_int is not None and vlan_id_int in existing_vlans:
+            existing = existing_vlans[vlan_id_int]
+        if not existing:
+            continue
+        still_referenced_vlan = False
+        for cfg in final_port_configs:
+            if vlan_id_int is not None and _port_config_uses_vlan(cfg, vlan_id_int):
+                still_referenced_vlan = True
+                break
+        if still_referenced_vlan:
+            continue
+        vlan_uuid = existing.get("id")
+        if vlan_uuid:
+            client.delete_vlan(vlan_uuid, dry_run=dry_run)
+
+# -------------------------------
 # CLI
 # -------------------------------
 def main():
     ap = argparse.ArgumentParser(description="Map and push Mist port_config with EX4100 uplink mapping and member/port offsets.")
     ap.add_argument("--site-id", required=True)
     ap.add_argument("--device-id", required=True)
-    ap.add_argument("--input", required=True, help="Path to converter JSON ('interfaces') or Mist 'port_config'")
+    ap.add_argument("--input", help="Path to converter JSON ('interfaces') or Mist 'port_config'")
     ap.add_argument("--base-url", default=None)
     ap.add_argument("--tz", default=None)
     ap.add_argument("--dry-run", action="store_true")
@@ -507,12 +930,58 @@ def main():
     ap.add_argument("--member-offset", type=int, default=0)
     ap.add_argument("--port-offset", type=int, default=0)
     ap.add_argument("--normalize-modules", action="store_true")
+    ap.add_argument("--plan", default="plan.json", help="Path to staging plan JSON (default: plan.json)")
+    ap.add_argument("--final", dest="final_plan", default="final.json", help="Path to final assignment JSON (default: final.json)")
+    ap.add_argument("--heartbeat-timeout", type=int, default=300, help="Seconds to wait for heartbeat after mgmt VLAN change")
+    ap.add_argument("--heartbeat-interval", type=int, default=15, help="Seconds between heartbeat checks")
+
+    group = ap.add_mutually_exclusive_group()
+    group.add_argument("--apply-temp", action="store_true", help="Ensure temporary resources exist and push temp assignments")
+    group.add_argument("--finalize", action="store_true", help="Flip mgmt VLAN, push final assignments, and clean temp resources")
+    group.add_argument("--cleanup-temp", action="store_true", help="Remove temporary VLANs and port profiles when safe")
 
     args = ap.parse_args()
 
     token = load_token()
     base_url = (args.base_url or BASE_URL).rstrip("/")
     tz_name = (args.tz or TZ)
+    client = MistSiteClient(base_url, args.site_id, token)
+
+    if args.apply_temp:
+        plan_doc = _load_json_file(args.plan)
+        apply_temp_assignments(client, plan_doc, dry_run=args.dry_run)
+        return
+
+    if args.finalize:
+        plan_doc: Optional[Dict[str, Any]]
+        try:
+            plan_doc = _load_json_file(args.plan)
+        except Exception:
+            plan_doc = None
+        final_doc = _load_json_file(args.final_plan)
+        apply_final_assignments(
+            client,
+            final_doc,
+            dry_run=args.dry_run,
+            heartbeat_timeout=args.heartbeat_timeout,
+            heartbeat_interval=args.heartbeat_interval,
+        )
+        if plan_doc:
+            cleanup_temp_resources(client, plan_doc, final_doc=final_doc, dry_run=args.dry_run)
+        return
+
+    if args.cleanup_temp:
+        plan_doc = _load_json_file(args.plan)
+        try:
+            final_doc = _load_json_file(args.final_plan)
+        except Exception:
+            final_doc = None
+        cleanup_temp_resources(client, plan_doc, final_doc=final_doc, dry_run=args.dry_run)
+        return
+
+    if not args.input:
+        ap.error("--input is required unless --apply-temp/--finalize/--cleanup-temp is provided")
+
     model = args.model or get_device_model(base_url, args.site_id, args.device_id, token)
 
     with open(args.input, "r", encoding="utf-8") as f:
@@ -545,35 +1014,18 @@ def main():
         c["description"] = tag_description(c.get("description", ""), ts)
         final_port_config[ifname] = c
 
-    body = {"port_config": final_port_config}
-    url = f"{base_url}/sites/{args.site_id}/devices/{args.device_id}"
-    headers = {"Authorization": f"Token {token}", "Content-Type": "application/json", "Accept": "application/json"}
-
     if args.dry_run:
         print(f"Device model: {model or 'unknown'}")
         print(f"Member offset: {args.member_offset} (normalize: {bool(args.normalize_modules)})")
         print(f"Port offset: {args.port_offset}")
         print("Validation:")
         print(json.dumps(validation, indent=2))
-        print(f"PUT {url}")
-        print(json.dumps(body, indent=2))
+        print(json.dumps({"port_config": final_port_config}, indent=2))
         return
 
-    resp = requests.put(url, headers=headers, json=body, timeout=60)
-    try:
-        content = resp.json()
-    except Exception:
-        content = {"text": resp.text}
-
-    if 200 <= resp.status_code < 300:
-        print("✅ Success")
-        print(json.dumps(content, indent=2))
-    else:
-        print(f"❌ Error {resp.status_code} on PUT {url}")
-        print(json.dumps(content, indent=2))
-        if resp.status_code == 404:
-            print("Hint: 404 usually means wrong site/device or wrong region base URL.")
-        resp.raise_for_status()
+    result = client.push_port_config(args.device_id, final_port_config, dry_run=False)
+    print("✅ Success")
+    print(json.dumps(result, indent=2))
 
 if __name__ == "__main__":
     main()
