@@ -2511,6 +2511,7 @@ def _apply_temporary_config_for_rows(
 
     successes = 0
     failures: List[Dict[str, Any]] = []
+    records: List[Dict[str, Any]] = []
 
     for row in ok_rows:
         site_id = str(row.get("site_id") or "").strip()
@@ -2522,45 +2523,67 @@ def _apply_temporary_config_for_rows(
             "payload": payload or {},
         }
         payload_records.append(record)
+        records.append(record)
+
+        record["_errors"] = []  # type: ignore[assignment]
 
         if not payload:
-            failures.append(
-                {
-                    "site_id": site_id,
-                    "device_id": device_id,
-                    "message": "No temporary config payload available.",
-                }
-            )
+            record["_errors"].append(("No temporary config payload available.", None))  # type: ignore[index]
             continue
 
-        vlan_entries = None
         if isinstance(payload, Mapping):
             if isinstance(payload.get("networks"), Sequence):
                 vlan_entries = payload.get("networks")
             else:
                 vlan_entries = payload.get("vlans")
-        network_results: List[Dict[str, Any]] = []
-        record["network_results"] = network_results
-        errors: List[Tuple[str, Optional[int]]] = []
+        else:
+            vlan_entries = None
 
         if isinstance(vlan_entries, Sequence) and not isinstance(vlan_entries, (str, bytes, bytearray)):
-            for vlan in vlan_entries:
-                if not isinstance(vlan, Mapping):
-                    continue
-                try:
-                    result = _add_network(base_url, token, site_id, vlan)
-                    if result:
-                        network_results.append(result)
-                except MistAPIError as exc:
-                    network_results.append(
-                        {
-                            "ok": False,
-                            "status": exc.status_code,
-                            "message": str(exc),
-                            "vlan": {"id": vlan.get("id"), "name": vlan.get("name")},
-                        }
-                    )
-                    errors.append((str(exc), exc.status_code))
+            record["_networks_to_create"] = [v for v in vlan_entries if isinstance(v, Mapping)]  # type: ignore[index]
+        else:
+            record["_networks_to_create"] = []  # type: ignore[index]
+
+    # Create networks for every record first so Mist has the VLANs before port profile updates
+    for record in records:
+        payload = record.get("payload")
+        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
+
+        network_results: List[Dict[str, Any]] = []
+        record["network_results"] = network_results
+
+        if not payload or errors:
+            continue
+
+        site_id = record.get("site_id") or ""
+        networks_to_create = record.get("_networks_to_create", [])
+
+        for vlan in networks_to_create:
+            try:
+                result = _add_network(base_url, token, str(site_id), vlan)
+                if result:
+                    network_results.append(result)
+            except MistAPIError as exc:
+                network_results.append(
+                    {
+                        "ok": False,
+                        "status": exc.status_code,
+                        "message": str(exc),
+                        "vlan": {"id": vlan.get("id"), "name": vlan.get("name")},
+                    }
+                )
+                errors.append((str(exc), exc.status_code))
+
+    # With VLANs provisioned, push the port usage/profile overrides
+    for record in records:
+        payload = record.get("payload")
+        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
+
+        if not payload or errors:
+            continue
+
+        site_id = str(record.get("site_id") or "")
+        device_id = str(record.get("device_id") or "")
 
         try:
             device_result = _configure_switch_port_profile_override(
@@ -2582,6 +2605,11 @@ def _apply_temporary_config_for_rows(
             }
             errors.append((str(exc), exc.status_code))
 
+    for record in records:
+        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
+        site_id = record.get("site_id")
+        device_id = record.get("device_id")
+
         if errors:
             message, status = errors[0]
             failures.append(
@@ -2592,8 +2620,12 @@ def _apply_temporary_config_for_rows(
                     "status": status,
                 }
             )
-        else:
+        elif record.get("payload"):
             successes += 1
+
+        # Clean up internal bookkeeping keys before returning to the client
+        record.pop("_errors", None)
+        record.pop("_networks_to_create", None)
 
     ok = successes == total
     return {
