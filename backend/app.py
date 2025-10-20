@@ -2225,9 +2225,12 @@ def _configure_switch_port_profile_override(
     port_overrides_new = payload.get("port_overrides")
     port_config_new = payload.get("port_config")
 
+    port_profiles_seq = _normalize_port_profile_list(port_profiles_new)
+    port_usages_seq = _normalize_port_profile_list(port_usages_new)
+
     if (
-        not port_profiles_new
-        and not port_usages_new
+        not port_profiles_seq
+        and not port_usages_seq
         and not port_overrides_new
         and not port_config_new
     ):
@@ -2244,9 +2247,7 @@ def _configure_switch_port_profile_override(
     existing_profile_field = "port_profiles"
     if "port_usages" in current:
         existing_profile_field = "port_usages"
-    existing_profiles = _normalize_port_profile_list(
-        current.get(existing_profile_field)
-    )
+    existing_profiles = _normalize_port_profile_list(current.get(existing_profile_field))
     existing_overrides = _normalize_port_override_list(current.get("port_overrides"))
     existing_config = current.get("port_config")
     if isinstance(existing_config, Mapping):
@@ -2261,11 +2262,11 @@ def _configure_switch_port_profile_override(
             continue
         merged_profiles[name] = dict(profile)
 
-    new_profile_sequences = []
-    if isinstance(port_profiles_new, Sequence) and not isinstance(port_profiles_new, (str, bytes, bytearray)):
-        new_profile_sequences.append(port_profiles_new)
-    if isinstance(port_usages_new, Sequence) and not isinstance(port_usages_new, (str, bytes, bytearray)):
-        new_profile_sequences.append(port_usages_new)
+    new_profile_sequences: List[List[Dict[str, Any]]] = []
+    if port_profiles_seq:
+        new_profile_sequences.append(port_profiles_seq)
+    if port_usages_seq:
+        new_profile_sequences.append(port_usages_seq)
 
     for seq in new_profile_sequences:
         for profile in seq:
@@ -2301,12 +2302,26 @@ def _configure_switch_port_profile_override(
     request_body: Dict[str, Any] = {}
     if merged_profiles:
         profile_field = existing_profile_field
-        if profile_field == "port_profiles" and port_usages_new and "port_usages" not in current:
+        if profile_field == "port_profiles" and port_usages_seq and "port_usages" not in current:
             # Explicitly favour port_usages when the caller provides it
             profile_field = "port_usages"
-        if profile_field == "port_usages" and not current.get("port_usages") and port_profiles_new and not port_usages_new:
+        if (
+            profile_field == "port_usages"
+            and not current.get("port_usages")
+            and port_profiles_seq
+            and not port_usages_seq
+        ):
             profile_field = "port_profiles"
-        request_body[profile_field] = list(merged_profiles.values())
+        if profile_field == "port_usages":
+            request_body["port_usages"] = {
+                name: _compact_dict({k: v for k, v in data.items() if k != "name"})
+                for name, data in merged_profiles.items()
+                if name
+            }
+        else:
+            request_body[profile_field] = [
+                _compact_dict(dict(value)) for value in merged_profiles.values()
+            ]
     if merged_overrides_map:
         request_body["port_overrides"] = list(merged_overrides_map.values())
     if merged_config:
@@ -2471,8 +2486,17 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
     if not port_config:
         return None
 
+    usage_payload: Dict[str, Dict[str, Any]] = {}
+    for profile in port_usages.values():
+        name = str(profile.get("name") or "").strip()
+        if not name:
+            continue
+        cleaned = _compact_dict(dict(profile))
+        cleaned.pop("name", None)
+        usage_payload[name] = cleaned
+
     payload: Dict[str, Any] = {
-        "port_usages": [usage for usage in port_usages.values()],
+        "port_usages": usage_payload,
         "port_config": port_config,
         "port_overrides": port_overrides,
     }

@@ -1048,7 +1048,12 @@
         const payloads = Array.isArray(info?.payloads) ? info.payloads : [];
 
         const card = document.createElement('div');
-        const baseClass = skipped ? 'status-info dark:bg-slate-800/60' : ok ? 'status-success dark:bg-emerald-900/40' : 'status-error dark:bg-rose-950';
+        const hasFailures = failures.length > 0;
+        const baseClass = skipped || (!ok && !hasFailures)
+          ? 'status-info dark:bg-slate-800/60'
+          : ok
+            ? 'status-success dark:bg-emerald-900/40'
+            : 'status-error dark:bg-rose-950';
         card.className = `rounded-lg border p-4 text-sm ${baseClass}`;
 
         const meta = [];
