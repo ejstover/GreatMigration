@@ -2433,7 +2433,6 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
                     "vlan_id": vlan_id,
                     "name": network_name,
                     "source_name": (raw_name.strip() if isinstance(raw_name, str) else raw_name) or None,
-                    "temporary": True,
                 }
             )
         return network_name
@@ -2481,7 +2480,6 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
                 "name": usage_name,
                 "mode": mode or None,
                 "disabled": False,
-                "temporary": True,
                 "port_network": data_network if mode == "access" else native_network,
                 "voip_network": voice_network,
                 "stp_edge": mode == "access",
