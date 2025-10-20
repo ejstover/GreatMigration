@@ -1,0 +1,13 @@
+{
+  "defaults": {
+    "final_vlan": null
+  },
+  "vlans": {
+    "15": {
+      "final_vlan": 315
+    },
+    "25": {
+      "final_vlan": 325
+    }
+  }
+}

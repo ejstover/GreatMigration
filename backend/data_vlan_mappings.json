@@ -1,0 +1,28 @@
+{
+  "defaults": {
+    "temp_profile": "TEMP-DATA-DEFAULT",
+    "final_profile": "Access - Default",
+    "final_vlan": null
+  },
+  "management": {
+    "temp_profile": "TEMP-UPLINK",
+    "final_profile": "Uplink - Distribution",
+    "final_vlan": null
+  },
+  "vlans": {
+    "10": {
+      "temp_profile": "TEMP-DATA-10",
+      "final_profile": "Access - Corp Wired",
+      "final_vlan": 210
+    },
+    "20": {
+      "temp_profile": "TEMP-DATA-20",
+      "final_profile": "Access - Guest",
+      "final_vlan": 220
+    },
+    "100": {
+      "final_profile": "Access - Facilities",
+      "final_vlan": 310
+    }
+  }
+}

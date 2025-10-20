@@ -39,6 +39,7 @@ from push_mist_port_config import (  # type: ignore
     remap_ports,
     validate_port_config_against_model,
 )
+from plan_builder import PlannerError, generate_plan  # type: ignore
 from translate_showtech import (
     parse_showtech,
     load_mapping,
@@ -1668,6 +1669,7 @@ async def api_convert(
     Converts one or more Cisco configs into the normalized JSON that the push script consumes.
     """
     results = []
+    planner_persist_dir = Path(__file__).resolve().parent / "logs" / "planner"
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for uf in files:
@@ -1687,7 +1689,44 @@ async def api_convert(
             except Exception as e:
                 return JSONResponse({"ok": False, "error": f"Failed to load JSON for {uf.filename}: {e}"}, status_code=400)
 
-            results.append({"source_file": uf.filename, "output_file": out_path.name, "json": data})
+            plan_doc: Optional[Dict[str, Any]] = None
+            final_doc: Optional[Dict[str, Any]] = None
+            planner_errors: List[str] = []
+            planner_error: Optional[str] = None
+            persisted_dir: Optional[Path] = None
+            try:
+                plan_result = generate_plan(
+                    out_path,
+                    output_dir=tmpdir_path,
+                    persist_dir=planner_persist_dir,
+                )
+                plan_doc = plan_result.plan_doc
+                final_doc = plan_result.final_doc
+                planner_errors = list(plan_result.errors)
+                if plan_result.persisted_plan_path:
+                    persisted_dir = plan_result.persisted_plan_path.parent
+            except PlannerError as exc:
+                planner_error = str(exc)
+            except Exception as exc:  # pragma: no cover - defensive
+                planner_error = f"Unexpected planner failure: {exc}"
+
+            item = {"source_file": uf.filename, "output_file": out_path.name, "json": data}
+            if plan_doc is not None and final_doc is not None:
+                item.update(
+                    {
+                        "plan_file": plan_result.plan_path.name,
+                        "final_file": plan_result.final_path.name,
+                        "plan": plan_doc,
+                        "final": final_doc,
+                        "planner_errors": planner_errors,
+                    }
+                )
+                if persisted_dir:
+                    item["planner_persist_dir"] = str(persisted_dir)
+            else:
+                item["planner_error"] = planner_error or "Planner was skipped"
+
+            results.append(item)
 
     return JSONResponse({"ok": True, "items": results})
 
