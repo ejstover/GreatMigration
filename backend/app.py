@@ -2213,7 +2213,7 @@ def _normalize_port_override_list(value: Any) -> List[Dict[str, Any]]:
     return list(overrides.values())
 
 
-def _configure_switch_port_profile_override(
+def _prepare_switch_port_profile_payload(
     base_url: str,
     token: str,
     site_id: str,
@@ -2234,7 +2234,7 @@ def _configure_switch_port_profile_override(
         and not port_overrides_new
         and not port_config_new
     ):
-        return {"ok": True, "skipped": True, "message": "No temporary config updates."}
+        return {}
 
     url = f"{base_url}/sites/{site_id}/devices/{device_id}"
     headers = _mist_headers(token)
@@ -2327,8 +2327,29 @@ def _configure_switch_port_profile_override(
     if merged_config:
         request_body["port_config"] = merged_config
 
+    return request_body
+
+
+def _configure_switch_port_profile_override(
+    base_url: str,
+    token: str,
+    site_id: str,
+    device_id: str,
+    payload: Mapping[str, Any],
+) -> Dict[str, Any]:
+    request_body = _prepare_switch_port_profile_payload(
+        base_url,
+        token,
+        site_id,
+        device_id,
+        payload,
+    )
+
     if not request_body:
         return {"ok": True, "skipped": True, "message": "No temporary config updates."}
+
+    url = f"{base_url}/sites/{site_id}/devices/{device_id}"
+    headers = _mist_headers(token)
 
     resp_put = requests.put(url, headers=headers, json=request_body, timeout=60)
     data = _safe_json_response(resp_put)
@@ -2338,6 +2359,40 @@ def _configure_switch_port_profile_override(
     return {
         "ok": True,
         "status": resp_put.status_code,
+        "request": request_body,
+        "response": data,
+    }
+
+
+def _set_temporary_port_config(
+    base_url: str,
+    token: str,
+    site_id: str,
+    device_id: str,
+    payload: Mapping[str, Any],
+) -> Dict[str, Any]:
+    request_body = _prepare_switch_port_profile_payload(
+        base_url,
+        token,
+        site_id,
+        device_id,
+        payload,
+    )
+
+    if not request_body:
+        return {"ok": True, "skipped": True, "message": "No temporary config updates."}
+
+    url = f"{base_url}/sites/{site_id}/devices/{device_id}/temp_port_config"
+    headers = _mist_headers(token)
+
+    resp_post = requests.post(url, headers=headers, json=request_body, timeout=60)
+    data = _safe_json_response(resp_post)
+    if not (200 <= resp_post.status_code < 300):
+        raise MistAPIError(resp_post.status_code, _extract_mist_error(resp_post), response=data)
+
+    return {
+        "ok": True,
+        "status": resp_post.status_code,
         "request": request_body,
         "response": data,
     }
@@ -2626,7 +2681,7 @@ def _apply_temporary_config_for_rows(
         device_id = str(record.get("device_id") or "")
 
         try:
-            device_result = _configure_switch_port_profile_override(
+            device_result = _set_temporary_port_config(
                 base_url,
                 token,
                 site_id,
