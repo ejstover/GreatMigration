@@ -2743,19 +2743,150 @@ def _finalize_assignments_for_rows(
     *,
     dry_run: bool,
 ) -> Dict[str, Any]:
-    return _invoke_batch_phase(
-        results,
-        base_url=base_url,
-        token=token,
-        dry_run=dry_run,
-        method="post",
-        path_template="/sites/{site_id}/devices/{device_id}/temp_port_config/apply",
-        success_template="Finalized temporary assignments for {count} device(s).",
-        partial_template="Finalized temporary assignments for {successes}/{total} device(s). Manual follow-up required.",
-        skip_message="Skipped finalizing assignments for {total} device(s) during a preview-only run.",
-        empty_message="No completed rows available to finalize assignments.",
-        body_getter=lambda _: {"temporary": True},
-    )
+    ok_rows = [
+        r for r in results if r.get("ok") and r.get("site_id") and r.get("device_id")
+    ]
+    total = len(ok_rows)
+
+    if total == 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "No completed rows available to finalize assignments.",
+            "successes": 0,
+            "failures": [],
+            "total": 0,
+        }
+
+    payload_records: List[Dict[str, Any]] = []
+
+    def _prepare_finalize_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        payload = _build_temp_config_payload(row)
+        if not isinstance(payload, Mapping):
+            return None
+
+        sanitized: Dict[str, Any] = {}
+        for key in ("port_profiles", "port_usages", "port_overrides", "port_config"):
+            value = payload.get(key)
+            if value:
+                sanitized[key] = copy.deepcopy(value)
+
+        return sanitized or None
+
+    if dry_run:
+        for row in ok_rows:
+            site_id = str(row.get("site_id") or "").strip()
+            device_id = str(row.get("device_id") or "").strip()
+            if not site_id or not device_id:
+                continue
+            payload_obj = _prepare_finalize_payload(row)
+            payload_records.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "payload": payload_obj or {},
+                }
+            )
+
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "Skipped finalizing assignments for {total} device(s) during a preview-only run.".format(
+                total=total
+            ),
+            "successes": 0,
+            "failures": [],
+            "total": total,
+            "payloads": payload_records,
+        }
+
+    successes = 0
+    failures: List[Dict[str, Any]] = []
+
+    for row in ok_rows:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        payload_obj = _prepare_finalize_payload(row)
+
+        record = {
+            "site_id": site_id,
+            "device_id": device_id,
+            "payload": payload_obj or {},
+        }
+        payload_records.append(record)
+
+        if not site_id or not device_id:
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "message": "Missing site or device identifier while finalizing.",
+                    "status": None,
+                }
+            )
+            continue
+
+        if not payload_obj:
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "message": "No staged temporary configuration is available to finalize.",
+                    "status": None,
+                }
+            )
+            continue
+
+        try:
+            device_result = _configure_switch_port_profile_override(
+                base_url,
+                token,
+                site_id,
+                device_id,
+                payload_obj,
+            )
+            record["device_result"] = device_result
+            if device_result.get("ok"):
+                successes += 1
+            else:
+                failures.append(
+                    {
+                        "site_id": site_id,
+                        "device_id": device_id,
+                        "message": str(device_result.get("message") or "Device update failed."),
+                        "status": device_result.get("status"),
+                    }
+                )
+        except MistAPIError as exc:
+            record["device_result"] = {
+                "ok": False,
+                "status": exc.status_code,
+                "message": str(exc),
+                "response": exc.response,
+            }
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "message": str(exc),
+                    "status": exc.status_code,
+                }
+            )
+
+    ok = successes == total
+    return {
+        "ok": ok,
+        "skipped": False,
+        "message": (
+            "Finalized temporary assignments for {count} device(s)."
+            if ok
+            else "Finalized temporary assignments for {successes}/{total} device(s). Manual follow-up required."
+        ).format(count=successes, successes=successes, total=total),
+        "successes": successes,
+        "failures": failures,
+        "total": total,
+        "payloads": payload_records,
+    }
 
 
 def _remove_temporary_config_for_rows(
