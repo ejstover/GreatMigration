@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from ldap3 import Server, Connection, ALL, Tls, NTLM, SUBTREE
+from ldap3.utils.conv import escape_filter_chars
 
 from logging_utils import get_user_logger
 
@@ -108,7 +109,15 @@ def _is_member_of_group(user_dn: str, group_dn: str, search_conn: Connection) ->
     Recursive group check via LDAP_MATCHING_RULE_IN_CHAIN
     """
     # (memberOf:1.2.840.113556.1.4.1941:=<groupDN>) true if user is directly or indirectly a member
-    filt = f"(&(distinguishedName={user_dn})(memberOf:1.2.840.113556.1.4.1941:={group_dn}))"
+    escaped_user_dn = escape_filter_chars(user_dn)
+    escaped_group_dn = escape_filter_chars(group_dn)
+    filt = (
+        "(&(distinguishedName="
+        f"{escaped_user_dn}"
+        ")(memberOf:1.2.840.113556.1.4.1941:="
+        f"{escaped_group_dn}"
+        "))"
+    )
     for base in _iter_search_bases():
         ok = search_conn.search(
             search_base=base,

@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+from ldap3.utils.conv import escape_filter_chars
+
 
 BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
@@ -155,3 +157,37 @@ def test_search_user_checks_multiple_bases(monkeypatch):
         "OU=Users,DC=example,DC=com",
         "OU=Target,DC=example,DC=com",
     ]
+
+
+def test_is_member_of_group_escapes_filter_characters(monkeypatch):
+    import importlib
+
+    auth_ldap = importlib.reload(importlib.import_module("auth_ldap"))
+
+    monkeypatch.setattr(auth_ldap, "LDAP_SEARCH_BASES", ["DC=example,DC=com"], raising=False)
+
+    class _DummyConn:
+        def __init__(self):
+            self.entries = []
+            self.search_calls = []
+
+        def search(self, *, search_base, search_filter, **kwargs):
+            self.search_calls.append((search_base, search_filter))
+            self.entries = [object()]
+            return True
+
+    conn = _DummyConn()
+    user_dn = "CN=Alice (Ops),OU=Users,DC=example,DC=com"
+    group_dn = "CN=Team (Special),OU=Groups,DC=example,DC=com"
+
+    result = auth_ldap._is_member_of_group(user_dn, group_dn, conn)
+
+    assert result is True
+    expected_filter = (
+        "(&(distinguishedName="
+        f"{escape_filter_chars(user_dn)}"
+        ")(memberOf:1.2.840.113556.1.4.1941:="
+        f"{escape_filter_chars(group_dn)}"
+        "))"
+    )
+    assert conn.search_calls == [("DC=example,DC=com", expected_filter)]
