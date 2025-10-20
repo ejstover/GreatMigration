@@ -145,6 +145,38 @@
             </label>
           </div>
         </div>
+
+        <div class="mt-6 border-t border-slate-200 dark:border-slate-700 pt-4">
+          <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-3">Post-processing options</p>
+          <div class="grid md:grid-cols-3 gap-4">
+            <label class="tooltip">
+              <span class="inline-flex items-center gap-2">
+                <input id="apply_temp_config" type="checkbox" class="w-4 h-4" />
+                <span class="text-sm">Apply temporary config</span>
+              </span>
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
+              <span class="tip">Stages the generated payload as a temporary config on each switch after a successful push.</span>
+            </label>
+
+            <label class="tooltip">
+              <span class="inline-flex items-center gap-2">
+                <input id="finalize_assignments" type="checkbox" class="w-4 h-4" />
+                <span class="text-sm">Finalize assignments</span>
+              </span>
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
+              <span class="tip">Moves temporary port assignments into production after staging completes.</span>
+            </label>
+
+            <label class="tooltip">
+              <span class="inline-flex items-center gap-2">
+                <input id="remove_temp_config" type="checkbox" class="w-4 h-4" />
+                <span class="text-sm">Remove temporary config</span>
+              </span>
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
+              <span class="tip">Cleans up any temporary configuration left on the device once finalization completes.</span>
+            </label>
+          </div>
+        </div>
       </div>
 
       <!-- Rows -->
@@ -158,6 +190,7 @@
 
       <!-- Results -->
       <div id="batch_output" class="mt-4 space-y-4"></div>
+      <div id="batch_phase_status" class="mt-4 space-y-3 hidden"></div>
     </section>
   </div>
   </div>
@@ -233,11 +266,15 @@
     const pushBatchBtn = document.getElementById('push_batch_btn');
     const batchStatus = document.getElementById('batch_status');
     const batchOutput = document.getElementById('batch_output');
+    const batchPhaseStatus = document.getElementById('batch_phase_status');
 
     const strictOverflow = document.getElementById('strict_overflow');
     const dryRun = document.getElementById('dry_run');
     const tz = document.getElementById('tz');
     const modelOverride = document.getElementById('model_override');
+    const applyTempConfig = document.getElementById('apply_temp_config');
+    const finalizeAssignments = document.getElementById('finalize_assignments');
+    const removeTempConfig = document.getElementById('remove_temp_config');
 
     // --- Data ---
     let convertedItems = []; // [{ source_file, output_file, json }]
@@ -860,9 +897,75 @@
     dryRun.addEventListener('change', syncPushBtnLabel);
     syncPushBtnLabel();
 
+    function renderPhaseStatus(statusMap){
+      batchPhaseStatus.innerHTML = '';
+      if (!statusMap || typeof statusMap !== 'object' || !Object.keys(statusMap).length){
+        hide(batchPhaseStatus);
+        return;
+      }
+
+      const labelMap = {
+        apply_temporary_config: 'Apply temporary config',
+        finalize_assignments: 'Finalize assignments',
+        remove_temporary_config: 'Remove temporary config'
+      };
+
+      Object.entries(statusMap).forEach(([key, info]) => {
+        const label = labelMap[key] || key;
+        const ok = Boolean(info?.ok);
+        const skipped = Boolean(info?.skipped);
+        const failures = Array.isArray(info?.failures) ? info.failures : [];
+        const message = info?.message ? escapeHtml(String(info.message)) : '';
+        const total = typeof info?.total === 'number' ? info.total : undefined;
+        const successes = typeof info?.successes === 'number' ? info.successes : undefined;
+
+        const card = document.createElement('div');
+        const baseClass = skipped ? 'status-info dark:bg-slate-800/60' : ok ? 'status-success dark:bg-emerald-900/40' : 'status-error dark:bg-rose-950';
+        card.className = `rounded-lg border p-4 text-sm ${baseClass}`;
+
+        const meta = [];
+        if (typeof successes === 'number' && typeof total === 'number'){
+          meta.push(`${successes}/${total} device${total === 1 ? '' : 's'} processed`);
+        }
+
+        const header = document.createElement('div');
+        header.className = 'font-semibold mb-1 flex items-center justify-between gap-2';
+        header.innerHTML = `<span>${escapeHtml(label)}</span>` + (meta.length ? `<span class="text-xs font-normal text-slate-600 dark:text-slate-300">${escapeHtml(meta.join(' • '))}</span>` : '');
+        card.appendChild(header);
+
+        if (message){
+          const msgEl = document.createElement('div');
+          msgEl.className = 'mb-2';
+          msgEl.innerHTML = message;
+          card.appendChild(msgEl);
+        }
+
+        if (failures.length){
+          const list = document.createElement('ul');
+          list.className = 'space-y-1 text-xs';
+          failures.forEach(f => {
+            const site = f?.site_id ? `Site ${escapeHtml(String(f.site_id))}` : '';
+            const device = f?.device_id ? `Device ${escapeHtml(String(f.device_id))}` : '';
+            const statusText = typeof f?.status === 'number' ? ` (HTTP ${f.status})` : '';
+            const context = [site, device].filter(Boolean).join(' • ');
+            const detail = f?.message ? escapeHtml(String(f.message)) : 'Unknown error';
+            const line = document.createElement('li');
+            line.innerHTML = `${context ? `${context}: ` : ''}${detail}${statusText}`;
+            list.appendChild(line);
+          });
+          card.appendChild(list);
+        }
+
+        batchPhaseStatus.appendChild(card);
+      });
+
+      show(batchPhaseStatus);
+    }
+
     pushBatchBtn.addEventListener('click', async () => {
       batchOutput.innerHTML = '';
       batchStatus.textContent = '';
+      renderPhaseStatus({});
 
       for (const r of rows){
         if (!r.site_id || !r.device_id){
@@ -889,6 +992,9 @@
       form.append('tz', tz.value.trim());
       const mo = (modelOverride.value || '').trim();
       if (mo) form.append('model_override', mo);
+      form.append('apply_temp_config', applyTempConfig?.checked ? 'true' : 'false');
+      form.append('finalize_assignments', finalizeAssignments?.checked ? 'true' : 'false');
+      form.append('remove_temp_config', removeTempConfig?.checked ? 'true' : 'false');
 
       pushBatchBtn.disabled = true;
       pushBatchBtn.textContent = dryRun.checked ? 'Testing…' : 'Applying…';
@@ -902,6 +1008,7 @@
         batchStatus.textContent = `${okCount}/${total} ${dryRun.checked ? 'tests' : 'pushes'} succeeded.`;
 
         renderBatchResults(data.results || []);
+        renderPhaseStatus(data.phase_status || {});
 
       } catch (e){
         batchOutput.innerHTML = `
@@ -909,6 +1016,7 @@
             <div class="font-medium">Unexpected error</div>
             <div class="text-sm mt-1">${escapeHtml(String(e))}</div>
           </div>`;
+        renderPhaseStatus({});
       } finally {
         pushBatchBtn.disabled = false;
         syncPushBtnLabel();

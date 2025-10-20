@@ -1801,6 +1801,196 @@ def _build_payload_for_row(
     }
 
 
+def _extract_mist_error(resp: requests.Response) -> str:
+    try:
+        data = resp.json()
+    except Exception:
+        data = None
+
+    if isinstance(data, dict):
+        for key in ("error", "message", "detail", "details"):
+            value = data.get(key)
+            if isinstance(value, str):
+                text = value.strip()
+                if text:
+                    return text
+            if isinstance(value, list):
+                joined = "; ".join(str(item).strip() for item in value if str(item).strip())
+                if joined:
+                    return joined
+    text = resp.text.strip()
+    return text or f"HTTP {resp.status_code}"
+
+
+def _invoke_batch_phase(
+    results: Sequence[Dict[str, Any]],
+    *,
+    base_url: str,
+    token: str,
+    dry_run: bool,
+    method: str,
+    path_template: str,
+    success_template: str,
+    partial_template: str,
+    skip_message: str,
+    empty_message: str,
+    body_getter: Optional[Any] = None,
+    timeout: int = 60,
+) -> Dict[str, Any]:
+    ok_rows = [
+        r for r in results if r.get("ok") and r.get("site_id") and r.get("device_id")
+    ]
+    total = len(ok_rows)
+    if total == 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": empty_message,
+            "successes": 0,
+            "failures": [],
+            "total": 0,
+        }
+
+    if dry_run:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": skip_message.format(total=total),
+            "successes": 0,
+            "failures": [],
+            "total": total,
+        }
+
+    headers = {
+        "Authorization": f"Token {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+
+    successes = 0
+    failures: List[Dict[str, Any]] = []
+    method_upper = method.upper()
+
+    for row in ok_rows:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        if not site_id or not device_id:
+            continue
+
+        url = f"{base_url}{path_template.format(site_id=site_id, device_id=device_id)}"
+        payload = body_getter(row) if callable(body_getter) else None
+
+        try:
+            request_kwargs: Dict[str, Any] = {"headers": headers, "timeout": timeout}
+            if payload is not None and method_upper != "DELETE":
+                request_kwargs["json"] = payload
+            resp = requests.request(method_upper, url, **request_kwargs)
+            if 200 <= resp.status_code < 300:
+                successes += 1
+            else:
+                failures.append(
+                    {
+                        "site_id": site_id,
+                        "device_id": device_id,
+                        "status": resp.status_code,
+                        "message": _extract_mist_error(resp),
+                    }
+                )
+        except Exception as exc:  # pragma: no cover - network failures are reported to the UI
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "status": None,
+                    "message": str(exc),
+                }
+            )
+
+    if failures:
+        return {
+            "ok": False,
+            "skipped": False,
+            "message": partial_template.format(successes=successes, total=total),
+            "successes": successes,
+            "failures": failures,
+            "total": total,
+        }
+
+    return {
+        "ok": True,
+        "skipped": False,
+        "message": success_template.format(count=successes, total=total),
+        "successes": successes,
+        "failures": [],
+        "total": total,
+    }
+
+
+def _apply_temporary_config_for_rows(
+    base_url: str,
+    token: str,
+    results: Sequence[Dict[str, Any]],
+    *,
+    dry_run: bool,
+) -> Dict[str, Any]:
+    return _invoke_batch_phase(
+        results,
+        base_url=base_url,
+        token=token,
+        dry_run=dry_run,
+        method="put",
+        path_template="/sites/{site_id}/devices/{device_id}/temp_port_config",
+        success_template="Applied temporary config to {count} device(s).",
+        partial_template="Applied temporary config to {successes}/{total} device(s). Manual follow-up required.",
+        skip_message="Skipped applying temporary config for {total} device(s) while in Test mode.",
+        empty_message="No successful rows available to apply temporary config.",
+        body_getter=lambda row: row.get("payload") or {},
+    )
+
+
+def _finalize_assignments_for_rows(
+    base_url: str,
+    token: str,
+    results: Sequence[Dict[str, Any]],
+    *,
+    dry_run: bool,
+) -> Dict[str, Any]:
+    return _invoke_batch_phase(
+        results,
+        base_url=base_url,
+        token=token,
+        dry_run=dry_run,
+        method="post",
+        path_template="/sites/{site_id}/devices/{device_id}/temp_port_config/apply",
+        success_template="Finalized temporary assignments for {count} device(s).",
+        partial_template="Finalized temporary assignments for {successes}/{total} device(s). Manual follow-up required.",
+        skip_message="Skipped finalizing assignments for {total} device(s) while in Test mode.",
+        empty_message="No completed rows available to finalize assignments.",
+        body_getter=lambda _: {"temporary": True},
+    )
+
+
+def _remove_temporary_config_for_rows(
+    base_url: str,
+    token: str,
+    results: Sequence[Dict[str, Any]],
+    *,
+    dry_run: bool,
+) -> Dict[str, Any]:
+    return _invoke_batch_phase(
+        results,
+        base_url=base_url,
+        token=token,
+        dry_run=dry_run,
+        method="delete",
+        path_template="/sites/{site_id}/devices/{device_id}/temp_port_config",
+        success_template="Removed temporary config from {count} device(s).",
+        partial_template="Removed temporary config from {successes}/{total} device(s). Manual follow-up required.",
+        skip_message="Skipped removing temporary config for {total} device(s) while in Test mode.",
+        empty_message="No temporary config records to remove for the submitted batch.",
+    )
+
+
 @app.post("/api/push")
 async def api_push(
     request: Request,
@@ -1853,6 +2043,9 @@ async def api_push_batch(
     tz: str = Form(DEFAULT_TZ),
     model_override: Optional[str] = Form(None),  # optional global override (row can still override)
     normalize_modules: bool = Form(True),
+    apply_temp_config: bool = Form(False),
+    finalize_assignments: bool = Form(False),
+    remove_temp_config: bool = Form(False),
 ) -> JSONResponse:
     """
     Batch push. Each row can specify: site_id, device_id, input_json (object),
@@ -1940,5 +2133,42 @@ async def api_push_batch(
         except Exception as e:
             results.append({"ok": False, "row_index": i, "error": f"Server error: {e}"})
 
+    phase_status: Dict[str, Dict[str, Any]] = {}
+    dry_run_bool = bool(dry_run)
+
+    if apply_temp_config:
+        phase_status["apply_temporary_config"] = _apply_temporary_config_for_rows(
+            base_url=base_url,
+            token=token,
+            results=results,
+            dry_run=dry_run_bool,
+        )
+
+    if finalize_assignments:
+        phase_status["finalize_assignments"] = _finalize_assignments_for_rows(
+            base_url=base_url,
+            token=token,
+            results=results,
+            dry_run=dry_run_bool,
+        )
+
+    if remove_temp_config:
+        phase_status["remove_temporary_config"] = _remove_temporary_config_for_rows(
+            base_url=base_url,
+            token=token,
+            results=results,
+            dry_run=dry_run_bool,
+        )
+
     top_ok = all(r.get("ok") for r in results) if results else False
-    return JSONResponse({"ok": top_ok, "dry_run": bool(dry_run), "results": results})
+    phase_ok = all(status.get("ok") or status.get("skipped") for status in phase_status.values())
+    overall_ok = top_ok and phase_ok
+
+    return JSONResponse(
+        {
+            "ok": overall_ok,
+            "dry_run": dry_run_bool,
+            "results": results,
+            "phase_status": phase_status,
+        }
+    )
