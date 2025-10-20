@@ -128,21 +128,103 @@
           <div class="flex items-center gap-6 mt-6 md:mt-0">
             <label class="tooltip">
               <span class="inline-flex items-center gap-2">
-                <input id="dry_run" type="checkbox" class="w-4 h-4" checked />
-                <span class="text-sm">Test mode (no changes)</span>
-              </span>
-              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
-              <span class="tip">Sends the exact payload to Mist <em>without</em> applying changes. You’ll see the JSON and any warnings, but devices aren’t modified.</span>
-            </label>
-
-            <label class="tooltip">
-              <span class="inline-flex items-center gap-2">
                 <input id="strict_overflow" type="checkbox" class="w-4 h-4" />
                 <span class="text-sm">Strict overflow (convert)</span>
               </span>
               <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
               <span class="tip">If checked during conversion, any interface that can’t be mapped cleanly (e.g., out-of-range module/port) is dropped instead of guessed.</span>
             </label>
+          </div>
+        </div>
+
+        <div class="mt-6 border-t border-slate-200 dark:border-slate-700 pt-4 space-y-6">
+          <div>
+            <div class="flex items-start gap-3 mb-4">
+              <span class="mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">SDA</span>
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Site Deployment Automation</p>
+                <h3 class="text-base font-semibold text-slate-800 dark:text-slate-100">Convert Cisco configs into Juniper API payloads</h3>
+                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Choose whether to simulate or push the converted payloads so the output always matches the Site Deployment steps you plan to run.</p>
+              </div>
+            </div>
+            <div class="grid gap-4 md:grid-cols-2">
+              <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-emerald-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+                <span class="flex items-start gap-3">
+                  <input id="site_stage" type="checkbox" class="mt-1 h-4 w-4" />
+                  <span>
+                    <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">Site stage · Test</span>
+                    <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Stage/Test converted config</span>
+                    <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Build the Juniper-ready payloads without pushing them so you can review exactly what will be sent to Mist.</span>
+                  </span>
+                </span>
+                <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-200 text-xs font-bold text-emerald-700 dark:bg-emerald-900 dark:text-emerald-200">?</span>
+                <span class="tip">Runs the Cisco → Juniper conversion and shows the Mist request bodies without applying any live changes.</span>
+              </label>
+
+              <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-emerald-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+                <span class="flex items-start gap-3">
+                  <input id="site_push" type="checkbox" class="mt-1 h-4 w-4" />
+                  <span>
+                    <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">Site stage · Push</span>
+                    <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Push converted config</span>
+                    <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Apply the converted payloads to Mist-managed switches when you are ready to deploy the new Juniper configuration.</span>
+                  </span>
+                </span>
+                <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-200 text-xs font-bold text-emerald-700 dark:bg-emerald-900 dark:text-emerald-200">?</span>
+                <span class="tip">Sends the converted port configuration to Mist. Select only this push option when you are ready for a live update.</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="border-t border-slate-200 dark:border-slate-700 pt-4">
+            <div class="flex items-start gap-3 mb-4">
+              <span class="mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-100 text-xs font-bold tracking-wide text-sky-700 dark:bg-sky-900/40 dark:text-sky-200">LCM</span>
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Lifecycle automation</p>
+                <h3 class="text-base font-semibold text-slate-800 dark:text-slate-100">Mist LCM actions for Cisco → Juniper swaps</h3>
+                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Pick the automation phases that stage, cut over, and clean up the migration so operators know exactly which Life Cycle Management (LCM) tasks will run.</p>
+              </div>
+            </div>
+            <div class="grid gap-4 md:grid-cols-3">
+              <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+                <span class="flex items-start gap-3">
+                  <input id="apply_temp_config" type="checkbox" class="mt-1 h-4 w-4" />
+                  <span>
+                  <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 1 · Stage</span>
+                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Stage the temporary Cisco layout</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Create VLANs, port profiles, and switchport assignments that mirror the legacy Cisco network on the Juniper hardware.</span>
+                </span>
+              </span>
+              <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
+              <span class="tip">Stages the generated payload as a temporary config on each switch after a successful push. This is the LCM staging step for the Cisco → Juniper migration.</span>
+            </label>
+
+            <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+              <span class="flex items-start gap-3">
+                <input id="finalize_assignments" type="checkbox" class="mt-1 h-4 w-4" />
+                <span>
+                  <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 2 · Finalize</span>
+                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Commit LCM assignments</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Move the staged temporary assignments into production once you are ready to complete the cutover.</span>
+                </span>
+              </span>
+              <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
+              <span class="tip">Moves the temporary port assignments into production after staging completes. Use this when the LCM workflow is ready to finalize.</span>
+            </label>
+
+            <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+              <span class="flex items-start gap-3">
+                <input id="remove_temp_config" type="checkbox" class="mt-1 h-4 w-4" />
+                <span>
+                  <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 3 · Clean up</span>
+                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Remove temporary config</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Strip out any temporary LCM configuration that was used during staging after the network is fully converted.</span>
+                </span>
+              </span>
+              <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
+              <span class="tip">Cleans up any temporary configuration left on the device once finalization completes so the LCM process can wrap up cleanly.</span>
+            </label>
+          </div>
           </div>
         </div>
       </div>
@@ -152,12 +234,13 @@
       <div id="batch_rows" class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow divide-y dark:divide-slate-700"></div>
 
       <div class="flex items-center gap-3 mt-4">
-        <button id="push_batch_btn" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Test configuration for all</button>
+        <button id="push_batch_btn" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Run selected automation</button>
         <div id="batch_status" class="text-sm text-slate-600 dark:text-slate-300 ml-2"></div>
       </div>
 
       <!-- Results -->
       <div id="batch_output" class="mt-4 space-y-4"></div>
+      <div id="batch_phase_status" class="mt-4 space-y-3 hidden"></div>
     </section>
   </div>
   </div>
@@ -198,11 +281,16 @@
       });
 
       if (readOnly) {
-        dryRun.checked = true;
-        dryRun.disabled = true;
-        dryRun.setAttribute('aria-disabled', 'true');
-        dryRun.title = 'Read-only accounts can only run in Test mode.';
-        syncPushBtnLabel();
+        liveChangeCheckboxes.forEach(cb => {
+          if (!cb) return;
+          cb.checked = false;
+          cb.disabled = true;
+          cb.dataset.forceDisabled = 'readonly';
+          const label = cb.closest('label');
+          label?.classList.add('opacity-50', 'pointer-events-none');
+          label?.setAttribute('title', 'Read-only accounts cannot apply live changes.');
+        });
+        updateAutomationLocks();
       }
     }).catch(() => {
       window.location.href = '/login';
@@ -233,11 +321,16 @@
     const pushBatchBtn = document.getElementById('push_batch_btn');
     const batchStatus = document.getElementById('batch_status');
     const batchOutput = document.getElementById('batch_output');
+    const batchPhaseStatus = document.getElementById('batch_phase_status');
 
     const strictOverflow = document.getElementById('strict_overflow');
-    const dryRun = document.getElementById('dry_run');
     const tz = document.getElementById('tz');
     const modelOverride = document.getElementById('model_override');
+    const applyTempConfig = document.getElementById('apply_temp_config');
+    const finalizeAssignments = document.getElementById('finalize_assignments');
+    const removeTempConfig = document.getElementById('remove_temp_config');
+    const siteStage = document.getElementById('site_stage');
+    const sitePush = document.getElementById('site_push');
 
     // --- Data ---
     let convertedItems = []; // [{ source_file, output_file, json }]
@@ -247,11 +340,72 @@
     const devicesBySite = new Map(); // site_id -> devices[]
     let sshCollectStartedAt = null;
     let sshCollectRequested = 0;
+    const siteAutomationCheckboxes = [siteStage, sitePush].filter(Boolean);
+    const lcmAutomationCheckboxes = [applyTempConfig, finalizeAssignments, removeTempConfig].filter(Boolean);
+    const liveChangeCheckboxes = [sitePush, applyTempConfig, finalizeAssignments, removeTempConfig].filter(Boolean);
 
     // --- Utils ---
     function show(el){ el.classList.remove('hidden'); }
     function hide(el){ el.classList.add('hidden'); }
     function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
+
+    function isPreviewOnly(){
+      return !liveChangeCheckboxes.some(cb => cb && cb.checked);
+    }
+
+    function syncPushBtnLabel(){
+      const preview = isPreviewOnly();
+      const anySelected = siteAutomationCheckboxes.some(cb => cb && cb.checked) || lcmAutomationCheckboxes.some(cb => cb && cb.checked);
+      if (!anySelected){
+        pushBatchBtn.textContent = 'Run selected automation';
+      } else if (preview){
+        pushBatchBtn.textContent = 'Stage/test selected automation';
+      } else {
+        pushBatchBtn.textContent = 'Apply selected automation';
+      }
+    }
+
+    function updateAutomationLocks(){
+      const siteChecked = siteAutomationCheckboxes.filter(cb => cb && cb.checked);
+      const lcmChecked = lcmAutomationCheckboxes.filter(cb => cb && cb.checked);
+
+      if (siteChecked.length){
+        lcmAutomationCheckboxes.forEach(cb => { if (cb) cb.checked = false; });
+      }
+      if (lcmChecked.length){
+        siteAutomationCheckboxes.forEach(cb => { if (cb) cb.checked = false; });
+      }
+
+      const finalSiteChecked = siteAutomationCheckboxes.filter(cb => cb && cb.checked);
+      const finalLcmChecked = lcmAutomationCheckboxes.filter(cb => cb && cb.checked);
+
+      function applyAvailability(cb, disable){
+        if (!cb) return;
+        const forced = cb.dataset.forceDisabled === 'readonly';
+        const label = cb.closest('label');
+        const finalDisable = forced || disable;
+        cb.disabled = finalDisable;
+        if (label && !forced){
+          label.classList.toggle('opacity-50', finalDisable);
+          label.classList.toggle('pointer-events-none', finalDisable);
+        }
+      }
+
+      siteAutomationCheckboxes.forEach(cb => {
+        if (!cb) return;
+        const disable = (!!finalLcmChecked.length && !cb.checked) || (!!finalSiteChecked.length && !cb.checked);
+        applyAvailability(cb, disable);
+      });
+
+      lcmAutomationCheckboxes.forEach(cb => {
+        if (!cb) return;
+        const disable = (!!finalSiteChecked.length && !cb.checked) || (!!finalLcmChecked.length && !cb.checked);
+        applyAvailability(cb, disable);
+      });
+
+      syncPushBtnLabel();
+      renderConvertedList();
+    }
 
     async function logTiming(eventName, durationMs, metadata = {}){
       try {
@@ -510,8 +664,7 @@
       hide(batchSection);
       hide(rowsWarning);
       batchStatus.textContent = '';
-      dryRun.checked = true;
-      pushBatchBtn.textContent = 'Test configuration for all';
+      syncPushBtnLabel();
       resetSshFailurePanel();
     });
 
@@ -598,20 +751,31 @@
     }
 
     function renderConvertedList(){
+      if (!convertedItems.length){
+        hide(results);
+        resultsList.innerHTML = '';
+        return;
+      }
       show(results);
       resultsList.innerHTML = '';
       convertedItems.forEach((it, idx) => {
         const card = document.createElement('div');
         card.className = 'rounded-xl border bg-white dark:bg-slate-800 dark:border-slate-700 p-4';
+        const siteAutomationActive = siteAutomationCheckboxes.some(cb => cb && cb.checked);
+        const lcmActive = lcmAutomationCheckboxes.some(cb => cb && cb.checked);
+        const showConversionPreview = siteAutomationActive || (!siteAutomationActive && !lcmActive);
+        const previewSection = showConversionPreview
+          ? `<details class="mt-2">
+              <summary class="cursor-pointer text-sm text-slate-600 dark:text-slate-300">Preview JSON</summary>
+              <pre class="text-xs mt-2 p-2 bg-slate-50 dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80">${escapeHtml(JSON.stringify(it.json, null, 2))}</pre>
+            </details>`
+          : `<p class="mt-2 text-xs text-slate-600 dark:text-slate-300">Run a test with Lifecycle automation enabled to review the Mist request that stages VLANs, port profiles, and switchport assignments for the existing network.</p>`;
         card.innerHTML = `
           <div class="flex items-center justify-between">
             <div class="text-sm font-medium">${escapeHtml(it.source_file)}</div>
             <div class="text-xs text-slate-500 dark:text-slate-300">Row ${idx+1}</div>
           </div>
-          <details class="mt-2">
-            <summary class="cursor-pointer text-sm text-slate-600 dark:text-slate-300">Preview JSON</summary>
-            <pre class="text-xs mt-2 p-2 bg-slate-50 dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80">${escapeHtml(JSON.stringify(it.json, null, 2))}</pre>
-          </details>
+          ${previewSection}
         `;
         resultsList.appendChild(card);
       });
@@ -856,13 +1020,117 @@
     }
 
     // --- Batch push ---
-    function syncPushBtnLabel(){ pushBatchBtn.textContent = dryRun.checked ? 'Test configuration for all' : 'Push configuration for all'; }
-    dryRun.addEventListener('change', syncPushBtnLabel);
     syncPushBtnLabel();
+
+    function renderPhaseStatus(statusMap){
+      batchPhaseStatus.innerHTML = '';
+      if (!statusMap || typeof statusMap !== 'object' || !Object.keys(statusMap).length){
+        hide(batchPhaseStatus);
+        return;
+      }
+
+      const labelMap = {
+        site_stage: 'Site Deployment · Stage/Test converted config',
+        site_push: 'Site Deployment · Push converted config',
+        apply_temporary_config: 'LCM Step 1 · Stage temporary config',
+        finalize_assignments: 'LCM Step 2 · Finalize assignments',
+        remove_temporary_config: 'LCM Step 3 · Remove temporary config'
+      };
+
+      Object.entries(statusMap).forEach(([key, info]) => {
+        const label = labelMap[key] || key;
+        const ok = Boolean(info?.ok);
+        const skipped = Boolean(info?.skipped);
+        const failures = Array.isArray(info?.failures) ? info.failures : [];
+        const message = info?.message ? escapeHtml(String(info.message)) : '';
+        const total = typeof info?.total === 'number' ? info.total : undefined;
+        const successes = typeof info?.successes === 'number' ? info.successes : undefined;
+        const payloads = Array.isArray(info?.payloads) ? info.payloads : [];
+
+        const card = document.createElement('div');
+        const hasFailures = failures.length > 0;
+        const baseClass = skipped || (!ok && !hasFailures)
+          ? 'status-info dark:bg-slate-800/60'
+          : ok
+            ? 'status-success dark:bg-emerald-900/40'
+            : 'status-error dark:bg-rose-950';
+        card.className = `rounded-lg border p-4 text-sm ${baseClass}`;
+
+        const meta = [];
+        if (typeof successes === 'number' && typeof total === 'number'){
+          meta.push(`${successes}/${total} device${total === 1 ? '' : 's'} processed`);
+        }
+
+        const header = document.createElement('div');
+        header.className = 'font-semibold mb-1 flex items-center justify-between gap-2';
+        header.innerHTML = `<span>${escapeHtml(label)}</span>` + (meta.length ? `<span class="text-xs font-normal text-slate-600 dark:text-slate-300">${escapeHtml(meta.join(' • '))}</span>` : '');
+        card.appendChild(header);
+
+        if (message){
+          const msgEl = document.createElement('div');
+          msgEl.className = 'mb-2';
+          msgEl.innerHTML = message;
+          card.appendChild(msgEl);
+        }
+
+        if (failures.length){
+          const list = document.createElement('ul');
+          list.className = 'space-y-1 text-xs';
+          failures.forEach(f => {
+            const site = f?.site_id ? `Site ${escapeHtml(String(f.site_id))}` : '';
+            const device = f?.device_id ? `Device ${escapeHtml(String(f.device_id))}` : '';
+            const statusText = typeof f?.status === 'number' ? ` (HTTP ${f.status})` : '';
+            const context = [site, device].filter(Boolean).join(' • ');
+            const detail = f?.message ? escapeHtml(String(f.message)) : 'Unknown error';
+            const line = document.createElement('li');
+            line.innerHTML = `${context ? `${context}: ` : ''}${detail}${statusText}`;
+            list.appendChild(line);
+          });
+          card.appendChild(list);
+        }
+
+        if (payloads.length){
+          const details = document.createElement('details');
+          details.className = 'mt-3';
+          const summaryLabel = key === 'apply_temporary_config'
+            ? 'Temporary config payloads sent to Mist'
+            : 'Request payloads';
+          details.innerHTML = `<summary class="cursor-pointer text-xs text-slate-600 dark:text-slate-300">${escapeHtml(summaryLabel)}</summary>`;
+
+          const payloadWrap = document.createElement('div');
+          payloadWrap.className = 'mt-2 space-y-3';
+
+          payloads.forEach(item => {
+            const site = item?.site_id ? `Site ${escapeHtml(String(item.site_id))}` : '';
+            const device = item?.device_id ? `Device ${escapeHtml(String(item.device_id))}` : '';
+            const headerParts = [site, device].filter(Boolean).join(' • ');
+            const payloadPre = document.createElement('pre');
+            payloadPre.className = 'text-xs p-2 bg-white dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80';
+            payloadPre.textContent = JSON.stringify(item?.payload ?? {}, null, 2);
+
+            const block = document.createElement('div');
+            block.className = 'rounded-lg border dark:border-slate-700 bg-white/70 dark:bg-slate-900/50 p-2';
+            block.innerHTML = headerParts
+              ? `<div class="text-xs font-medium mb-1 text-slate-600 dark:text-slate-300">${headerParts}</div>`
+              : '';
+            block.appendChild(payloadPre);
+            payloadWrap.appendChild(block);
+          });
+
+          details.appendChild(payloadWrap);
+          card.appendChild(details);
+        }
+
+        batchPhaseStatus.appendChild(card);
+      });
+
+      show(batchPhaseStatus);
+    }
 
     pushBatchBtn.addEventListener('click', async () => {
       batchOutput.innerHTML = '';
       batchStatus.textContent = '';
+      renderPhaseStatus({});
 
       for (const r of rows){
         if (!r.site_id || !r.device_id){
@@ -871,6 +1139,8 @@
         }
       }
       if (pushBatchBtn.disabled) return;
+
+      const previewOnly = isPreviewOnly();
 
       const payloadRows = rows.map(r => ({
         site_id: r.site_id,
@@ -885,23 +1155,40 @@
 
       const form = new FormData();
       form.append('rows', JSON.stringify(payloadRows));
-      form.append('dry_run', dryRun.checked ? 'true' : 'false');
       form.append('tz', tz.value.trim());
       const mo = (modelOverride.value || '').trim();
       if (mo) form.append('model_override', mo);
+      form.append('apply_temp_config', applyTempConfig?.checked ? 'true' : 'false');
+      form.append('finalize_assignments', finalizeAssignments?.checked ? 'true' : 'false');
+      form.append('remove_temp_config', removeTempConfig?.checked ? 'true' : 'false');
+      form.append('stage_site_deployment', siteStage?.checked ? 'true' : 'false');
+      form.append('push_site_deployment', sitePush?.checked ? 'true' : 'false');
 
       pushBatchBtn.disabled = true;
-      pushBatchBtn.textContent = dryRun.checked ? 'Testing…' : 'Applying…';
+      pushBatchBtn.textContent = previewOnly ? 'Staging…' : 'Applying…';
 
       try {
         const res = await fetch('/api/push_batch', { method: 'POST', body: form });
         const data = await res.json();
+        if (!res.ok){
+          throw new Error(data?.error || `Request failed with status ${res.status}`);
+        }
 
         const okCount = (data.results || []).filter(r => r.ok).length;
         const total = (data.results || []).length;
-        batchStatus.textContent = `${okCount}/${total} ${dryRun.checked ? 'tests' : 'pushes'} succeeded.`;
+        const siteActive = siteAutomationCheckboxes.some(cb => cb && cb.checked);
+        const lcmActive = lcmAutomationCheckboxes.some(cb => cb && cb.checked);
+        if (siteActive){
+          const label = previewOnly ? 'stage/test run' : 'push';
+          batchStatus.textContent = `${okCount}/${total} ${label}${total === 1 ? '' : 's'} succeeded.`;
+        } else if (lcmActive){
+          batchStatus.textContent = `${okCount}/${total} configs ready for Lifecycle automation.`;
+        } else {
+          batchStatus.textContent = `${okCount}/${total} rows processed.`;
+        }
 
         renderBatchResults(data.results || []);
+        renderPhaseStatus(data.phase_status || {});
 
       } catch (e){
         batchOutput.innerHTML = `
@@ -909,6 +1196,8 @@
             <div class="font-medium">Unexpected error</div>
             <div class="text-sm mt-1">${escapeHtml(String(e))}</div>
           </div>`;
+        batchStatus.textContent = '';
+        renderPhaseStatus({});
       } finally {
         pushBatchBtn.disabled = false;
         syncPushBtnLabel();
@@ -917,6 +1206,17 @@
 
     function renderBatchResults(results){
       batchOutput.innerHTML = '';
+      const showSiteOutputs = siteAutomationCheckboxes.some(cb => cb && cb.checked);
+      if (!showSiteOutputs){
+        if (results.length){
+          batchOutput.innerHTML = `
+            <div class="rounded-lg border border-slate-200 bg-white p-3 text-sm dark:border-slate-700 dark:bg-slate-900/60">
+              <div class="font-medium text-slate-700 dark:text-slate-200">Site Deployment automation not selected</div>
+              <div class="mt-1 text-slate-600 dark:text-slate-300">Review the Lifecycle automation status cards above for the Mist payloads generated during this run.</div>
+            </div>`;
+        }
+        return;
+      }
       results.forEach((r, i) => {
         const fileLabel = convertedItems[rows[r.row_index]?.idx || 0]?.source_file || `Row ${i+1}`;
         const statusBadge = r.ok
@@ -968,12 +1268,32 @@
       });
     }
 
+    siteAutomationCheckboxes.forEach(cb => {
+      cb?.addEventListener('change', () => {
+        if (!cb) return;
+        if (cb === siteStage && cb.checked && sitePush){
+          sitePush.checked = false;
+        }
+        if (cb === sitePush && cb.checked && siteStage){
+          siteStage.checked = false;
+        }
+        updateAutomationLocks();
+      });
+    });
+
+    lcmAutomationCheckboxes.forEach(cb => {
+      cb?.addEventListener('change', () => {
+        updateAutomationLocks();
+      });
+    });
+
     // --- Init ---
     window.addEventListener('load', async () => {
       await fetchSites();
-      dryRun.checked = true;
-      pushBatchBtn.textContent = 'Test configuration for all';
+      syncPushBtnLabel();
+      updateAutomationLocks();
     });
+
   </script>
 </body>
 </html>

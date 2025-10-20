@@ -40,7 +40,7 @@ GreatMigration ships with a responsive FastAPI + HTMX interface backed by a Mist
 
 * Translate legacy switch configs into Mist-ready JSON payloads.
 * Batch map converted payloads to Mist sites and devices, tweak chassis member offsets, exclude uplinks, and override device models.
-* Test configurations (dry-run) or push live updates when “Test mode” is disabled and the signed-in user has push rights.
+* Stage configurations or push live updates using the Site Deployment Automation controls; push options require push rights.
 
 ### Compliance audit & 1 Click Fix
 
@@ -157,7 +157,7 @@ Allow the following flows if your environment restricts outbound traffic:
 ## Operational tips
 
 * **Role-based controls** – buttons that modify Mist (push, 1 Click Fix) only appear for users in the push group. Read-only users can still download reports and review findings.
-* **Dry runs first** – compliance actions report their intended changes before applying them, and the config conversion module offers a “Test mode” toggle for safe validation.
+* **Dry runs first** – compliance actions report their intended changes before applying them, and the Site Deployment automation flow offers a dedicated Stage/Test option for safe validation.
 * **Troubleshooting** – review `backend/logs/app.log` (when syslog forwarding is not configured) and inspect Mist audit logs for confirmation of pushed changes.
 * **Staying current** – re-run either quick start script periodically; both update the git checkout, dependencies, and `.env` defaults while preserving custom settings.
 
