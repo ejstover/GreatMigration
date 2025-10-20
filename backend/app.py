@@ -2083,7 +2083,7 @@ def _generate_temp_network_name(vlan_id: int, raw_name: Optional[str]) -> str:
 
 def _generate_temp_usage_name(key: tuple, *, network_labels: Mapping[str, Optional[str]]) -> str:
     mode, data_network, voice_network, native_network, allowed_networks = key
-    parts = ["lcm", "acc" if mode == "access" else "trk"]
+    parts = ["old", "lcm", "acc" if mode == "access" else "trk"]
     if mode == "access" and data_network:
         parts.append(network_labels.get(data_network) or data_network)
     if mode == "trunk" and native_network:
@@ -2108,6 +2108,8 @@ def _generate_temp_usage_name(key: tuple, *, network_labels: Mapping[str, Option
     name = "_".join(parts + [suffix])
     # Ensure Mist-friendly characters
     name = re.sub(r"[^a-z0-9_-]", "_", name.lower())
+    if not name.startswith("old_"):
+        name = f"old_{name}"
     return name
 
 
