@@ -2065,32 +2065,50 @@ def _compact_dict(data: Mapping[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in data.items() if v not in (None, "", [], {}, set())}
 
 
-def _generate_temp_profile_name(key: tuple) -> str:
-    mode, data_vlan, voice_vlan, native_vlan, allowed = key
-    parts = ["TEMP", "ACC" if mode == "access" else "TRK"]
-    if mode == "access" and data_vlan is not None:
-        parts.append(f"V{data_vlan}")
-    if voice_vlan is not None:
-        parts.append(f"VO{voice_vlan}")
-    if mode == "trunk" and native_vlan is not None:
-        parts.append(f"N{native_vlan}")
-    if allowed:
-        allowed_preview = "-".join(str(v) for v in allowed[:4])
-        if allowed_preview:
-            parts.append(f"A{allowed_preview}{'+' if len(allowed) > 4 else ''}")
+def _generate_temp_network_name(vlan_id: int, raw_name: Optional[str]) -> str:
+    base = str(raw_name or "").strip()
+    if base:
+        # Replace whitespace with underscores and strip non-alphanumerics to keep Mist happy
+        base = re.sub(r"\s+", "_", base)
+        base = re.sub(r"[^A-Za-z0-9_-]", "", base)
+        base = base.strip("-_")
+    if not base:
+        base = f"vlan{vlan_id}"
+    lowered = base.lower()
+    if not lowered.startswith("old_"):
+        base = f"old_{base}"
+    # Mist network names are case-sensitive but favour lower-case for readability
+    return base.lower()
+
+
+def _generate_temp_usage_name(key: tuple, *, network_labels: Mapping[str, Optional[str]]) -> str:
+    mode, data_network, voice_network, native_network, allowed_networks = key
+    parts = ["lcm", "acc" if mode == "access" else "trk"]
+    if mode == "access" and data_network:
+        parts.append(network_labels.get(data_network) or data_network)
+    if mode == "trunk" and native_network:
+        parts.append(network_labels.get(native_network) or native_network)
+    if voice_network:
+        parts.append(f"vo_{network_labels.get(voice_network) or voice_network}")
+    if allowed_networks:
+        preview = "-".join((network_labels.get(name) or name) for name in list(allowed_networks)[:3])
+        if preview:
+            parts.append(f"allow_{preview}{'+' if len(allowed_networks) > 3 else ''}")
     digest_src = json.dumps(
         {
             "mode": mode,
-            "data_vlan": data_vlan,
-            "voice_vlan": voice_vlan,
-            "native_vlan": native_vlan,
-            "allowed": allowed,
+            "data_network": data_network,
+            "voice_network": voice_network,
+            "native_network": native_network,
+            "allowed_networks": list(allowed_networks),
         },
         sort_keys=True,
     )
     suffix = hashlib.sha1(digest_src.encode("utf-8")).hexdigest()[:6]
-    parts.append(suffix.upper())
-    return "-".join(parts)
+    name = "_".join(parts + [suffix])
+    # Ensure Mist-friendly characters
+    name = re.sub(r"[^a-z0-9_-]", "_", name.lower())
+    return name
 
 
 def _add_network(
@@ -2185,10 +2203,16 @@ def _configure_switch_port_profile_override(
     payload: Mapping[str, Any],
 ) -> Dict[str, Any]:
     port_profiles_new = payload.get("port_profiles")
+    port_usages_new = payload.get("port_usages")
     port_overrides_new = payload.get("port_overrides")
     port_config_new = payload.get("port_config")
 
-    if not port_profiles_new and not port_overrides_new and not port_config_new:
+    if (
+        not port_profiles_new
+        and not port_usages_new
+        and not port_overrides_new
+        and not port_config_new
+    ):
         return {"ok": True, "skipped": True, "message": "No temporary config updates."}
 
     url = f"{base_url}/sites/{site_id}/devices/{device_id}"
@@ -2199,7 +2223,12 @@ def _configure_switch_port_profile_override(
         raise MistAPIError(resp_get.status_code, _extract_mist_error(resp_get), response=_safe_json_response(resp_get))
 
     current = resp_get.json() or {}
-    existing_profiles = _normalize_port_profile_list(current.get("port_profiles"))
+    existing_profile_field = "port_profiles"
+    if "port_usages" in current:
+        existing_profile_field = "port_usages"
+    existing_profiles = _normalize_port_profile_list(
+        current.get(existing_profile_field)
+    )
     existing_overrides = _normalize_port_override_list(current.get("port_overrides"))
     existing_config = current.get("port_config")
     if isinstance(existing_config, Mapping):
@@ -2214,8 +2243,14 @@ def _configure_switch_port_profile_override(
             continue
         merged_profiles[name] = dict(profile)
 
+    new_profile_sequences = []
     if isinstance(port_profiles_new, Sequence) and not isinstance(port_profiles_new, (str, bytes, bytearray)):
-        for profile in port_profiles_new:
+        new_profile_sequences.append(port_profiles_new)
+    if isinstance(port_usages_new, Sequence) and not isinstance(port_usages_new, (str, bytes, bytearray)):
+        new_profile_sequences.append(port_usages_new)
+
+    for seq in new_profile_sequences:
+        for profile in seq:
             if not isinstance(profile, Mapping):
                 continue
             name = str(profile.get("name") or "").strip()
@@ -2247,7 +2282,13 @@ def _configure_switch_port_profile_override(
 
     request_body: Dict[str, Any] = {}
     if merged_profiles:
-        request_body["port_profiles"] = list(merged_profiles.values())
+        profile_field = existing_profile_field
+        if profile_field == "port_profiles" and port_usages_new and "port_usages" not in current:
+            # Explicitly favour port_usages when the caller provides it
+            profile_field = "port_usages"
+        if profile_field == "port_usages" and not current.get("port_usages") and port_profiles_new and not port_usages_new:
+            profile_field = "port_profiles"
+        request_body[profile_field] = list(merged_profiles.values())
     if merged_overrides_map:
         request_body["port_overrides"] = list(merged_overrides_map.values())
     if merged_config:
@@ -2278,9 +2319,45 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
     if not isinstance(interfaces, list):
         return None
 
-    port_profiles: Dict[tuple, Dict[str, Any]] = {}
+    port_usages: Dict[tuple, Dict[str, Any]] = {}
     port_config: Dict[str, Dict[str, Any]] = {}
     port_overrides: List[Dict[str, Any]] = []
+
+    networks: List[Dict[str, Any]] = []
+    seen_vlan_ids: set[int] = set()
+    vlan_name_map: Dict[int, str] = {}
+    vlan_label_map: Dict[str, Optional[str]] = {}
+
+    def _register_vlan(vlan_id: Optional[int], raw_name: Optional[str] = None) -> Optional[str]:
+        if vlan_id is None:
+            return None
+        if vlan_id in vlan_name_map:
+            return vlan_name_map[vlan_id]
+        network_name = _generate_temp_network_name(vlan_id, raw_name)
+        vlan_name_map[vlan_id] = network_name
+        if network_name not in vlan_label_map:
+            vlan_label_map[network_name] = (raw_name.strip() if isinstance(raw_name, str) else raw_name) or None
+        if vlan_id not in seen_vlan_ids:
+            seen_vlan_ids.add(vlan_id)
+            networks.append(
+                {
+                    "id": vlan_id,
+                    "vlan_id": vlan_id,
+                    "name": network_name,
+                    "source_name": (raw_name.strip() if isinstance(raw_name, str) else raw_name) or None,
+                    "temporary": True,
+                }
+            )
+        return network_name
+
+    vlans = source.get("vlans")
+    if isinstance(vlans, list):
+        for item in vlans:
+            if not isinstance(item, Mapping):
+                continue
+            vid = _int_or_none(item.get("id"))
+            display_name = str(item.get("name") or "").strip() or None
+            _register_vlan(vid, display_name)
 
     for intf in interfaces:
         if not isinstance(intf, Mapping):
@@ -2296,23 +2373,49 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
         voice_vlan = _int_or_none(intf.get("voice_vlan"))
         native_vlan = _int_or_none(intf.get("native_vlan"))
         allowed_vlans = _normalize_vlan_values(intf.get("allowed_vlans"))
-        profile_key = (mode, data_vlan, voice_vlan, native_vlan, tuple(allowed_vlans))
 
-        profile = port_profiles.get(profile_key)
+        data_network = _register_vlan(data_vlan)
+        voice_network = _register_vlan(voice_vlan)
+        native_network = _register_vlan(native_vlan)
+        allowed_network_list: List[str] = []
+        for vlan_id in allowed_vlans:
+            network_name = _register_vlan(vlan_id)
+            if network_name:
+                allowed_network_list.append(network_name)
+        allowed_networks = tuple(allowed_network_list)
+
+        usage_key = (mode, data_network, voice_network, native_network, allowed_networks)
+
+        profile = port_usages.get(usage_key)
         if profile is None:
-            profile_name = _generate_temp_profile_name(profile_key)
-            profile = _compact_dict(
-                {
-                    "name": profile_name,
-                    "mode": mode,
-                    "data_vlan": data_vlan,
-                    "voice_vlan": voice_vlan,
-                    "native_vlan": native_vlan,
-                    "allowed_vlans": allowed_vlans,
-                }
-            )
-            profile["temporary"] = True
-            port_profiles[profile_key] = profile
+            usage_name = _generate_temp_usage_name(usage_key, network_labels=vlan_label_map)
+            profile = {
+                "name": usage_name,
+                "mode": mode or None,
+                "disabled": False,
+                "temporary": True,
+                "port_network": data_network if mode == "access" else native_network,
+                "voip_network": voice_network,
+                "stp_edge": mode == "access",
+                "use_vstp": mode == "trunk",
+                "stp_p2p": False,
+                "stp_no_root_port": False,
+                "stp_disable": False,
+                "stp_required": False,
+                "all_networks": bool(mode == "trunk" and not allowed_networks),
+                "networks": list(allowed_networks) if allowed_networks else None,
+                "speed": "auto",
+                "duplex": "auto",
+                "mac_limit": 0,
+                "persist_mac": False,
+                "poe_disabled": False,
+                "enable_qos": False,
+                "storm_control": {},
+                "mtu": None,
+                "allow_dhcpd": False,
+                "disable_autoneg": False,
+            }
+            port_usages[usage_key] = _compact_dict(profile)
 
         profile_name = profile["name"]
         description = str(intf.get("description") or "").strip()
@@ -2320,14 +2423,13 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
 
         port_config[juniper_if] = _compact_dict(
             {
-                "profile": profile_name,
+                "usage": profile_name,
                 "mode": mode,
-                "data_vlan": data_vlan,
-                "voice_vlan": voice_vlan,
-                "native_vlan": native_vlan,
-                "allowed_vlans": allowed_vlans,
+                "port_network": data_network if mode == "access" else native_network,
+                "voip_network": voice_network,
+                "networks": list(allowed_networks) if allowed_networks else None,
                 "description": description,
-                "shutdown": shutdown,
+                "disabled": shutdown,
                 "source_interface": str(intf.get("name") or "").strip() or None,
             }
         )
@@ -2336,14 +2438,13 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
             _compact_dict(
                 {
                     "port_id": juniper_if,
-                    "profile": profile_name,
+                    "usage": profile_name,
                     "mode": mode,
-                    "data_vlan": data_vlan,
-                    "voice_vlan": voice_vlan,
-                    "native_vlan": native_vlan,
-                    "allowed_vlans": allowed_vlans,
+                    "port_network": data_network if mode == "access" else native_network,
+                    "voip_network": voice_network,
+                    "networks": list(allowed_networks) if allowed_networks else None,
                     "description": description,
-                    "shutdown": shutdown,
+                    "disabled": shutdown,
                     "source_interface": str(intf.get("name") or "").strip() or None,
                 }
             )
@@ -2352,32 +2453,15 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
     if not port_config:
         return None
 
-    vlan_entries: List[Dict[str, Any]] = []
-    seen_vlan_ids: set[int] = set()
-    vlans = source.get("vlans")
-    if isinstance(vlans, list):
-        for item in vlans:
-            if not isinstance(item, Mapping):
-                continue
-            vid = _int_or_none(item.get("id"))
-            if vid is None or vid in seen_vlan_ids:
-                continue
-            seen_vlan_ids.add(vid)
-            vlan_entry = _compact_dict(
-                {
-                    "id": vid,
-                    "name": str(item.get("name") or "").strip() or None,
-                }
-            )
-            vlan_entries.append(vlan_entry)
-
     payload: Dict[str, Any] = {
-        "port_profiles": [profile for profile in port_profiles.values()],
+        "port_usages": [usage for usage in port_usages.values()],
         "port_config": port_config,
         "port_overrides": port_overrides,
     }
-    if vlan_entries:
-        payload["vlans"] = vlan_entries
+    if networks:
+        payload["networks"] = networks
+        # Keep legacy key for compatibility with earlier previews/status handling
+        payload["vlans"] = networks
 
     return payload
 
@@ -2447,7 +2531,12 @@ def _apply_temporary_config_for_rows(
             )
             continue
 
-        vlan_entries = payload.get("vlans") if isinstance(payload, Mapping) else None
+        vlan_entries = None
+        if isinstance(payload, Mapping):
+            if isinstance(payload.get("networks"), Sequence):
+                vlan_entries = payload.get("networks")
+            else:
+                vlan_entries = payload.get("vlans")
         network_results: List[Dict[str, Any]] = []
         record["network_results"] = network_results
         errors: List[Tuple[str, Optional[int]]] = []
