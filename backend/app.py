@@ -2755,6 +2755,8 @@ async def api_push_batch(
     apply_temp_config: bool = Form(False),
     finalize_assignments: bool = Form(False),
     remove_temp_config: bool = Form(False),
+    stage_site_deployment: bool = Form(False),
+    push_site_deployment: bool = Form(False),
 ) -> JSONResponse:
     """
     Batch push. Each row can specify: site_id, device_id, input_json (object),
@@ -2768,6 +2770,24 @@ async def api_push_batch(
 
     token = _load_mist_token()
     base_url = base_url.rstrip("/")
+
+    dry_run_bool = bool(dry_run)
+    stage_site_deployment = bool(stage_site_deployment)
+    push_site_deployment = bool(push_site_deployment)
+    site_actions_selected = stage_site_deployment or push_site_deployment
+    lcm_actions_selected = bool(apply_temp_config or finalize_assignments or remove_temp_config)
+
+    if site_actions_selected and lcm_actions_selected:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Select either Site Deployment Automation or Lifecycle Automation actions, not both."
+            },
+            status_code=400,
+        )
+
+    should_push_live = push_site_deployment and not dry_run_bool
+    effective_dry_run = not should_push_live
 
     try:
         row_list = json.loads(rows)
@@ -2823,7 +2843,7 @@ async def api_push_batch(
                 payload_in=payload_in, model_override=row_model_override,
                 excludes=excludes, exclude_uplinks=exclude_uplinks,
                 member_offset=member_offset, port_offset=port_offset, normalize_modules=normalize_modules,
-                dry_run=dry_run,
+                dry_run=effective_dry_run,
             )
             row_result["row_index"] = i
             row_result["site_id"] = site_id
@@ -2843,7 +2863,106 @@ async def api_push_batch(
             results.append({"ok": False, "row_index": i, "error": f"Server error: {e}"})
 
     phase_status: Dict[str, Dict[str, Any]] = {}
-    dry_run_bool = bool(dry_run)
+
+    if site_actions_selected:
+        total_rows = len(results)
+        successes = sum(1 for r in results if r.get("ok"))
+        failures: List[Dict[str, Any]] = []
+        for r in results:
+            if r.get("ok"):
+                continue
+            message = ""
+            error_text = r.get("error")
+            if isinstance(error_text, str) and error_text.strip():
+                message = error_text.strip()
+            else:
+                validation_data = r.get("validation")
+                if isinstance(validation_data, Mapping):
+                    errors_list = validation_data.get("errors")
+                    if isinstance(errors_list, Sequence) and not isinstance(errors_list, (str, bytes, bytearray)):
+                        joined = "; ".join(
+                            str(item).strip() for item in errors_list if str(item).strip()
+                        )
+                        if joined:
+                            message = joined
+            status_val = r.get("status") if isinstance(r.get("status"), int) else None
+            if not message:
+                if status_val is not None:
+                    message = f"Mist API returned HTTP {status_val}"
+                else:
+                    message = "Conversion failed."
+            failures.append(
+                {
+                    "site_id": r.get("site_id"),
+                    "device_id": r.get("device_id"),
+                    "status": status_val,
+                    "message": message,
+                }
+            )
+
+        if stage_site_deployment:
+            if total_rows == 0:
+                phase_status["site_stage"] = {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "No rows submitted for Site Deployment staging.",
+                    "successes": 0,
+                    "failures": [],
+                    "total": 0,
+                }
+            else:
+                phase_status["site_stage"] = {
+                    "ok": successes == total_rows,
+                    "skipped": False,
+                    "message": (
+                        "Prepared converted Mist payloads for {count} device(s)."
+                        if successes == total_rows
+                        else "Prepared converted Mist payloads for {successes}/{total} device(s). Check batch results for details."
+                    ).format(count=successes, successes=successes, total=total_rows),
+                    "successes": successes,
+                    "failures": failures,
+                    "total": total_rows,
+                }
+
+        if push_site_deployment:
+            if dry_run_bool:
+                phase_status["site_push"] = {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "Skipped pushing converted config while in Test mode.",
+                    "successes": 0,
+                    "failures": [],
+                    "total": len(results),
+                }
+            elif len(results) == 0:
+                phase_status["site_push"] = {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "No rows available to push converted config.",
+                    "successes": 0,
+                    "failures": [],
+                    "total": 0,
+                }
+            else:
+                phase_status["site_push"] = {
+                    "ok": successes == len(results),
+                    "skipped": False,
+                    "message": (
+                        "Pushed converted config to {count} device(s)."
+                        if successes == len(results)
+                        else "Pushed converted config to {successes}/{total} device(s). Check batch results for details."
+                    ).format(count=successes, successes=successes, total=len(results)),
+                    "successes": successes,
+                    "failures": failures,
+                    "total": len(results),
+                }
+
+    if not site_actions_selected:
+        for row in results:
+            if isinstance(row, dict):
+                row.pop("payload", None)
+                row.pop("response", None)
+                row.pop("status", None)
 
     if apply_temp_config:
         phase_status["apply_temporary_config"] = _apply_temporary_config_for_rows(
