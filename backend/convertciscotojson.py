@@ -28,8 +28,11 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
 from ciscoconfparse import CiscoConfParse
+
+from plan_builder import PlannerError, generate_plan
 
 TARGET_MODELS = {"ex4100-48mp", "ex4100-24mp"}
 
@@ -402,23 +405,74 @@ def main():
         help="If set, raise an error when a port exceeds the inferred/forced model capacity."
     )
     ap.add_argument("--start-port", type=int, default=0, help="Offset final Juniper port numbers by this amount.")
+    ap.add_argument("--skip-plan", action="store_true", help="Skip planner artifact generation after conversion.")
+    ap.add_argument("--data-mapping", help="Override planner data VLAN mapping JSON file.")
+    ap.add_argument("--voice-mapping", help="Override planner voice VLAN mapping JSON file.")
+    ap.add_argument(
+        "--plan-output-dir",
+        help="Directory for plan/final JSON artifacts (defaults to converter output directory).",
+    )
+    ap.add_argument(
+        "--plan-persist-dir",
+        help="Directory to persist planner artifacts per switch (defaults to backend/logs/planner).",
+    )
+    ap.add_argument("--mist-base-url", dest="plan_base_url", help="Override Mist API base URL for planner validation.")
+    ap.add_argument("--mist-org-id", dest="plan_org_id", help="Override Mist org ID for planner validation.")
+    ap.add_argument(
+        "--mist-template-id",
+        dest="plan_template_id",
+        help="Override Mist switch template ID for planner validation.",
+    )
+    ap.add_argument("--mist-token", dest="plan_token", help="Override Mist token for planner validation.")
     args = ap.parse_args()
 
     if not args.input_file and not args.bulk_convert:
         ap.error("Provide either a single input_file or --bulk-convert <directory>")
+
+    planner_persist_default = Path(__file__).resolve().parent / "logs" / "planner"
+
+    def _run_planner(output_file: Path, source_label: str) -> None:
+        if args.skip_plan:
+            return
+        plan_output_dir = Path(args.plan_output_dir) if args.plan_output_dir else None
+        persist_dir = Path(args.plan_persist_dir) if args.plan_persist_dir else planner_persist_default
+        try:
+            result = generate_plan(
+                output_file,
+                data_mapping_path=Path(args.data_mapping) if args.data_mapping else None,
+                voice_mapping_path=Path(args.voice_mapping) if args.voice_mapping else None,
+                output_dir=plan_output_dir,
+                base_url=args.plan_base_url,
+                org_id=args.plan_org_id,
+                template_id=args.plan_template_id,
+                token=args.plan_token,
+                persist_dir=persist_dir,
+            )
+        except PlannerError as exc:
+            print(f"  ⚠️ Planner failed for {source_label}: {exc}")
+            return
+
+        print(f"  📄 Plan: {result.plan_path.name} | Final: {result.final_path.name}")
+        if result.persisted_plan_path:
+            print(f"    ↳ persisted to {result.persisted_plan_path.parent}")
+        if result.errors:
+            print("    ⚠️ Planner issues detected:")
+            for issue in result.errors:
+                print(f"      - {issue}")
 
     # Single-file mode
     if args.input_file:
         in_path = Path(args.input_file)
         if not in_path.exists():
             ap.error(f"Input file not found: {in_path}")
-        convert_one_file(
+        output_file = convert_one_file(
             input_path=in_path,
             uplink_module=args.uplink_module,
             strict_overflow=args.strict_overflow,
             force_model=args.force_model,
             start_port=args.start_port,
         )
+        _run_planner(output_file, in_path.name)
         return
 
     # Bulk mode
@@ -438,7 +492,7 @@ def main():
     failed = 0
     for p in files:
         try:
-            convert_one_file(
+            output_file = convert_one_file(
                 input_path=p,
                 uplink_module=args.uplink_module,
                 strict_overflow=args.strict_overflow,
@@ -447,6 +501,7 @@ def main():
                 start_port=args.start_port,
             )
             ok += 1
+            _run_planner(output_file, p.name)
         except Exception as e:
             failed += 1
             print(f"❌ {p.name}: {e}")
