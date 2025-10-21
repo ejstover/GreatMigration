@@ -2568,53 +2568,6 @@ def _configure_switch_port_profile_override(
     return result
 
 
-def _set_temporary_port_config(
-    base_url: str,
-    token: str,
-    site_id: str,
-    device_id: str,
-    payload: Mapping[str, Any],
-) -> Dict[str, Any]:
-    request_body, warnings, rename_map = _prepare_switch_port_profile_payload(
-        base_url,
-        token,
-        site_id,
-        device_id,
-        payload,
-    )
-
-    if not request_body:
-        result: Dict[str, Any] = {"ok": True, "skipped": True, "message": "No temporary config updates."}
-        if warnings:
-            result["warnings"] = warnings
-        if rename_map:
-            result["renamed_networks"] = rename_map
-        return result
-
-    # Temporary overrides operate on existing definitions; omit network updates here.
-    request_body.pop("networks", None)
-
-    url = f"{base_url}/sites/{site_id}/devices/{device_id}/temp_port_config"
-    headers = _mist_headers(token)
-
-    resp_post = requests.post(url, headers=headers, json=request_body, timeout=60)
-    data = _safe_json_response(resp_post)
-    if not (200 <= resp_post.status_code < 300):
-        raise MistAPIError(resp_post.status_code, _extract_mist_error(resp_post), response=data)
-
-    result: Dict[str, Any] = {
-        "ok": True,
-        "status": resp_post.status_code,
-        "request": request_body,
-        "response": data,
-    }
-    if warnings:
-        result["warnings"] = warnings
-    if rename_map:
-        result["renamed_networks"] = rename_map
-    return result
-
-
 def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
     source = row.get("_temp_config_source")
     if not isinstance(source, Mapping):
@@ -2793,206 +2746,95 @@ def _apply_temporary_config_for_rows(
         return {
             "ok": True,
             "skipped": True,
-            "message": "No successful rows available to apply temporary config.",
+            "message": "No successful rows available to stage temporary config previews.",
             "successes": 0,
             "failures": [],
             "total": 0,
         }
 
-    if dry_run:
-        for row in ok_rows:
-            payload = _build_temp_config_payload(row) or {}
-            site_id = str(row.get("site_id") or "").strip()
-            device_id = str(row.get("device_id") or "").strip()
-            record: Dict[str, Any] = {
-                "site_id": site_id,
-                "device_id": device_id,
-                "payload": payload,
-            }
-            warnings: List[str] = []
-            if site_id and device_id and payload:
-                try:
-                    _, conflict_warnings, rename_map = _prepare_switch_port_profile_payload(
-                        base_url,
-                        token,
-                        site_id,
-                        device_id,
-                        payload,
-                    )
-                    if rename_map:
-                        _apply_network_rename_to_payload(payload, rename_map)
-                    if conflict_warnings:
-                        warnings.extend(conflict_warnings)
-                except MistAPIError as exc:
-                    warnings.append(
-                        f"Unable to inspect existing Mist configuration for VLAN conflicts: {exc}"
-                    )
-            if warnings:
-                record["warnings"] = warnings
-            payload_records.append(record)
-        return {
-            "ok": True,
-            "skipped": True,
-            "message": "Skipped applying temporary config for {total} device(s) during a preview-only run.".format(total=total),
-            "successes": 0,
-            "failures": [],
-            "total": total,
-            "payloads": payload_records,
-        }
-
     successes = 0
     failures: List[Dict[str, Any]] = []
-    records: List[Dict[str, Any]] = []
 
     for row in ok_rows:
         site_id = str(row.get("site_id") or "").strip()
         device_id = str(row.get("device_id") or "").strip()
         payload = _build_temp_config_payload(row)
+        base_payload: Dict[str, Any] = payload if isinstance(payload, Mapping) else {}
+
         record: Dict[str, Any] = {
             "site_id": site_id,
             "device_id": device_id,
-            "payload": payload or {},
+            "payload": dict(base_payload),
         }
-        payload_records.append(record)
-        records.append(record)
 
-        record["_errors"] = []  # type: ignore[assignment]
+        warnings: List[str] = []
 
-        if not payload:
-            record["_errors"].append(("No temporary config payload available.", None))  # type: ignore[index]
-            continue
-
-        definition_payload: Dict[str, Any] = {}
-        if isinstance(payload, Mapping):
-            networks_value = payload.get("networks") or payload.get("vlans")
-            if networks_value:
-                definition_payload["networks"] = networks_value
-            if payload.get("port_profiles"):
-                definition_payload["port_profiles"] = payload.get("port_profiles")
-            if payload.get("port_usages"):
-                definition_payload["port_usages"] = payload.get("port_usages")
-        record["_definition_payload"] = definition_payload  # type: ignore[index]
-
-    # Ensure required networks and port usages exist before staging overrides
-    for record in records:
-        payload = record.get("payload")
-        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
-
-        if not payload or errors:
-            continue
-
-        definition_payload = record.get("_definition_payload") or {}
-        if not isinstance(definition_payload, Mapping) or not definition_payload:
-            continue
-
-        site_id = str(record.get("site_id") or "")
-        device_id = str(record.get("device_id") or "")
-
-        try:
-            definition_result = _configure_switch_port_profile_override(
-                base_url,
-                token,
-                site_id,
-                device_id,
-                definition_payload,
-            )
-            record["definition_result"] = definition_result
-            rename_map = definition_result.get("renamed_networks") if isinstance(definition_result, Mapping) else None
-            if rename_map and isinstance(payload, Mapping):
-                _apply_network_rename_to_payload(payload, rename_map)
-                record["payload"] = payload
-                if isinstance(definition_payload, Mapping):
-                    _apply_network_rename_to_payload(definition_payload, rename_map)
-                    record["_definition_payload"] = definition_payload
-            warning_list = definition_result.get("warnings") if isinstance(definition_result, Mapping) else None
-            if warning_list:
-                record.setdefault("warnings", []).extend(
-                    [w for w in warning_list if isinstance(w, str) and w.strip()]
-                )
-            if not definition_result.get("ok"):
-                errors.append((str(definition_result.get("message") or "Device update failed."), definition_result.get("status")))
-        except MistAPIError as exc:
-            record["definition_result"] = {
-                "ok": False,
-                "status": exc.status_code,
-                "message": str(exc),
-                "response": exc.response,
-            }
-            errors.append((str(exc), exc.status_code))
-
-    # With VLANs provisioned, push the port usage/profile overrides
-    for record in records:
-        payload = record.get("payload")
-        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
-
-        if not payload or errors:
-            continue
-
-        site_id = str(record.get("site_id") or "")
-        device_id = str(record.get("device_id") or "")
-
-        staged_payload = dict(payload) if isinstance(payload, Mapping) else {}
-        staged_payload.pop("networks", None)
-        staged_payload.pop("vlans", None)
-
-        try:
-            device_result = _set_temporary_port_config(
-                base_url,
-                token,
-                site_id,
-                device_id,
-                staged_payload or payload,
-            )
-            record["device_result"] = device_result
-            rename_map = device_result.get("renamed_networks") if isinstance(device_result, Mapping) else None
-            if rename_map and isinstance(payload, Mapping):
-                _apply_network_rename_to_payload(payload, rename_map)
-                record["payload"] = payload
-            warning_list = device_result.get("warnings") if isinstance(device_result, Mapping) else None
-            if warning_list:
-                record.setdefault("warnings", []).extend(
-                    [w for w in warning_list if isinstance(w, str) and w.strip()]
-                )
-            if not device_result.get("ok"):
-                errors.append((str(device_result.get("message") or "Device update failed."), device_result.get("status")))
-        except MistAPIError as exc:
-            record["device_result"] = {
-                "ok": False,
-                "status": exc.status_code,
-                "message": str(exc),
-                "response": exc.response,
-            }
-            errors.append((str(exc), exc.status_code))
-
-    for record in records:
-        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
-        site_id = record.get("site_id")
-        device_id = record.get("device_id")
-
-        if errors:
-            message, status = errors[0]
+        if not base_payload:
             failures.append(
                 {
                     "site_id": site_id,
                     "device_id": device_id,
-                    "message": message,
-                    "status": status,
+                    "message": "No temporary config payload available.",
+                    "status": None,
                 }
             )
-        elif record.get("payload"):
-            successes += 1
+            payload_records.append(record)
+            continue
 
-        # Clean up internal bookkeeping keys before returning to the client
-        record.pop("_errors", None)
-        record.pop("_definition_payload", None)
+        if site_id and device_id:
+            try:
+                prepared_body, conflict_warnings, rename_map = _prepare_switch_port_profile_payload(
+                    base_url,
+                    token,
+                    site_id,
+                    device_id,
+                    base_payload,
+                )
+                if rename_map:
+                    _apply_network_rename_to_payload(base_payload, rename_map)
+                    record["renamed_networks"] = rename_map
+                preview_body = prepared_body or base_payload
+                record["payload"] = preview_body
+                if conflict_warnings:
+                    warnings.extend(conflict_warnings)
+            except MistAPIError as exc:
+                warnings.append(f"Unable to inspect Mist configuration: {exc}")
+                failures.append(
+                    {
+                        "site_id": site_id,
+                        "device_id": device_id,
+                        "message": str(exc),
+                        "status": exc.status_code,
+                    }
+                )
+                record["payload"] = base_payload
+                if warnings:
+                    record["warnings"] = warnings
+                payload_records.append(record)
+                continue
+        else:
+            record["payload"] = base_payload
 
-    ok = successes == total
+        if warnings:
+            record["warnings"] = warnings
+
+        successes += 1
+
+        payload_records.append(record)
+
+    ok = successes == total and not failures
+    skipped = not failures
+
+    message = (
+        "Prepared temporary config payloads for {count} device(s). Review before finalizing."
+        if ok
+        else "Prepared temporary config payloads for {successes}/{total} device(s). Manual follow-up recommended."
+    ).format(count=successes, successes=successes, total=total)
+
     return {
         "ok": ok,
-        "skipped": False,
-        "message": (
-            "Applied temporary config to {count} device(s)." if ok else "Applied temporary config to {successes}/{total} device(s). Manual follow-up required."
-        ).format(count=successes, successes=successes, total=total),
+        "skipped": skipped,
+        "message": message,
         "successes": successes,
         "failures": failures,
         "total": total,
