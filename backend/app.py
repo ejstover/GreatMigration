@@ -2095,18 +2095,6 @@ def _generate_temp_network_name(vlan_id: int, raw_name: Optional[str]) -> str:
     return name
 
 
-def _generate_conflict_network_name(vlan_id: int, original_name: str, attempt: int = 1) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_-]", "", str(original_name or "").strip().lower())
-    if cleaned.startswith("old_"):
-        cleaned = cleaned[4:]
-    if not cleaned:
-        cleaned = f"vlan{vlan_id}"
-    suffix = f"{cleaned}_conflict"
-    if attempt > 1:
-        suffix = f"{suffix}{attempt}"
-    return _generate_temp_network_name(vlan_id, suffix)
-
-
 def _rename_network_fields(record: Mapping[str, Any], rename_map: Mapping[str, str]) -> None:
     if not isinstance(record, Mapping) or not rename_map:
         return
@@ -2227,8 +2215,6 @@ def _resolve_network_conflicts(
             continue
         existing_by_vid.setdefault(vid, set()).add(name)
 
-    used_names: Set[str] = set(existing_networks.keys()) | set(networks_new.keys())
-
     for original_name, data in list(networks_new.items()):
         if not isinstance(data, Mapping):
             continue
@@ -2238,36 +2224,14 @@ def _resolve_network_conflicts(
         conflict_names = existing_by_vid.get(vid)
         if not conflict_names:
             continue
-        if original_name in conflict_names and len(conflict_names) == 1:
-            continue
-
-        attempt = 1
-        new_name = original_name
-        while True:
-            candidate = _generate_conflict_network_name(vid, original_name, attempt)
-            attempt += 1
-            if candidate == original_name:
-                continue
-            if candidate not in used_names:
-                new_name = candidate
-                break
-
-        if new_name != original_name:
-            rename_map[original_name] = new_name
-            updated = dict(data)
-            updated["name"] = new_name
-            networks_new.pop(original_name)
-            networks_new[new_name] = updated
-            used_names.add(new_name)
-            warnings.append(
-                "Detected VLAN ID {vid} conflict with existing network(s) {conflicts}; "
-                "renamed staged network '{old}' to '{new}'.".format(
-                    vid=vid,
-                    conflicts=", ".join(sorted(conflict_names)),
-                    old=original_name,
-                    new=new_name,
-                )
+        networks_new.pop(original_name, None)
+        warnings.append(
+            "Detected VLAN ID {vid} already configured on Mist as {conflicts}; "
+            "no temporary network changes were staged for this VLAN.".format(
+                vid=vid,
+                conflicts=", ".join(sorted(conflict_names)),
             )
+        )
 
     if rename_map:
         for seq in (port_profiles_seq, port_usages_seq):
