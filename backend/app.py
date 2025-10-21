@@ -2095,6 +2095,189 @@ def _generate_temp_network_name(vlan_id: int, raw_name: Optional[str]) -> str:
     return name
 
 
+def _generate_conflict_network_name(vlan_id: int, original_name: str, attempt: int = 1) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]", "", str(original_name or "").strip().lower())
+    if cleaned.startswith("old_"):
+        cleaned = cleaned[4:]
+    if not cleaned:
+        cleaned = f"vlan{vlan_id}"
+    suffix = f"{cleaned}_conflict"
+    if attempt > 1:
+        suffix = f"{suffix}{attempt}"
+    return _generate_temp_network_name(vlan_id, suffix)
+
+
+def _rename_network_fields(record: Mapping[str, Any], rename_map: Mapping[str, str]) -> None:
+    if not isinstance(record, Mapping) or not rename_map:
+        return
+    network_keys = (
+        "port_network",
+        "voip_network",
+        "guest_network",
+        "server_reject_network",
+        "server_fail_network",
+        "native_network",
+    )
+    mutable = getattr(record, "__setitem__", None)
+    for key in network_keys:
+        value = record.get(key)
+        replacement = rename_map.get(value) if isinstance(value, str) else None
+        if replacement is not None and mutable is not None:
+            record[key] = replacement  # type: ignore[index]
+
+    list_keys = ("networks", "dynamic_vlan_networks")
+    for key in list_keys:
+        value = record.get(key)
+        if isinstance(value, list):
+            record[key] = [rename_map.get(item, item) for item in value]  # type: ignore[index]
+        elif isinstance(value, tuple):
+            record[key] = tuple(rename_map.get(item, item) for item in value)  # type: ignore[index]
+
+
+def _apply_network_rename_to_payload(payload: Mapping[str, Any], rename_map: Mapping[str, str]) -> None:
+    if not isinstance(payload, Mapping) or not rename_map:
+        return
+
+    def _rename_network_entries(entries: Any) -> Any:
+        if isinstance(entries, list):
+            for entry in entries:
+                if isinstance(entry, Mapping):
+                    name = entry.get("name")
+                    new_name = rename_map.get(name) if isinstance(name, str) else None
+                    if new_name is not None:
+                        entry["name"] = new_name  # type: ignore[index]
+                    _rename_network_fields(entry, rename_map)
+        elif isinstance(entries, Mapping):
+            updated: Dict[Any, Any] = {}
+            for key, entry in entries.items():
+                new_key = rename_map.get(key, key) if isinstance(key, str) else key
+                new_entry = entry
+                if isinstance(entry, Mapping):
+                    new_entry = dict(entry)
+                    name = new_entry.get("name")
+                    new_name = rename_map.get(name) if isinstance(name, str) else None
+                    if new_name is not None:
+                        new_entry["name"] = new_name
+                    _rename_network_fields(new_entry, rename_map)
+                updated[new_key] = new_entry
+            return updated
+        return entries
+
+    networks_value = payload.get("networks")
+    if networks_value is not None:
+        updated_networks = _rename_network_entries(networks_value)
+        if isinstance(networks_value, Mapping) and isinstance(payload, dict):
+            payload["networks"] = updated_networks
+
+    vlans_value = payload.get("vlans")
+    if vlans_value is not None:
+        updated_vlans = _rename_network_entries(vlans_value)
+        if isinstance(vlans_value, Mapping) and isinstance(payload, dict):
+            payload["vlans"] = updated_vlans
+
+    port_usages = payload.get("port_usages")
+    if isinstance(port_usages, Mapping):
+        for usage in port_usages.values():
+            if isinstance(usage, Mapping):
+                _rename_network_fields(usage, rename_map)
+
+    port_profiles = payload.get("port_profiles")
+    if isinstance(port_profiles, list):
+        for profile in port_profiles:
+            if isinstance(profile, Mapping):
+                _rename_network_fields(profile, rename_map)
+
+    port_overrides = payload.get("port_overrides")
+    if isinstance(port_overrides, list):
+        for override in port_overrides:
+            if isinstance(override, Mapping):
+                _rename_network_fields(override, rename_map)
+
+    port_config = payload.get("port_config")
+    if isinstance(port_config, Mapping):
+        for cfg in port_config.values():
+            if isinstance(cfg, Mapping):
+                _rename_network_fields(cfg, rename_map)
+
+
+def _resolve_network_conflicts(
+    networks_new: Dict[str, Dict[str, Any]],
+    port_profiles_seq: List[Dict[str, Any]],
+    port_usages_seq: List[Dict[str, Any]],
+    existing_networks: Dict[str, Dict[str, Any]],
+) -> Tuple[
+    Dict[str, Dict[str, Any]],
+    List[Dict[str, Any]],
+    List[Dict[str, Any]],
+    Dict[str, str],
+    List[str],
+]:
+    rename_map: Dict[str, str] = {}
+    warnings: List[str] = []
+
+    if not networks_new:
+        return networks_new, port_profiles_seq, port_usages_seq, rename_map, warnings
+
+    existing_by_vid: Dict[int, Set[str]] = {}
+    for name, data in existing_networks.items():
+        if not isinstance(data, Mapping):
+            continue
+        vid = _int_or_none(data.get("vlan_id") or data.get("id"))
+        if vid is None:
+            continue
+        existing_by_vid.setdefault(vid, set()).add(name)
+
+    used_names: Set[str] = set(existing_networks.keys()) | set(networks_new.keys())
+
+    for original_name, data in list(networks_new.items()):
+        if not isinstance(data, Mapping):
+            continue
+        vid = _int_or_none(data.get("vlan_id") or data.get("id"))
+        if vid is None:
+            continue
+        conflict_names = existing_by_vid.get(vid)
+        if not conflict_names:
+            continue
+        if original_name in conflict_names and len(conflict_names) == 1:
+            continue
+
+        attempt = 1
+        new_name = original_name
+        while True:
+            candidate = _generate_conflict_network_name(vid, original_name, attempt)
+            attempt += 1
+            if candidate == original_name:
+                continue
+            if candidate not in used_names:
+                new_name = candidate
+                break
+
+        if new_name != original_name:
+            rename_map[original_name] = new_name
+            updated = dict(data)
+            updated["name"] = new_name
+            networks_new.pop(original_name)
+            networks_new[new_name] = updated
+            used_names.add(new_name)
+            warnings.append(
+                "Detected VLAN ID {vid} conflict with existing network(s) {conflicts}; "
+                "renamed staged network '{old}' to '{new}'.".format(
+                    vid=vid,
+                    conflicts=", ".join(sorted(conflict_names)),
+                    old=original_name,
+                    new=new_name,
+                )
+            )
+
+    if rename_map:
+        for seq in (port_profiles_seq, port_usages_seq):
+            for profile in seq:
+                if isinstance(profile, Mapping):
+                    _rename_network_fields(profile, rename_map)
+
+    return networks_new, port_profiles_seq, port_usages_seq, rename_map, warnings
+
+
 def _generate_temp_usage_name(key: tuple, *, network_labels: Mapping[str, Optional[str]]) -> str:
     mode, data_network, voice_network, native_network, allowed_networks = key
     parts = ["old", "lcm", "acc" if mode == "access" else "trk"]
@@ -2223,7 +2406,7 @@ def _prepare_switch_port_profile_payload(
     site_id: str,
     device_id: str,
     payload: Mapping[str, Any],
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], List[str], Dict[str, str]]:
     networks_new = _normalize_network_map(payload.get("networks"), sanitize=True)
     if not networks_new:
         networks_new = _normalize_network_map(payload.get("vlans"), sanitize=True)
@@ -2242,7 +2425,7 @@ def _prepare_switch_port_profile_payload(
         and not port_overrides_new
         and not port_config_new
     ):
-        return {}
+        return {}, [], {}
 
     url = f"{base_url}/sites/{site_id}/devices/{device_id}"
     headers = _mist_headers(token)
@@ -2261,6 +2444,19 @@ def _prepare_switch_port_profile_payload(
     existing_networks = _normalize_network_map(current.get("networks"), sanitize=False)
     if not existing_networks:
         existing_networks = _normalize_network_map(current.get("vlans"), sanitize=False)
+
+    (
+        networks_new,
+        port_profiles_seq,
+        port_usages_seq,
+        rename_map,
+        conflict_warnings,
+    ) = _resolve_network_conflicts(
+        networks_new,
+        port_profiles_seq,
+        port_usages_seq,
+        existing_networks,
+    )
     if isinstance(existing_config, Mapping):
         merged_config: Dict[str, Dict[str, Any]] = {str(k): dict(v) for k, v in existing_config.items() if isinstance(v, Mapping)}
     else:
@@ -2361,7 +2557,7 @@ def _prepare_switch_port_profile_payload(
     if merged_config:
         request_body["port_config"] = merged_config
 
-    return request_body
+    return request_body, conflict_warnings, rename_map
 
 
 def _configure_switch_port_profile_override(
@@ -2371,7 +2567,7 @@ def _configure_switch_port_profile_override(
     device_id: str,
     payload: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    request_body = _prepare_switch_port_profile_payload(
+    request_body, warnings, rename_map = _prepare_switch_port_profile_payload(
         base_url,
         token,
         site_id,
@@ -2380,7 +2576,12 @@ def _configure_switch_port_profile_override(
     )
 
     if not request_body:
-        return {"ok": True, "skipped": True, "message": "No temporary config updates."}
+        result: Dict[str, Any] = {"ok": True, "skipped": True, "message": "No temporary config updates."}
+        if warnings:
+            result["warnings"] = warnings
+        if rename_map:
+            result["renamed_networks"] = rename_map
+        return result
 
     url = f"{base_url}/sites/{site_id}/devices/{device_id}"
     headers = _mist_headers(token)
@@ -2390,12 +2591,17 @@ def _configure_switch_port_profile_override(
     if not (200 <= resp_post.status_code < 300):
         raise MistAPIError(resp_post.status_code, _extract_mist_error(resp_post), response=data)
 
-    return {
+    result: Dict[str, Any] = {
         "ok": True,
         "status": resp_post.status_code,
         "request": request_body,
         "response": data,
     }
+    if warnings:
+        result["warnings"] = warnings
+    if rename_map:
+        result["renamed_networks"] = rename_map
+    return result
 
 
 def _set_temporary_port_config(
@@ -2405,7 +2611,7 @@ def _set_temporary_port_config(
     device_id: str,
     payload: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    request_body = _prepare_switch_port_profile_payload(
+    request_body, warnings, rename_map = _prepare_switch_port_profile_payload(
         base_url,
         token,
         site_id,
@@ -2414,7 +2620,12 @@ def _set_temporary_port_config(
     )
 
     if not request_body:
-        return {"ok": True, "skipped": True, "message": "No temporary config updates."}
+        result: Dict[str, Any] = {"ok": True, "skipped": True, "message": "No temporary config updates."}
+        if warnings:
+            result["warnings"] = warnings
+        if rename_map:
+            result["renamed_networks"] = rename_map
+        return result
 
     # Temporary overrides operate on existing definitions; omit network updates here.
     request_body.pop("networks", None)
@@ -2427,12 +2638,17 @@ def _set_temporary_port_config(
     if not (200 <= resp_post.status_code < 300):
         raise MistAPIError(resp_post.status_code, _extract_mist_error(resp_post), response=data)
 
-    return {
+    result: Dict[str, Any] = {
         "ok": True,
         "status": resp_post.status_code,
         "request": request_body,
         "response": data,
     }
+    if warnings:
+        result["warnings"] = warnings
+    if rename_map:
+        result["renamed_networks"] = rename_map
+    return result
 
 
 def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
@@ -2622,13 +2838,34 @@ def _apply_temporary_config_for_rows(
     if dry_run:
         for row in ok_rows:
             payload = _build_temp_config_payload(row) or {}
-            payload_records.append(
-                {
-                    "site_id": row.get("site_id"),
-                    "device_id": row.get("device_id"),
-                    "payload": payload,
-                }
-            )
+            site_id = str(row.get("site_id") or "").strip()
+            device_id = str(row.get("device_id") or "").strip()
+            record: Dict[str, Any] = {
+                "site_id": site_id,
+                "device_id": device_id,
+                "payload": payload,
+            }
+            warnings: List[str] = []
+            if site_id and device_id and payload:
+                try:
+                    _, conflict_warnings, rename_map = _prepare_switch_port_profile_payload(
+                        base_url,
+                        token,
+                        site_id,
+                        device_id,
+                        payload,
+                    )
+                    if rename_map:
+                        _apply_network_rename_to_payload(payload, rename_map)
+                    if conflict_warnings:
+                        warnings.extend(conflict_warnings)
+                except MistAPIError as exc:
+                    warnings.append(
+                        f"Unable to inspect existing Mist configuration for VLAN conflicts: {exc}"
+                    )
+            if warnings:
+                record["warnings"] = warnings
+            payload_records.append(record)
         return {
             "ok": True,
             "skipped": True,
@@ -2696,6 +2933,18 @@ def _apply_temporary_config_for_rows(
                 definition_payload,
             )
             record["definition_result"] = definition_result
+            rename_map = definition_result.get("renamed_networks") if isinstance(definition_result, Mapping) else None
+            if rename_map and isinstance(payload, Mapping):
+                _apply_network_rename_to_payload(payload, rename_map)
+                record["payload"] = payload
+                if isinstance(definition_payload, Mapping):
+                    _apply_network_rename_to_payload(definition_payload, rename_map)
+                    record["_definition_payload"] = definition_payload
+            warning_list = definition_result.get("warnings") if isinstance(definition_result, Mapping) else None
+            if warning_list:
+                record.setdefault("warnings", []).extend(
+                    [w for w in warning_list if isinstance(w, str) and w.strip()]
+                )
             if not definition_result.get("ok"):
                 errors.append((str(definition_result.get("message") or "Device update failed."), definition_result.get("status")))
         except MistAPIError as exc:
@@ -2731,6 +2980,15 @@ def _apply_temporary_config_for_rows(
                 staged_payload or payload,
             )
             record["device_result"] = device_result
+            rename_map = device_result.get("renamed_networks") if isinstance(device_result, Mapping) else None
+            if rename_map and isinstance(payload, Mapping):
+                _apply_network_rename_to_payload(payload, rename_map)
+                record["payload"] = payload
+            warning_list = device_result.get("warnings") if isinstance(device_result, Mapping) else None
+            if warning_list:
+                record.setdefault("warnings", []).extend(
+                    [w for w in warning_list if isinstance(w, str) and w.strip()]
+                )
             if not device_result.get("ok"):
                 errors.append((str(device_result.get("message") or "Device update failed."), device_result.get("status")))
         except MistAPIError as exc:
@@ -2829,13 +3087,33 @@ def _finalize_assignments_for_rows(
             if not site_id or not device_id:
                 continue
             payload_obj = _prepare_finalize_payload(row)
-            payload_records.append(
-                {
-                    "site_id": site_id,
-                    "device_id": device_id,
-                    "payload": payload_obj or {},
-                }
-            )
+            record: Dict[str, Any] = {
+                "site_id": site_id,
+                "device_id": device_id,
+                "payload": payload_obj or {},
+            }
+            warnings: List[str] = []
+            if payload_obj:
+                try:
+                    _, conflict_warnings, rename_map = _prepare_switch_port_profile_payload(
+                        base_url,
+                        token,
+                        site_id,
+                        device_id,
+                        payload_obj,
+                    )
+                    if rename_map:
+                        _apply_network_rename_to_payload(payload_obj, rename_map)
+                        record["payload"] = payload_obj
+                    if conflict_warnings:
+                        warnings.extend(conflict_warnings)
+                except MistAPIError as exc:
+                    warnings.append(
+                        f"Unable to inspect existing Mist configuration for VLAN conflicts: {exc}"
+                    )
+            if warnings:
+                record["warnings"] = warnings
+            payload_records.append(record)
 
         return {
             "ok": True,
@@ -2894,6 +3172,15 @@ def _finalize_assignments_for_rows(
                 payload,
             )
             record["device_result"] = device_result
+            rename_map = device_result.get("renamed_networks") if isinstance(device_result, Mapping) else None
+            if rename_map and isinstance(payload, Mapping):
+                _apply_network_rename_to_payload(payload, rename_map)
+                record["payload"] = payload
+            warning_list = device_result.get("warnings") if isinstance(device_result, Mapping) else None
+            if warning_list:
+                record.setdefault("warnings", []).extend(
+                    [w for w in warning_list if isinstance(w, str) and w.strip()]
+                )
             if not device_result.get("ok"):
                 errors.append(
                     (
