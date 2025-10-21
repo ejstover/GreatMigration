@@ -2491,7 +2491,6 @@ def _prepare_switch_port_profile_payload(
         existing_profile_field = "port_usages"
     existing_profiles = _normalize_port_profile_list(current.get(existing_profile_field))
     existing_overrides = _normalize_port_override_list(current.get("port_overrides"))
-    existing_config = current.get("port_config")
     existing_networks = _normalize_network_map(current.get("networks"), sanitize=False)
     if not existing_networks:
         existing_networks = _normalize_network_map(current.get("vlans"), sanitize=False)
@@ -2653,105 +2652,48 @@ def _prepare_switch_port_profile_payload(
                     names=", ".join(sorted(skipped_override_ports)),
                 )
             )
-    if isinstance(existing_config, Mapping):
-        merged_config: Dict[str, Dict[str, Any]] = {str(k): dict(v) for k, v in existing_config.items() if isinstance(v, Mapping)}
-    else:
-        merged_config = {}
-
-    merged_profiles: Dict[str, Dict[str, Any]] = {}
-    for profile in existing_profiles:
-        name = str(profile.get("name") or "").strip()
-        if not name:
-            continue
-        merged_profiles[name] = dict(profile)
-
-    new_profile_sequences: List[List[Dict[str, Any]]] = []
-    if port_profiles_seq:
-        new_profile_sequences.append(port_profiles_seq)
-    if port_usages_seq:
-        new_profile_sequences.append(port_usages_seq)
-
-    for seq in new_profile_sequences:
-        for profile in seq:
-            if not isinstance(profile, Mapping):
-                continue
-            name = str(profile.get("name") or "").strip()
-            if not name:
-                continue
-            merged_profiles[name] = dict(profile)
-
-    merged_networks: Dict[str, Dict[str, Any]] = {}
-    for name, data in existing_networks.items():
-        if not isinstance(data, Mapping):
-            continue
-        merged_networks[name] = dict(data)
-
-    if networks_new:
-        for name, data in networks_new.items():
-            existing = merged_networks.get(name, {})
-            if not isinstance(existing, Mapping):
-                existing = {}
-            merged = dict(existing)
-            for key, value in data.items():
-                merged[key] = value
-            merged_networks[name] = merged
-
-    merged_overrides_map: Dict[str, Dict[str, Any]] = {}
-    for override in existing_overrides:
-        port_id = str(override.get("port_id") or "").strip()
-        if not port_id:
-            continue
-        merged_overrides_map[port_id] = dict(override)
-
-    if isinstance(port_overrides_new, Sequence) and not isinstance(port_overrides_new, (str, bytes, bytearray)):
-        for override in port_overrides_new:
-            if not isinstance(override, Mapping):
-                continue
-            port_id = str(override.get("port_id") or "").strip()
-            if not port_id:
-                continue
-            merged_overrides_map[port_id] = dict(override)
-
-    if isinstance(port_config_new, Mapping):
-        for port_id, cfg in port_config_new.items():
-            if not isinstance(cfg, Mapping):
-                continue
-            merged_config[str(port_id)] = dict(cfg)
-
     request_body: Dict[str, Any] = {}
-    if merged_networks:
+    if networks_new:
         request_body["networks"] = {
             name: _compact_dict(dict(values))
-            for name, values in merged_networks.items()
+            for name, values in networks_new.items()
             if isinstance(values, Mapping) and name
         }
 
-    if merged_profiles:
-        profile_field = existing_profile_field
-        if profile_field == "port_profiles" and port_usages_seq and "port_usages" not in current:
-            # Explicitly favour port_usages when the caller provides it
-            profile_field = "port_usages"
-        if (
-            profile_field == "port_usages"
-            and not current.get("port_usages")
-            and port_profiles_seq
-            and not port_usages_seq
-        ):
-            profile_field = "port_profiles"
-        if profile_field == "port_usages":
-            request_body["port_usages"] = {
-                name: _compact_dict({k: v for k, v in data.items() if k != "name"})
-                for name, data in merged_profiles.items()
-                if name
-            }
-        else:
-            request_body[profile_field] = [
-                _compact_dict(dict(value)) for value in merged_profiles.values()
-            ]
-    if merged_overrides_map:
-        request_body["port_overrides"] = list(merged_overrides_map.values())
-    if merged_config:
-        request_body["port_config"] = merged_config
+    if port_usages_seq:
+        request_body["port_usages"] = {
+            str(profile.get("name") or "").strip(): _compact_dict(
+                {k: v for k, v in profile.items() if k != "name"}
+            )
+            for profile in port_usages_seq
+            if isinstance(profile, Mapping) and str(profile.get("name") or "").strip()
+        }
+    elif port_profiles_seq:
+        request_body[existing_profile_field] = [
+            _compact_dict(dict(value))
+            for value in port_profiles_seq
+            if isinstance(value, Mapping)
+        ]
+
+    if isinstance(port_overrides_new, Sequence) and not isinstance(
+        port_overrides_new, (str, bytes, bytearray)
+    ):
+        overrides_payload: List[Dict[str, Any]] = []
+        for override in port_overrides_new:
+            if not isinstance(override, Mapping):
+                continue
+            overrides_payload.append(dict(override))
+        if overrides_payload:
+            request_body["port_overrides"] = overrides_payload
+
+    if isinstance(port_config_new, Mapping):
+        config_payload: Dict[str, Dict[str, Any]] = {}
+        for port_id, cfg in port_config_new.items():
+            if not isinstance(cfg, Mapping):
+                continue
+            config_payload[str(port_id)] = dict(cfg)
+        if config_payload:
+            request_body["port_config"] = config_payload
 
     return request_body, conflict_warnings, rename_map
 
@@ -3025,8 +2967,8 @@ def _apply_temporary_config_for_rows(
                 if rename_map:
                     _apply_network_rename_to_payload(base_payload, rename_map)
                     record["renamed_networks"] = rename_map
-                preview_body = prepared_body or base_payload
-                record["payload"] = preview_body
+                preview_body = prepared_body
+                record["payload"] = preview_body if preview_body else {}
                 if conflict_warnings:
                     warnings.extend(conflict_warnings)
             except MistAPIError as exc:
