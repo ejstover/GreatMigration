@@ -3,13 +3,15 @@ import json
 import tempfile
 import re
 import math
+import hashlib
 from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set
+from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set, Tuple
 from zoneinfo import ZoneInfo
 from time import perf_counter
+import copy
 
 import requests
 from fastapi import FastAPI, UploadFile, File, Form, Request, Body, HTTPException
@@ -404,6 +406,14 @@ def _site_display_name(data: Dict[str, Any], fallback: str = "") -> str:
         return fallback
     value = data.get("id")
     return str(value) if value is not None else ""
+
+
+def _mist_headers(token: str) -> Dict[str, str]:
+    return {
+        "Authorization": f"Token {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
 
 
 def _mist_get_json(
@@ -1716,12 +1726,41 @@ def _build_payload_for_row(
     # Resolve model
     model = model_override or get_device_model(base_url, site_id, device_id, token)
 
+    if isinstance(payload_in, list):
+        payload_in = {"interfaces": payload_in}
+
+    temp_source = copy.deepcopy(payload_in)
+
     # Build port_config
     port_config = ensure_port_config(payload_in, model)
 
+    member_offset_val = int(member_offset or 0)
+    port_offset_val = int(port_offset or 0)
+    normalize_flag = bool(normalize_modules)
+
     # Apply member/port remap BEFORE excludes
-    port_config = remap_members(port_config, member_offset=int(member_offset or 0), normalize=bool(normalize_modules))
-    port_config = remap_ports(port_config, port_offset=int(port_offset or 0), model=model)
+    port_config = remap_members(port_config, member_offset=member_offset_val, normalize=normalize_flag)
+    port_config = remap_ports(port_config, port_offset=port_offset_val, model=model)
+
+    temp_interfaces = temp_source.get("interfaces") if isinstance(temp_source, dict) else None
+    if isinstance(temp_interfaces, list):
+        temp_map: Dict[str, Dict[str, Any]] = {}
+        for intf in temp_interfaces:
+            if not isinstance(intf, Mapping):
+                continue
+            key = str(intf.get("juniper_if") or intf.get("name") or "").strip()
+            if not key:
+                continue
+            temp_map[key] = dict(intf)
+        if temp_map:
+            temp_map = remap_members(temp_map, member_offset=member_offset_val, normalize=normalize_flag)
+            temp_map = remap_ports(temp_map, port_offset=port_offset_val, model=model)
+            temp_interfaces_out: List[Dict[str, Any]] = []
+            for ifname, data in temp_map.items():
+                updated = dict(data)
+                updated["juniper_if"] = ifname
+                temp_interfaces_out.append(updated)
+            temp_source["interfaces"] = temp_interfaces_out
 
     # Apply excludes AFTER remap
 
@@ -1746,6 +1785,13 @@ def _build_payload_for_row(
 
     if exclude_set:
         port_config = {k: v for k, v in port_config.items() if k not in exclude_set}
+        if isinstance(temp_source, dict) and isinstance(temp_source.get("interfaces"), list):
+            filtered_interfaces = [
+                intf
+                for intf in temp_source.get("interfaces", [])
+                if isinstance(intf, Mapping) and str(intf.get("juniper_if") or "").strip() not in exclude_set
+            ]
+            temp_source["interfaces"] = filtered_interfaces
 
     # Capacity validation (block live push; warn on dry-run)
     validation = validate_port_config_against_model(port_config, model)
@@ -1773,7 +1819,8 @@ def _build_payload_for_row(
             "port_offset": int(port_offset or 0),
             "normalize_modules": bool(normalize_modules),
             "validation": validation,
-            "payload": put_body
+            "payload": put_body,
+            "_temp_config_source": temp_source,
         }
 
     # live push
@@ -1783,7 +1830,8 @@ def _build_payload_for_row(
             "dry_run": False,
             "error": "Model capacity mismatch",
             "validation": validation,
-            "payload": put_body
+            "payload": put_body,
+            "_temp_config_source": temp_source,
         }
 
     resp = requests.put(url, headers=headers, json=put_body, timeout=60)
@@ -1797,8 +1845,1126 @@ def _build_payload_for_row(
         "dry_run": False,
         "status": resp.status_code,
         "response": content,
-        "payload": put_body
+        "payload": put_body,
+        "_temp_config_source": temp_source,
     }
+
+
+def _extract_mist_error(resp: requests.Response) -> str:
+    try:
+        data = resp.json()
+    except Exception:
+        data = None
+
+    if isinstance(data, dict):
+        for key in ("error", "message", "detail", "details"):
+            value = data.get(key)
+            if isinstance(value, str):
+                text = value.strip()
+                if text:
+                    return text
+            if isinstance(value, list):
+                joined = "; ".join(str(item).strip() for item in value if str(item).strip())
+                if joined:
+                    return joined
+    text = resp.text.strip()
+    return text or f"HTTP {resp.status_code}"
+
+
+def _safe_json_response(resp: requests.Response) -> Any:
+    try:
+        return resp.json()
+    except Exception:
+        text = resp.text.strip()
+        return {"text": text} if text else None
+
+
+class MistAPIError(RuntimeError):
+    def __init__(self, status_code: int, message: str, *, response: Any = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response = response
+
+
+def _invoke_batch_phase(
+    results: Sequence[Dict[str, Any]],
+    *,
+    base_url: str,
+    token: str,
+    dry_run: bool,
+    method: str,
+    path_template: str,
+    success_template: str,
+    partial_template: str,
+    skip_message: str,
+    empty_message: str,
+    body_getter: Optional[Any] = None,
+    timeout: int = 60,
+    include_payloads: bool = False,
+) -> Dict[str, Any]:
+    ok_rows = [
+        r for r in results if r.get("ok") and r.get("site_id") and r.get("device_id")
+    ]
+    total = len(ok_rows)
+    if total == 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": empty_message,
+            "successes": 0,
+            "failures": [],
+            "total": 0,
+        }
+
+    payload_records: List[Dict[str, Any]] = []
+
+    def _capture_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        if not callable(body_getter):
+            return None
+        try:
+            payload_obj = body_getter(row)
+        except Exception:
+            return None
+        return payload_obj
+
+    if dry_run:
+        if include_payloads and callable(body_getter):
+            for row in ok_rows:
+                site_id = str(row.get("site_id") or "").strip()
+                device_id = str(row.get("device_id") or "").strip()
+                if not site_id or not device_id:
+                    continue
+                payload_obj = _capture_payload(row)
+                if payload_obj is not None:
+                    payload_records.append(
+                        {
+                            "site_id": site_id,
+                            "device_id": device_id,
+                            "payload": copy.deepcopy(payload_obj),
+                        }
+                    )
+
+        response: Dict[str, Any] = {
+            "ok": True,
+            "skipped": True,
+            "message": skip_message.format(total=total),
+            "successes": 0,
+            "failures": [],
+            "total": total,
+        }
+        if include_payloads:
+            response["payloads"] = payload_records
+        return response
+
+    headers = {
+        "Authorization": f"Token {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+
+    successes = 0
+    failures: List[Dict[str, Any]] = []
+    method_upper = method.upper()
+
+    for row in ok_rows:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        if not site_id or not device_id:
+            continue
+
+        url = f"{base_url}{path_template.format(site_id=site_id, device_id=device_id)}"
+        payload = _capture_payload(row)
+
+        if include_payloads and payload is not None:
+            payload_records.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "payload": copy.deepcopy(payload),
+                }
+            )
+
+        try:
+            request_kwargs: Dict[str, Any] = {"headers": headers, "timeout": timeout}
+            if payload is not None and method_upper != "DELETE":
+                request_kwargs["json"] = payload
+            resp = requests.request(method_upper, url, **request_kwargs)
+            if 200 <= resp.status_code < 300:
+                successes += 1
+            else:
+                failures.append(
+                    {
+                        "site_id": site_id,
+                        "device_id": device_id,
+                        "status": resp.status_code,
+                        "message": _extract_mist_error(resp),
+                    }
+                )
+        except Exception as exc:  # pragma: no cover - network failures are reported to the UI
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "status": None,
+                    "message": str(exc),
+                }
+            )
+
+    if failures:
+        response = {
+            "ok": False,
+            "skipped": False,
+            "message": partial_template.format(successes=successes, total=total),
+            "successes": successes,
+            "failures": failures,
+            "total": total,
+        }
+        if include_payloads:
+            response["payloads"] = payload_records
+        return response
+
+    response = {
+        "ok": True,
+        "skipped": False,
+        "message": success_template.format(count=successes, total=total),
+        "successes": successes,
+        "failures": [],
+        "total": total,
+    }
+    if include_payloads:
+        response["payloads"] = payload_records
+    return response
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_vlan_values(values: Any) -> List[int]:
+    out: List[int] = []
+    if isinstance(values, (list, tuple, set)):
+        for item in values:
+            v = _int_or_none(item)
+            if v is not None:
+                out.append(v)
+    elif isinstance(values, str):
+        for part in [p.strip() for p in values.split(",") if p.strip()]:
+            v = _int_or_none(part)
+            if v is not None:
+                out.append(v)
+    out_sorted = sorted(dict.fromkeys(out))
+    return out_sorted
+
+
+def _compact_dict(data: Mapping[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in data.items() if v not in (None, "", [], {}, set())}
+
+
+def _generate_temp_network_name(vlan_id: int, raw_name: Optional[str]) -> str:
+    base = str(raw_name or "").strip()
+    if base:
+        # Replace whitespace with underscores and strip non-alphanumerics to keep Mist happy
+        base = re.sub(r"\s+", "_", base)
+        base = re.sub(r"[^A-Za-z0-9_-]", "", base)
+        base = base.strip("-_")
+    if not base:
+        base = f"vlan{vlan_id}"
+    lowered = base.lower()
+    if not lowered.startswith("old_"):
+        base = f"old_{base}"
+
+    name = base.lower()
+
+    if len(name) > 32:
+        digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]
+        # Leave space for underscore + digest (7 characters)
+        prefix = name[: max(32 - 7, 4)].rstrip("-_")
+        name = f"{prefix}_{digest}" if prefix else f"old_{digest}"
+
+    # Mist network names must start with a letter; ensure the prefix guarantees it
+    if not name or not name[0].isalpha():
+        name = f"old_{name}"
+        if len(name) > 32:
+            name = name[:32]
+
+    return name
+
+
+def _generate_temp_usage_name(key: tuple, *, network_labels: Mapping[str, Optional[str]]) -> str:
+    mode, data_network, voice_network, native_network, allowed_networks = key
+    parts = ["old", "lcm", "acc" if mode == "access" else "trk"]
+    if mode == "access" and data_network:
+        parts.append(network_labels.get(data_network) or data_network)
+    if mode == "trunk" and native_network:
+        parts.append(network_labels.get(native_network) or native_network)
+    if voice_network:
+        parts.append(f"vo_{network_labels.get(voice_network) or voice_network}")
+    if allowed_networks:
+        preview = "-".join((network_labels.get(name) or name) for name in list(allowed_networks)[:3])
+        if preview:
+            parts.append(f"allow_{preview}{'+' if len(allowed_networks) > 3 else ''}")
+    digest_src = json.dumps(
+        {
+            "mode": mode,
+            "data_network": data_network,
+            "voice_network": voice_network,
+            "native_network": native_network,
+            "allowed_networks": list(allowed_networks),
+        },
+        sort_keys=True,
+    )
+    suffix = hashlib.sha1(digest_src.encode("utf-8")).hexdigest()[:6]
+    name = "_".join(parts + [suffix])
+    # Ensure Mist-friendly characters
+    name = re.sub(r"[^a-z0-9_-]", "_", name.lower())
+    if not name.startswith("old_"):
+        name = f"old_{name}"
+    return name
+
+
+def _normalize_port_profile_list(value: Any) -> List[Dict[str, Any]]:
+    profiles: Dict[str, Dict[str, Any]] = {}
+    if isinstance(value, Mapping):
+        for name, data in value.items():
+            if not isinstance(data, Mapping):
+                continue
+            entry = dict(data)
+            entry.setdefault("name", str(name))
+            key = entry.get("name")
+            if isinstance(key, str) and key.strip():
+                profiles[key] = entry
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for item in value:
+            if not isinstance(item, Mapping):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            profiles[name] = dict(item)
+    return list(profiles.values())
+
+
+def _normalize_port_override_list(value: Any) -> List[Dict[str, Any]]:
+    overrides: Dict[str, Dict[str, Any]] = {}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for item in value:
+            if not isinstance(item, Mapping):
+                continue
+            port_id = str(item.get("port_id") or "").strip()
+            if not port_id:
+                continue
+            overrides[port_id] = dict(item)
+    elif isinstance(value, Mapping):
+        # Some APIs return overrides keyed by port ID
+        for port_id, item in value.items():
+            if not isinstance(item, Mapping):
+                continue
+            port_key = str(port_id or "").strip()
+            if not port_key:
+                continue
+            overrides[port_key] = dict(item)
+    return list(overrides.values())
+
+
+def _normalize_network_map(value: Any, *, sanitize: bool) -> Dict[str, Dict[str, Any]]:
+    networks: Dict[str, Dict[str, Any]] = {}
+    if isinstance(value, Mapping):
+        items: Iterable[Tuple[Optional[str], Any]] = value.items()
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        items = ((None, entry) for entry in value)
+    else:
+        return networks
+
+    for key, entry in items:
+        if not isinstance(entry, Mapping):
+            continue
+        data = dict(entry)
+        vid = _int_or_none(data.get("vlan_id") or data.get("id"))
+        raw_name = None
+        if isinstance(key, str) and key.strip():
+            raw_name = key.strip()
+        elif isinstance(data.get("name"), str) and data.get("name").strip():
+            raw_name = data.get("name").strip()
+
+        if sanitize:
+            if vid is None:
+                continue
+            name = _generate_temp_network_name(vid, raw_name)
+            sanitized = {
+                k: v
+                for k, v in data.items()
+                if k not in {"name", "id", "source_name", "temporary"}
+                and v not in (None, "")
+            }
+            sanitized["vlan_id"] = vid
+            networks[name] = sanitized
+        else:
+            if raw_name:
+                name = raw_name
+            elif vid is not None:
+                name = _generate_temp_network_name(vid, raw_name)
+            else:
+                continue
+            if vid is not None:
+                data["vlan_id"] = vid
+            networks[name] = data
+
+    return networks
+
+
+def _prepare_switch_port_profile_payload(
+    base_url: str,
+    token: str,
+    site_id: str,
+    device_id: str,
+    payload: Mapping[str, Any],
+) -> Dict[str, Any]:
+    networks_new = _normalize_network_map(payload.get("networks"), sanitize=True)
+    if not networks_new:
+        networks_new = _normalize_network_map(payload.get("vlans"), sanitize=True)
+    port_profiles_new = payload.get("port_profiles")
+    port_usages_new = payload.get("port_usages")
+    port_overrides_new = payload.get("port_overrides")
+    port_config_new = payload.get("port_config")
+
+    port_profiles_seq = _normalize_port_profile_list(port_profiles_new)
+    port_usages_seq = _normalize_port_profile_list(port_usages_new)
+
+    if (
+        not networks_new
+        and not port_profiles_seq
+        and not port_usages_seq
+        and not port_overrides_new
+        and not port_config_new
+    ):
+        return {}
+
+    url = f"{base_url}/sites/{site_id}/devices/{device_id}"
+    headers = _mist_headers(token)
+
+    resp_get = requests.get(url, headers=headers, timeout=60)
+    if not (200 <= resp_get.status_code < 300):
+        raise MistAPIError(resp_get.status_code, _extract_mist_error(resp_get), response=_safe_json_response(resp_get))
+
+    current = resp_get.json() or {}
+    existing_profile_field = "port_profiles"
+    if "port_usages" in current:
+        existing_profile_field = "port_usages"
+    existing_profiles = _normalize_port_profile_list(current.get(existing_profile_field))
+    existing_overrides = _normalize_port_override_list(current.get("port_overrides"))
+    existing_config = current.get("port_config")
+    existing_networks = _normalize_network_map(current.get("networks"), sanitize=False)
+    if not existing_networks:
+        existing_networks = _normalize_network_map(current.get("vlans"), sanitize=False)
+    if isinstance(existing_config, Mapping):
+        merged_config: Dict[str, Dict[str, Any]] = {str(k): dict(v) for k, v in existing_config.items() if isinstance(v, Mapping)}
+    else:
+        merged_config = {}
+
+    merged_profiles: Dict[str, Dict[str, Any]] = {}
+    for profile in existing_profiles:
+        name = str(profile.get("name") or "").strip()
+        if not name:
+            continue
+        merged_profiles[name] = dict(profile)
+
+    new_profile_sequences: List[List[Dict[str, Any]]] = []
+    if port_profiles_seq:
+        new_profile_sequences.append(port_profiles_seq)
+    if port_usages_seq:
+        new_profile_sequences.append(port_usages_seq)
+
+    for seq in new_profile_sequences:
+        for profile in seq:
+            if not isinstance(profile, Mapping):
+                continue
+            name = str(profile.get("name") or "").strip()
+            if not name:
+                continue
+            merged_profiles[name] = dict(profile)
+
+    merged_networks: Dict[str, Dict[str, Any]] = {}
+    for name, data in existing_networks.items():
+        if not isinstance(data, Mapping):
+            continue
+        merged_networks[name] = dict(data)
+
+    if networks_new:
+        for name, data in networks_new.items():
+            existing = merged_networks.get(name, {})
+            if not isinstance(existing, Mapping):
+                existing = {}
+            merged = dict(existing)
+            for key, value in data.items():
+                merged[key] = value
+            merged_networks[name] = merged
+
+    merged_overrides_map: Dict[str, Dict[str, Any]] = {}
+    for override in existing_overrides:
+        port_id = str(override.get("port_id") or "").strip()
+        if not port_id:
+            continue
+        merged_overrides_map[port_id] = dict(override)
+
+    if isinstance(port_overrides_new, Sequence) and not isinstance(port_overrides_new, (str, bytes, bytearray)):
+        for override in port_overrides_new:
+            if not isinstance(override, Mapping):
+                continue
+            port_id = str(override.get("port_id") or "").strip()
+            if not port_id:
+                continue
+            merged_overrides_map[port_id] = dict(override)
+
+    if isinstance(port_config_new, Mapping):
+        for port_id, cfg in port_config_new.items():
+            if not isinstance(cfg, Mapping):
+                continue
+            merged_config[str(port_id)] = dict(cfg)
+
+    request_body: Dict[str, Any] = {}
+    if merged_networks:
+        request_body["networks"] = {
+            name: _compact_dict(dict(values))
+            for name, values in merged_networks.items()
+            if isinstance(values, Mapping) and name
+        }
+
+    if merged_profiles:
+        profile_field = existing_profile_field
+        if profile_field == "port_profiles" and port_usages_seq and "port_usages" not in current:
+            # Explicitly favour port_usages when the caller provides it
+            profile_field = "port_usages"
+        if (
+            profile_field == "port_usages"
+            and not current.get("port_usages")
+            and port_profiles_seq
+            and not port_usages_seq
+        ):
+            profile_field = "port_profiles"
+        if profile_field == "port_usages":
+            request_body["port_usages"] = {
+                name: _compact_dict({k: v for k, v in data.items() if k != "name"})
+                for name, data in merged_profiles.items()
+                if name
+            }
+        else:
+            request_body[profile_field] = [
+                _compact_dict(dict(value)) for value in merged_profiles.values()
+            ]
+    if merged_overrides_map:
+        request_body["port_overrides"] = list(merged_overrides_map.values())
+    if merged_config:
+        request_body["port_config"] = merged_config
+
+    return request_body
+
+
+def _configure_switch_port_profile_override(
+    base_url: str,
+    token: str,
+    site_id: str,
+    device_id: str,
+    payload: Mapping[str, Any],
+) -> Dict[str, Any]:
+    request_body = _prepare_switch_port_profile_payload(
+        base_url,
+        token,
+        site_id,
+        device_id,
+        payload,
+    )
+
+    if not request_body:
+        return {"ok": True, "skipped": True, "message": "No temporary config updates."}
+
+    url = f"{base_url}/sites/{site_id}/devices/{device_id}"
+    headers = _mist_headers(token)
+
+    resp_post = requests.put(url, headers=headers, json=request_body, timeout=60)
+    data = _safe_json_response(resp_post)
+    if not (200 <= resp_post.status_code < 300):
+        raise MistAPIError(resp_post.status_code, _extract_mist_error(resp_post), response=data)
+
+    return {
+        "ok": True,
+        "status": resp_post.status_code,
+        "request": request_body,
+        "response": data,
+    }
+
+
+def _set_temporary_port_config(
+    base_url: str,
+    token: str,
+    site_id: str,
+    device_id: str,
+    payload: Mapping[str, Any],
+) -> Dict[str, Any]:
+    request_body = _prepare_switch_port_profile_payload(
+        base_url,
+        token,
+        site_id,
+        device_id,
+        payload,
+    )
+
+    if not request_body:
+        return {"ok": True, "skipped": True, "message": "No temporary config updates."}
+
+    # Temporary overrides operate on existing definitions; omit network updates here.
+    request_body.pop("networks", None)
+
+    url = f"{base_url}/sites/{site_id}/devices/{device_id}/temp_port_config"
+    headers = _mist_headers(token)
+
+    resp_post = requests.post(url, headers=headers, json=request_body, timeout=60)
+    data = _safe_json_response(resp_post)
+    if not (200 <= resp_post.status_code < 300):
+        raise MistAPIError(resp_post.status_code, _extract_mist_error(resp_post), response=data)
+
+    return {
+        "ok": True,
+        "status": resp_post.status_code,
+        "request": request_body,
+        "response": data,
+    }
+
+
+def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    source = row.get("_temp_config_source")
+    if not isinstance(source, Mapping):
+        return None
+
+    interfaces = source.get("interfaces")
+    if not isinstance(interfaces, list):
+        return None
+
+    port_usages: Dict[tuple, Dict[str, Any]] = {}
+    port_config: Dict[str, Dict[str, Any]] = {}
+    port_overrides: List[Dict[str, Any]] = []
+
+    networks: List[Dict[str, Any]] = []
+    seen_vlan_ids: set[int] = set()
+    vlan_name_map: Dict[int, str] = {}
+    vlan_label_map: Dict[str, Optional[str]] = {}
+
+    def _register_vlan(vlan_id: Optional[int], raw_name: Optional[str] = None) -> Optional[str]:
+        if vlan_id is None:
+            return None
+        if vlan_id in vlan_name_map:
+            return vlan_name_map[vlan_id]
+        network_name = _generate_temp_network_name(vlan_id, raw_name)
+        vlan_name_map[vlan_id] = network_name
+        if network_name not in vlan_label_map:
+            vlan_label_map[network_name] = (raw_name.strip() if isinstance(raw_name, str) else raw_name) or None
+        if vlan_id not in seen_vlan_ids:
+            seen_vlan_ids.add(vlan_id)
+            networks.append(
+                {
+                    "id": vlan_id,
+                    "vlan_id": vlan_id,
+                    "name": network_name,
+                    "source_name": (raw_name.strip() if isinstance(raw_name, str) else raw_name) or None,
+                }
+            )
+        return network_name
+
+    vlans = source.get("vlans")
+    if isinstance(vlans, list):
+        for item in vlans:
+            if not isinstance(item, Mapping):
+                continue
+            vid = _int_or_none(item.get("id"))
+            display_name = str(item.get("name") or "").strip() or None
+            _register_vlan(vid, display_name)
+
+    for intf in interfaces:
+        if not isinstance(intf, Mapping):
+            continue
+        mode = str(intf.get("mode") or "").lower()
+        if mode not in {"access", "trunk"}:
+            continue
+        juniper_if = str(intf.get("juniper_if") or "").strip()
+        if not juniper_if:
+            continue
+
+        data_vlan = _int_or_none(intf.get("data_vlan"))
+        voice_vlan = _int_or_none(intf.get("voice_vlan"))
+        native_vlan = _int_or_none(intf.get("native_vlan"))
+        allowed_vlans = _normalize_vlan_values(intf.get("allowed_vlans"))
+
+        data_network = _register_vlan(data_vlan)
+        voice_network = _register_vlan(voice_vlan)
+        native_network = _register_vlan(native_vlan)
+        allowed_network_list: List[str] = []
+        for vlan_id in allowed_vlans:
+            network_name = _register_vlan(vlan_id)
+            if network_name:
+                allowed_network_list.append(network_name)
+        allowed_networks = tuple(allowed_network_list)
+
+        usage_key = (mode, data_network, voice_network, native_network, allowed_networks)
+
+        profile = port_usages.get(usage_key)
+        if profile is None:
+            usage_name = _generate_temp_usage_name(usage_key, network_labels=vlan_label_map)
+            profile = {
+                "name": usage_name,
+                "mode": mode or None,
+                "disabled": False,
+                "port_network": data_network if mode == "access" else native_network,
+                "voip_network": voice_network,
+                "stp_edge": mode == "access",
+                "use_vstp": mode == "trunk",
+                "stp_p2p": False,
+                "stp_no_root_port": False,
+                "stp_disable": False,
+                "stp_required": False,
+                "all_networks": bool(mode == "trunk" and not allowed_networks),
+                "networks": list(allowed_networks) if allowed_networks else None,
+                "speed": "auto",
+                "duplex": "auto",
+                "mac_limit": 0,
+                "persist_mac": False,
+                "poe_disabled": False,
+                "enable_qos": False,
+                "storm_control": {},
+                "mtu": None,
+                "allow_dhcpd": False,
+                "disable_autoneg": False,
+            }
+            port_usages[usage_key] = _compact_dict(profile)
+
+        profile_name = profile["name"]
+        description = str(intf.get("description") or "").strip()
+        shutdown = bool(intf.get("shutdown"))
+
+        port_config[juniper_if] = _compact_dict(
+            {
+                "usage": profile_name,
+                "mode": mode,
+                "port_network": data_network if mode == "access" else native_network,
+                "voip_network": voice_network,
+                "networks": list(allowed_networks) if allowed_networks else None,
+                "description": description,
+                "disabled": shutdown,
+                "source_interface": str(intf.get("name") or "").strip() or None,
+            }
+        )
+
+        port_overrides.append(
+            _compact_dict(
+                {
+                    "port_id": juniper_if,
+                    "usage": profile_name,
+                    "mode": mode,
+                    "port_network": data_network if mode == "access" else native_network,
+                    "voip_network": voice_network,
+                    "networks": list(allowed_networks) if allowed_networks else None,
+                    "description": description,
+                    "disabled": shutdown,
+                    "source_interface": str(intf.get("name") or "").strip() or None,
+                }
+            )
+        )
+
+    if not port_config:
+        return None
+
+    usage_payload: Dict[str, Dict[str, Any]] = {}
+    for profile in port_usages.values():
+        name = str(profile.get("name") or "").strip()
+        if not name:
+            continue
+        cleaned = _compact_dict(dict(profile))
+        cleaned.pop("name", None)
+        usage_payload[name] = cleaned
+
+    payload: Dict[str, Any] = {
+        "port_usages": usage_payload,
+        "port_config": port_config,
+        "port_overrides": port_overrides,
+    }
+    if networks:
+        payload["networks"] = networks
+        # Keep legacy key for compatibility with earlier previews/status handling
+        payload["vlans"] = networks
+
+    return payload
+
+
+def _apply_temporary_config_for_rows(
+    base_url: str,
+    token: str,
+    results: Sequence[Dict[str, Any]],
+    *,
+    dry_run: bool,
+) -> Dict[str, Any]:
+    ok_rows = [r for r in results if r.get("ok") and r.get("site_id") and r.get("device_id")]
+    total = len(ok_rows)
+    payload_records: List[Dict[str, Any]] = []
+
+    if total == 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "No successful rows available to apply temporary config.",
+            "successes": 0,
+            "failures": [],
+            "total": 0,
+        }
+
+    if dry_run:
+        for row in ok_rows:
+            payload = _build_temp_config_payload(row) or {}
+            payload_records.append(
+                {
+                    "site_id": row.get("site_id"),
+                    "device_id": row.get("device_id"),
+                    "payload": payload,
+                }
+            )
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "Skipped applying temporary config for {total} device(s) during a preview-only run.".format(total=total),
+            "successes": 0,
+            "failures": [],
+            "total": total,
+            "payloads": payload_records,
+        }
+
+    successes = 0
+    failures: List[Dict[str, Any]] = []
+    records: List[Dict[str, Any]] = []
+
+    for row in ok_rows:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        payload = _build_temp_config_payload(row)
+        record: Dict[str, Any] = {
+            "site_id": site_id,
+            "device_id": device_id,
+            "payload": payload or {},
+        }
+        payload_records.append(record)
+        records.append(record)
+
+        record["_errors"] = []  # type: ignore[assignment]
+
+        if not payload:
+            record["_errors"].append(("No temporary config payload available.", None))  # type: ignore[index]
+            continue
+
+        definition_payload: Dict[str, Any] = {}
+        if isinstance(payload, Mapping):
+            networks_value = payload.get("networks") or payload.get("vlans")
+            if networks_value:
+                definition_payload["networks"] = networks_value
+            if payload.get("port_profiles"):
+                definition_payload["port_profiles"] = payload.get("port_profiles")
+            if payload.get("port_usages"):
+                definition_payload["port_usages"] = payload.get("port_usages")
+        record["_definition_payload"] = definition_payload  # type: ignore[index]
+
+    # Ensure required networks and port usages exist before staging overrides
+    for record in records:
+        payload = record.get("payload")
+        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
+
+        if not payload or errors:
+            continue
+
+        definition_payload = record.get("_definition_payload") or {}
+        if not isinstance(definition_payload, Mapping) or not definition_payload:
+            continue
+
+        site_id = str(record.get("site_id") or "")
+        device_id = str(record.get("device_id") or "")
+
+        try:
+            definition_result = _configure_switch_port_profile_override(
+                base_url,
+                token,
+                site_id,
+                device_id,
+                definition_payload,
+            )
+            record["definition_result"] = definition_result
+            if not definition_result.get("ok"):
+                errors.append((str(definition_result.get("message") or "Device update failed."), definition_result.get("status")))
+        except MistAPIError as exc:
+            record["definition_result"] = {
+                "ok": False,
+                "status": exc.status_code,
+                "message": str(exc),
+                "response": exc.response,
+            }
+            errors.append((str(exc), exc.status_code))
+
+    # With VLANs provisioned, push the port usage/profile overrides
+    for record in records:
+        payload = record.get("payload")
+        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
+
+        if not payload or errors:
+            continue
+
+        site_id = str(record.get("site_id") or "")
+        device_id = str(record.get("device_id") or "")
+
+        staged_payload = dict(payload) if isinstance(payload, Mapping) else {}
+        staged_payload.pop("networks", None)
+        staged_payload.pop("vlans", None)
+
+        try:
+            device_result = _set_temporary_port_config(
+                base_url,
+                token,
+                site_id,
+                device_id,
+                staged_payload or payload,
+            )
+            record["device_result"] = device_result
+            if not device_result.get("ok"):
+                errors.append((str(device_result.get("message") or "Device update failed."), device_result.get("status")))
+        except MistAPIError as exc:
+            record["device_result"] = {
+                "ok": False,
+                "status": exc.status_code,
+                "message": str(exc),
+                "response": exc.response,
+            }
+            errors.append((str(exc), exc.status_code))
+
+    for record in records:
+        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
+        site_id = record.get("site_id")
+        device_id = record.get("device_id")
+
+        if errors:
+            message, status = errors[0]
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "message": message,
+                    "status": status,
+                }
+            )
+        elif record.get("payload"):
+            successes += 1
+
+        # Clean up internal bookkeeping keys before returning to the client
+        record.pop("_errors", None)
+        record.pop("_definition_payload", None)
+
+    ok = successes == total
+    return {
+        "ok": ok,
+        "skipped": False,
+        "message": (
+            "Applied temporary config to {count} device(s)." if ok else "Applied temporary config to {successes}/{total} device(s). Manual follow-up required."
+        ).format(count=successes, successes=successes, total=total),
+        "successes": successes,
+        "failures": failures,
+        "total": total,
+        "payloads": payload_records,
+    }
+
+
+def _finalize_assignments_for_rows(
+    base_url: str,
+    token: str,
+    results: Sequence[Dict[str, Any]],
+    *,
+    dry_run: bool,
+) -> Dict[str, Any]:
+    ok_rows = [
+        r for r in results if r.get("ok") and r.get("site_id") and r.get("device_id")
+    ]
+    total = len(ok_rows)
+
+    if total == 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "No completed rows available to finalize assignments.",
+            "successes": 0,
+            "failures": [],
+            "total": 0,
+        }
+
+    payload_records: List[Dict[str, Any]] = []
+
+    def _prepare_finalize_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        payload = _build_temp_config_payload(row)
+        if not isinstance(payload, Mapping):
+            return None
+
+        sanitized: Dict[str, Any] = {}
+        for key in (
+            "port_profiles",
+            "port_usages",
+            "port_overrides",
+            "port_config",
+            "networks",
+            "vlans",
+        ):
+            value = payload.get(key)
+            if value:
+                sanitized[key] = copy.deepcopy(value)
+
+        return sanitized or None
+
+    if dry_run:
+        for row in ok_rows:
+            site_id = str(row.get("site_id") or "").strip()
+            device_id = str(row.get("device_id") or "").strip()
+            if not site_id or not device_id:
+                continue
+            payload_obj = _prepare_finalize_payload(row)
+            payload_records.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "payload": payload_obj or {},
+                }
+            )
+
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "Skipped finalizing assignments for {total} device(s) during a preview-only run.".format(
+                total=total
+            ),
+            "successes": 0,
+            "failures": [],
+            "total": total,
+            "payloads": payload_records,
+        }
+
+    successes = 0
+    failures: List[Dict[str, Any]] = []
+    records: List[Dict[str, Any]] = []
+
+    for row in ok_rows:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        payload_obj = _prepare_finalize_payload(row)
+
+        record: Dict[str, Any] = {
+            "site_id": site_id,
+            "device_id": device_id,
+            "payload": payload_obj or {},
+        }
+        payload_records.append(record)
+        records.append(record)
+
+        errors: List[Tuple[str, Optional[int]]] = []
+        record["_errors"] = errors  # type: ignore[assignment]
+
+        if not site_id or not device_id:
+            errors.append(("Missing site or device identifier while finalizing.", None))
+
+        if not payload_obj:
+            errors.append(("No staged temporary configuration is available to finalize.", None))
+
+    for record in records:
+        payload = record.get("payload")
+        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
+
+        if not payload or errors:
+            continue
+
+        site_id = str(record.get("site_id") or "")
+        device_id = str(record.get("device_id") or "")
+
+        try:
+            device_result = _configure_switch_port_profile_override(
+                base_url,
+                token,
+                site_id,
+                device_id,
+                payload,
+            )
+            record["device_result"] = device_result
+            if not device_result.get("ok"):
+                errors.append(
+                    (
+                        str(device_result.get("message") or "Device update failed."),
+                        _int_or_none(device_result.get("status")),
+                    )
+                )
+        except MistAPIError as exc:
+            record["device_result"] = {
+                "ok": False,
+                "status": exc.status_code,
+                "message": str(exc),
+                "response": exc.response,
+            }
+            errors.append((str(exc), exc.status_code))
+
+    for record in records:
+        errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
+        site_id = record.get("site_id")
+        device_id = record.get("device_id")
+
+        if errors:
+            message, status = errors[0]
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "message": message,
+                    "status": status,
+                }
+            )
+        else:
+            successes += 1
+
+        record.pop("_errors", None)
+
+    ok = successes == total
+    return {
+        "ok": ok,
+        "skipped": False,
+        "message": (
+            "Finalized temporary assignments for {count} device(s)."
+            if ok
+            else "Finalized temporary assignments for {successes}/{total} device(s). Manual follow-up required."
+        ).format(count=successes, successes=successes, total=total),
+        "successes": successes,
+        "failures": failures,
+        "total": total,
+        "payloads": payload_records,
+    }
+
+
+def _remove_temporary_config_for_rows(
+    base_url: str,
+    token: str,
+    results: Sequence[Dict[str, Any]],
+    *,
+    dry_run: bool,
+) -> Dict[str, Any]:
+    return _invoke_batch_phase(
+        results,
+        base_url=base_url,
+        token=token,
+        dry_run=dry_run,
+        method="delete",
+        path_template="/sites/{site_id}/devices/{device_id}/temp_port_config",
+        success_template="Removed temporary config from {count} device(s).",
+        partial_template="Removed temporary config from {successes}/{total} device(s). Manual follow-up required.",
+        skip_message="Skipped removing temporary config for {total} device(s) during a preview-only run.",
+        empty_message="No temporary config records to remove for the submitted batch.",
+    )
 
 
 @app.post("/api/push")
@@ -1820,8 +2986,6 @@ async def api_push(
     """
     Single push. Response includes `payload` (the exact body to Mist) and `validation`.
     """
-    _ensure_push_allowed(request, dry_run=dry_run)
-
     try:
         payload_in = json.loads(input_json)
     except Exception as e:
@@ -1848,11 +3012,15 @@ async def api_push(
 async def api_push_batch(
     request: Request,
     rows: str = Form(...),  # JSON array of rows
-    dry_run: bool = Form(True),
     base_url: str = Form(DEFAULT_BASE_URL),
     tz: str = Form(DEFAULT_TZ),
     model_override: Optional[str] = Form(None),  # optional global override (row can still override)
     normalize_modules: bool = Form(True),
+    apply_temp_config: bool = Form(False),
+    finalize_assignments: bool = Form(False),
+    remove_temp_config: bool = Form(False),
+    stage_site_deployment: bool = Form(False),
+    push_site_deployment: bool = Form(False),
 ) -> JSONResponse:
     """
     Batch push. Each row can specify: site_id, device_id, input_json (object),
@@ -1862,10 +3030,54 @@ async def api_push_batch(
     NOTE: Duplicate devices ARE allowed as long as (device_id, member_offset, port_offset) triples are unique.
     If the same triple appears more than once, those rows are rejected with a clear error.
     """
-    _ensure_push_allowed(request, dry_run=dry_run)
-
     token = _load_mist_token()
     base_url = base_url.rstrip("/")
+
+    stage_site_deployment = bool(stage_site_deployment)
+    push_site_deployment = bool(push_site_deployment)
+    apply_temp_config = bool(apply_temp_config)
+    finalize_assignments = bool(finalize_assignments)
+    remove_temp_config = bool(remove_temp_config)
+    site_selection_count = int(stage_site_deployment) + int(push_site_deployment)
+    lcm_selection_count = int(apply_temp_config) + int(finalize_assignments) + int(remove_temp_config)
+    site_actions_selected = stage_site_deployment or push_site_deployment
+    lcm_actions_selected = bool(apply_temp_config or finalize_assignments or remove_temp_config)
+
+    preview_only = not (
+        push_site_deployment or apply_temp_config or finalize_assignments or remove_temp_config
+    )
+
+    _ensure_push_allowed(request, dry_run=preview_only)
+
+    if site_actions_selected and lcm_actions_selected:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Select either Site Deployment Automation or Lifecycle Automation actions, not both."
+            },
+            status_code=400,
+        )
+
+    if site_selection_count > 1:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Select only one Site Deployment Automation phase per run.",
+            },
+            status_code=400,
+        )
+
+    if lcm_selection_count > 1:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Select only one Lifecycle Automation phase per run.",
+            },
+            status_code=400,
+        )
+
+    should_push_live = push_site_deployment
+    effective_dry_run = not should_push_live
 
     try:
         row_list = json.loads(rows)
@@ -1921,7 +3133,7 @@ async def api_push_batch(
                 payload_in=payload_in, model_override=row_model_override,
                 excludes=excludes, exclude_uplinks=exclude_uplinks,
                 member_offset=member_offset, port_offset=port_offset, normalize_modules=normalize_modules,
-                dry_run=dry_run,
+                dry_run=effective_dry_run,
             )
             row_result["row_index"] = i
             row_result["site_id"] = site_id
@@ -1940,5 +3152,145 @@ async def api_push_batch(
         except Exception as e:
             results.append({"ok": False, "row_index": i, "error": f"Server error: {e}"})
 
+    phase_status: Dict[str, Dict[str, Any]] = {}
+
+    if site_actions_selected:
+        total_rows = len(results)
+        successes = sum(1 for r in results if r.get("ok"))
+        failures: List[Dict[str, Any]] = []
+        for r in results:
+            if r.get("ok"):
+                continue
+            message = ""
+            error_text = r.get("error")
+            if isinstance(error_text, str) and error_text.strip():
+                message = error_text.strip()
+            else:
+                validation_data = r.get("validation")
+                if isinstance(validation_data, Mapping):
+                    errors_list = validation_data.get("errors")
+                    if isinstance(errors_list, Sequence) and not isinstance(errors_list, (str, bytes, bytearray)):
+                        joined = "; ".join(
+                            str(item).strip() for item in errors_list if str(item).strip()
+                        )
+                        if joined:
+                            message = joined
+            status_val = r.get("status") if isinstance(r.get("status"), int) else None
+            if not message:
+                if status_val is not None:
+                    message = f"Mist API returned HTTP {status_val}"
+                else:
+                    message = "Conversion failed."
+            failures.append(
+                {
+                    "site_id": r.get("site_id"),
+                    "device_id": r.get("device_id"),
+                    "status": status_val,
+                    "message": message,
+                }
+            )
+
+        if stage_site_deployment:
+            if total_rows == 0:
+                phase_status["site_stage"] = {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "No rows submitted for Site Deployment staging.",
+                    "successes": 0,
+                    "failures": [],
+                    "total": 0,
+                }
+            else:
+                phase_status["site_stage"] = {
+                    "ok": successes == total_rows,
+                    "skipped": False,
+                    "message": (
+                        "Prepared converted Mist payloads for {count} device(s)."
+                        if successes == total_rows
+                        else "Prepared converted Mist payloads for {successes}/{total} device(s). Check batch results for details."
+                    ).format(count=successes, successes=successes, total=total_rows),
+                    "successes": successes,
+                    "failures": failures,
+                    "total": total_rows,
+                }
+
+        if push_site_deployment:
+            if not should_push_live:
+                phase_status["site_push"] = {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "Skipped pushing converted config during a preview-only run.",
+                    "successes": 0,
+                    "failures": [],
+                    "total": len(results),
+                }
+            elif len(results) == 0:
+                phase_status["site_push"] = {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "No rows available to push converted config.",
+                    "successes": 0,
+                    "failures": [],
+                    "total": 0,
+                }
+            else:
+                phase_status["site_push"] = {
+                    "ok": successes == len(results),
+                    "skipped": False,
+                    "message": (
+                        "Pushed converted config to {count} device(s)."
+                        if successes == len(results)
+                        else "Pushed converted config to {successes}/{total} device(s). Check batch results for details."
+                    ).format(count=successes, successes=successes, total=len(results)),
+                    "successes": successes,
+                    "failures": failures,
+                    "total": len(results),
+                }
+
+    if not site_actions_selected:
+        for row in results:
+            if isinstance(row, dict):
+                row.pop("payload", None)
+                row.pop("response", None)
+                row.pop("status", None)
+
+    if apply_temp_config:
+        phase_status["apply_temporary_config"] = _apply_temporary_config_for_rows(
+            base_url=base_url,
+            token=token,
+            results=results,
+            dry_run=preview_only,
+        )
+
+    if finalize_assignments:
+        phase_status["finalize_assignments"] = _finalize_assignments_for_rows(
+            base_url=base_url,
+            token=token,
+            results=results,
+            dry_run=preview_only,
+        )
+
+    if remove_temp_config:
+        phase_status["remove_temporary_config"] = _remove_temporary_config_for_rows(
+            base_url=base_url,
+            token=token,
+            results=results,
+            dry_run=preview_only,
+        )
+
+    for row in results:
+        if isinstance(row, dict):
+            row.pop("_temp_config_source", None)
+
     top_ok = all(r.get("ok") for r in results) if results else False
-    return JSONResponse({"ok": top_ok, "dry_run": bool(dry_run), "results": results})
+    phase_ok = all(status.get("ok") or status.get("skipped") for status in phase_status.values())
+    overall_ok = top_ok and phase_ok
+
+    return JSONResponse(
+        {
+            "ok": overall_ok,
+            "dry_run": preview_only,
+            "results": results,
+            "phase_status": phase_status,
+        }
+    )
