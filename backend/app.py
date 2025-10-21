@@ -2437,107 +2437,44 @@ def _load_site_template_networks(
 ) -> Dict[str, Dict[str, Any]]:
     """Fetch VLAN definitions from switch templates attached to the site."""
 
-    resp = requests.get(f"{base_url}/sites/{site_id}/networktemplates", headers=headers, timeout=60)
+    _ = candidate_org_ids  # retained for compatibility; no longer required for the derived endpoint
+
+    resp = requests.get(
+        f"{base_url}/sites/{site_id}/setting/derived",
+        headers=headers,
+        timeout=60,
+    )
     if resp.status_code == 404:
         return {}
     if not (200 <= resp.status_code < 300):
         raise MistAPIError(resp.status_code, _extract_mist_error(resp), response=_safe_json_response(resp))
 
-    raw_templates = resp.json() or []
-    template_entries: List[Mapping[str, Any]] = []
-    if isinstance(raw_templates, Mapping):
-        template_entries.append(raw_templates)
-    elif isinstance(raw_templates, list):
-        template_entries.extend([entry for entry in raw_templates if isinstance(entry, Mapping)])
-
-    if SWITCH_TEMPLATE_ID:
-        has_env_template = False
-        for entry in template_entries:
-            if not isinstance(entry, Mapping):
-                continue
-            for key in (
-                "template_id",
-                "id",
-                "networktemplate_id",
-                "network_template_id",
-                "switch_template_id",
-            ):
-                value = entry.get(key)
-                if isinstance(value, str) and value.strip() == SWITCH_TEMPLATE_ID:
-                    has_env_template = True
-                    break
-            if has_env_template:
-                break
-        if not has_env_template:
-            stub: Dict[str, Any] = {"id": SWITCH_TEMPLATE_ID}
-            if DEFAULT_ORG_ID:
-                stub["org_id"] = DEFAULT_ORG_ID
-            template_entries.append(stub)
-
-    if not template_entries:
-        return {}
-
-    base_org_candidates = list(dict.fromkeys(candidate_org_ids or ()))
-    base_org_candidates.extend(
-        org_id
-        for org_id in _collect_candidate_org_ids(template_entries)
-        if org_id not in base_org_candidates
-    )
-
-    seen_pairs: Set[Tuple[str, str]] = set()
+    doc = resp.json() or {}
     discovered: Dict[str, Dict[str, Any]] = {}
 
-    for entry in template_entries:
-        template_id: Optional[str] = None
-        for key in ("template_id", "id", "networktemplate_id", "network_template_id", "switch_template_id"):
-            value = entry.get(key) if isinstance(entry, Mapping) else None
-            if isinstance(value, str) and value.strip():
-                template_id = value.strip()
-                break
-        if not template_id:
-            continue
+    def _merge_containers(container: Any) -> None:
+        fetched = _normalize_network_map(container, sanitize=False)
+        for name, data in fetched.items():
+            if name not in discovered:
+                discovered[name] = data
 
-        entry_org_candidates: List[str] = []
-        for key in ("org_id", "orgId", "orgid"):
-            org_value = entry.get(key) if isinstance(entry, Mapping) else None
-            if isinstance(org_value, str) and org_value.strip():
-                entry_org_candidates.append(org_value.strip())
-        if not entry_org_candidates and DEFAULT_ORG_ID:
-            entry_org_candidates.append(DEFAULT_ORG_ID)
+    possible_containers: List[Any] = []
+    if isinstance(doc, Mapping):
+        possible_containers.extend([
+            doc.get("networks"),
+            doc.get("vlans"),
+        ])
 
-        tried_orgs: Set[str] = set()
-        for org_id in [*entry_org_candidates, *base_org_candidates]:
-            if not org_id or org_id in tried_orgs:
-                continue
-            tried_orgs.add(org_id)
-            pair = (org_id, template_id)
-            if pair in seen_pairs:
-                continue
+        switch_section = doc.get("switch") if isinstance(doc.get("switch"), Mapping) else None
+        if switch_section:
+            possible_containers.extend([
+                switch_section.get("networks"),
+                switch_section.get("vlans"),
+            ])
 
-            resp_template = requests.get(
-                f"{base_url}/orgs/{org_id}/networktemplates/{template_id}",
-                headers=headers,
-                timeout=60,
-            )
-            if resp_template.status_code == 404:
-                continue
-            if not (200 <= resp_template.status_code < 300):
-                raise MistAPIError(
-                    resp_template.status_code,
-                    _extract_mist_error(resp_template),
-                    response=_safe_json_response(resp_template),
-                )
-
-            seen_pairs.add(pair)
-            doc = resp_template.json() or {}
-            for container in (doc.get("networks"), doc.get("vlans")):
-                fetched = _normalize_network_map(container, sanitize=False)
-                for name, data in fetched.items():
-                    if name not in discovered:
-                        discovered[name] = data
-
-            # Once we successfully fetch the template for an org, stop trying others for this template
-            break
+    for container in possible_containers:
+        if container is not None:
+            _merge_containers(container)
 
     return discovered
 
