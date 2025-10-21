@@ -2188,11 +2188,125 @@ def _apply_network_rename_to_payload(payload: Mapping[str, Any], rename_map: Map
                 _rename_network_fields(cfg, rename_map)
 
 
+def _sanitize_existing_network_key(name: Optional[str], vlan_id: int) -> str:
+    base = (name or "").strip()
+    sanitized = re.sub(r"[^A-Za-z0-9_-]+", "_", base)
+    sanitized = sanitized.strip("_")
+    if not sanitized:
+        sanitized = f"vlan_{vlan_id}"
+    if not sanitized[0].isalpha():
+        sanitized = f"vlan_{vlan_id}_{sanitized}" if sanitized else f"vlan_{vlan_id}"
+    if len(sanitized) > 32:
+        sanitized = sanitized[:32]
+    if not sanitized:
+        sanitized = f"vlan_{vlan_id}"
+    if not sanitized[0].isalpha():
+        sanitized = f"vlan_{vlan_id}_{sanitized}"
+        if len(sanitized) > 32:
+            sanitized = sanitized[:32]
+    return sanitized
+
+
+def _collect_network_entries(networks: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    if not isinstance(networks, Mapping):
+        return entries
+    for key, data in networks.items():
+        if not isinstance(data, Mapping):
+            continue
+        vid = _int_or_none(data.get("vlan_id") or data.get("id"))
+        if vid is None:
+            continue
+        raw_name = None
+        if isinstance(data.get("name"), str) and data.get("name").strip():
+            raw_name = data.get("name").strip()
+        elif isinstance(key, str) and key.strip():
+            raw_name = key.strip()
+        entries.append({"id": vid, "name": raw_name or str(vid)})
+    return entries
+
+
+def _dedupe_with_template_priority(
+    template_vlans: Sequence[Mapping[str, Any]],
+    device_vlans: Sequence[Mapping[str, Any]],
+) -> Dict[int, Dict[str, Any]]:
+    by_id: Dict[int, Dict[str, Any]] = {}
+    for entry in device_vlans:
+        vid = _int_or_none(entry.get("id") or entry.get("vlan_id"))
+        if vid is None:
+            continue
+        name = str(entry.get("name") or "").strip() or str(vid)
+        by_id[vid] = {"id": vid, "name": name}
+    for entry in template_vlans:
+        vid = _int_or_none(entry.get("id") or entry.get("vlan_id"))
+        if vid is None:
+            continue
+        name = str(entry.get("name") or "").strip() or str(vid)
+        by_id[vid] = {"id": vid, "name": name}
+    return by_id
+
+
+def _collect_existing_vlan_names(
+    *network_maps: Mapping[str, Any]
+) -> Dict[int, Set[str]]:
+    conflicts: Dict[int, Set[str]] = {}
+    for networks in network_maps:
+        if not isinstance(networks, Mapping):
+            continue
+        for key, data in networks.items():
+            if not isinstance(data, Mapping):
+                continue
+            vid = _int_or_none(data.get("vlan_id") or data.get("id"))
+            if vid is None:
+                continue
+            name = None
+            if isinstance(data.get("name"), str) and data.get("name").strip():
+                name = data.get("name").strip()
+            elif isinstance(key, str) and key.strip():
+                name = key.strip()
+            else:
+                name = str(vid)
+            conflicts.setdefault(vid, set()).add(name)
+    return conflicts
+
+
+def _build_existing_network_payload(
+    template_networks: Dict[str, Dict[str, Any]],
+    device_networks: Dict[str, Dict[str, Any]],
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[int, Set[str]]]:
+    template_entries = _collect_network_entries(template_networks)
+    device_entries = _collect_network_entries(device_networks)
+    deduped = _dedupe_with_template_priority(template_entries, device_entries)
+    conflicts = _collect_existing_vlan_names(device_networks, template_networks)
+    payload: Dict[str, Dict[str, Any]] = {}
+    used_keys: Set[str] = set()
+    for vid in sorted(deduped):
+        preferred_name = deduped[vid].get("name") if isinstance(deduped[vid], Mapping) else None
+        key = _sanitize_existing_network_key(preferred_name if isinstance(preferred_name, str) else None, vid)
+        base_key = key
+        suffix = 2
+        while key in used_keys:
+            suffix_str = str(suffix)
+            max_base_len = max(0, 32 - len(suffix_str) - 1)
+            trimmed_base = base_key[:max_base_len] or f"vlan_{vid}"[:max_base_len]
+            if not trimmed_base:
+                trimmed_base = f"vlan_{vid}"[: max(0, 32 - len(suffix_str) - 1)]
+            candidate = f"{trimmed_base}_{suffix_str}" if trimmed_base else f"vlan_{vid}_{suffix_str}"
+            if len(candidate) > 32:
+                candidate = candidate[:32]
+            key = candidate
+            suffix += 1
+        used_keys.add(key)
+        payload[key] = {"vlan_id": str(vid)}
+        conflicts.setdefault(vid, set()).add(preferred_name if isinstance(preferred_name, str) and preferred_name else key)
+    return payload, conflicts
+
+
 def _resolve_network_conflicts(
     networks_new: Dict[str, Dict[str, Any]],
     port_profiles_seq: List[Dict[str, Any]],
     port_usages_seq: List[Dict[str, Any]],
-    existing_networks: Dict[str, Dict[str, Any]],
+    existing_conflicts: Mapping[int, Set[str]],
 ) -> Tuple[
     Dict[str, Dict[str, Any]],
     List[Dict[str, Any]],
@@ -2206,22 +2320,13 @@ def _resolve_network_conflicts(
     if not networks_new:
         return networks_new, port_profiles_seq, port_usages_seq, rename_map, warnings
 
-    existing_by_vid: Dict[int, Set[str]] = {}
-    for name, data in existing_networks.items():
-        if not isinstance(data, Mapping):
-            continue
-        vid = _int_or_none(data.get("vlan_id") or data.get("id"))
-        if vid is None:
-            continue
-        existing_by_vid.setdefault(vid, set()).add(name)
-
     for original_name, data in list(networks_new.items()):
         if not isinstance(data, Mapping):
             continue
         vid = _int_or_none(data.get("vlan_id") or data.get("id"))
         if vid is None:
             continue
-        conflict_names = existing_by_vid.get(vid)
+        conflict_names = existing_conflicts.get(vid) if isinstance(existing_conflicts, Mapping) else None
         if not conflict_names:
             continue
         networks_new.pop(original_name, None)
@@ -2506,16 +2611,10 @@ def _prepare_switch_port_profile_payload(
 
     derived_networks = _load_site_template_networks(base_url, headers, site_id, candidate_org_ids)
 
-    combined_existing_networks: Dict[str, Dict[str, Any]] = dict(existing_networks)
-    for name, data in derived_networks.items():
-        key = name
-        if key in combined_existing_networks:
-            suffix = 2
-            key = f"{name} (template)"
-            while key in combined_existing_networks:
-                key = f"{name} (template {suffix})"
-                suffix += 1
-        combined_existing_networks[key] = data
+    existing_network_payload, existing_conflicts = _build_existing_network_payload(
+        derived_networks,
+        existing_networks,
+    )
 
     original_network_keys = set(networks_new.keys())
 
@@ -2529,7 +2628,7 @@ def _prepare_switch_port_profile_payload(
         networks_new,
         port_profiles_seq,
         port_usages_seq,
-        combined_existing_networks,
+        existing_conflicts,
     )
 
     removed_network_names = original_network_keys - set(networks_new.keys())
@@ -2653,12 +2752,19 @@ def _prepare_switch_port_profile_payload(
                 )
             )
     request_body: Dict[str, Any] = {}
+    networks_payload: Dict[str, Dict[str, Any]] = {}
+    if existing_network_payload:
+        networks_payload.update(existing_network_payload)
     if networks_new:
-        request_body["networks"] = {
-            name: _compact_dict(dict(values))
-            for name, values in networks_new.items()
-            if isinstance(values, Mapping) and name
-        }
+        for name, values in networks_new.items():
+            if not isinstance(values, Mapping) or not name:
+                continue
+            vid = _int_or_none(values.get("vlan_id") or values.get("id"))
+            if vid is None:
+                continue
+            networks_payload[name] = {"vlan_id": str(vid)}
+    if networks_payload:
+        request_body["networks"] = networks_payload
 
     if port_usages_seq:
         request_body["port_usages"] = {
