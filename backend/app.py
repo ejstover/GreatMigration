@@ -2409,6 +2409,37 @@ def _prepare_switch_port_profile_payload(
     if not existing_networks:
         existing_networks = _normalize_network_map(current.get("vlans"), sanitize=False)
 
+    derived_networks: Dict[str, Dict[str, Any]] = {}
+    derived_resp = requests.get(
+        f"{base_url}/sites/{site_id}/networktemplates/derived",
+        headers=headers,
+        timeout=60,
+    )
+    if derived_resp.status_code == 404:
+        pass
+    elif 200 <= derived_resp.status_code < 300:
+        derived_doc = derived_resp.json() or {}
+        derived_networks = _normalize_network_map(derived_doc.get("networks"), sanitize=False)
+        if not derived_networks:
+            derived_networks = _normalize_network_map(derived_doc.get("vlans"), sanitize=False)
+    else:
+        raise MistAPIError(
+            derived_resp.status_code,
+            _extract_mist_error(derived_resp),
+            response=_safe_json_response(derived_resp),
+        )
+
+    combined_existing_networks: Dict[str, Dict[str, Any]] = dict(existing_networks)
+    for name, data in derived_networks.items():
+        key = name
+        if key in combined_existing_networks:
+            suffix = 2
+            key = f"{name} (template)"
+            while key in combined_existing_networks:
+                key = f"{name} (template {suffix})"
+                suffix += 1
+        combined_existing_networks[key] = data
+
     (
         networks_new,
         port_profiles_seq,
@@ -2419,7 +2450,7 @@ def _prepare_switch_port_profile_payload(
         networks_new,
         port_profiles_seq,
         port_usages_seq,
-        existing_networks,
+        combined_existing_networks,
     )
     if isinstance(existing_config, Mapping):
         merged_config: Dict[str, Dict[str, Any]] = {str(k): dict(v) for k, v in existing_config.items() if isinstance(v, Mapping)}
