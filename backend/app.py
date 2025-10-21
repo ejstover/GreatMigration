@@ -2833,21 +2833,22 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
         data_vlan = _int_or_none(intf.get("data_vlan"))
         voice_vlan = _int_or_none(intf.get("voice_vlan"))
         native_vlan = _int_or_none(intf.get("native_vlan"))
-        allowed_vlans = _normalize_vlan_values(intf.get("allowed_vlans"))
+        allowed_vlan_ids = tuple(_normalize_vlan_values(intf.get("allowed_vlans")))
 
         data_network = _register_vlan(data_vlan)
         voice_network = _register_vlan(voice_vlan)
         native_network = _register_vlan(native_vlan)
         allowed_network_list: List[str] = []
-        for vlan_id in allowed_vlans:
+        for vlan_id in allowed_vlan_ids:
             network_name = _register_vlan(vlan_id)
             if network_name:
                 allowed_network_list.append(network_name)
         allowed_networks = tuple(allowed_network_list)
 
         usage_key = (mode, data_network, voice_network, native_network, allowed_networks)
+        usage_fingerprint = (mode, data_vlan, voice_vlan, native_vlan, allowed_vlan_ids)
 
-        profile = port_usages.get(usage_key)
+        profile = port_usages.get(usage_fingerprint)
         if profile is None:
             usage_name = _generate_temp_usage_name(usage_key, network_labels=vlan_label_map)
             profile = {
@@ -2875,7 +2876,7 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
                 "allow_dhcpd": False,
                 "disable_autoneg": False,
             }
-            port_usages[usage_key] = _compact_dict(profile)
+            port_usages[usage_fingerprint] = _compact_dict(profile)
 
         profile_name = profile["name"]
         description = str(intf.get("description") or "").strip()

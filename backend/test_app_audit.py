@@ -178,6 +178,68 @@ def test_fetch_site_context_filters_recent_last_seen(monkeypatch, app_module):
     assert device_ids == ["recent", "recent-iso", "recent-ms"]
 
 
+def test_build_temp_config_payload_groups_port_profiles(app_module):
+    row = {
+        "_temp_config_source": {
+            "vlans": [
+                {"id": 17, "name": "17"},
+                {"id": 100, "name": "Data"},
+                {"id": 120, "name": "Voice"},
+            ],
+            "interfaces": [],
+        }
+    }
+
+    for idx in range(1, 17):
+        row["_temp_config_source"]["interfaces"].append(
+            {
+                "mode": "access",
+                "data_vlan": 17,
+                "juniper_if": f"ge-0/0/{idx}",
+                "name": f"Gig{idx}",
+            }
+        )
+
+    for idx in range(17, 27):
+        row["_temp_config_source"]["interfaces"].append(
+            {
+                "mode": "access",
+                "data_vlan": 100,
+                "voice_vlan": 120,
+                "juniper_if": f"ge-0/0/{idx}",
+                "name": f"Gig{idx}",
+            }
+        )
+
+    payload = app_module._build_temp_config_payload(row)
+    assert payload is not None
+
+    usages = payload.get("port_usages")
+    assert isinstance(usages, dict)
+    assert len(usages) == 2
+    for name in usages:
+        assert name.startswith("old_")
+
+    port_config = payload.get("port_config")
+    assert isinstance(port_config, dict)
+    first_usage = port_config["ge-0/0/1"]["usage"]
+    voice_usage = port_config["ge-0/0/17"]["usage"]
+
+    for idx in range(1, 17):
+        assert port_config[f"ge-0/0/{idx}"]["usage"] == first_usage
+
+    for idx in range(17, 27):
+        assert port_config[f"ge-0/0/{idx}"]["usage"] == voice_usage
+
+    overrides = payload.get("port_overrides")
+    assert isinstance(overrides, list)
+    assert len(overrides) == 26
+    access_overrides = [o for o in overrides if o.get("usage") == first_usage]
+    voice_overrides = [o for o in overrides if o.get("usage") == voice_usage]
+    assert len(access_overrides) == 16
+    assert len(voice_overrides) == 10
+
+
 def test_load_site_history_parses_breakdown(tmp_path):
     from audit_history import load_site_history
 
