@@ -159,6 +159,58 @@
       <!-- Results -->
       <div id="batch_output" class="mt-4 space-y-4"></div>
     </section>
+
+    <!-- Two-phase Mist staging/finalization -->
+    <section id="two_phase_section" class="mb-8">
+      <h2 class="text-lg font-medium mb-2">Two-phase Mist staging</h2>
+      <p class="text-sm text-slate-600 dark:text-slate-300 mb-4">
+        Stage temporary VLANs and port overrides on a Mist switch, then finalize them once you have a mapping to your standard profiles.
+      </p>
+
+      <div class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-4 mb-4">
+        <div class="grid md:grid-cols-3 gap-4">
+          <div>
+            <label for="two_phase_site" class="block text-sm font-medium mb-1">Mist site</label>
+            <select id="two_phase_site" class="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"></select>
+          </div>
+          <div>
+            <label for="two_phase_device" class="block text-sm font-medium mb-1">Switch</label>
+            <select id="two_phase_device" class="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700"></select>
+          </div>
+          <div>
+            <label for="two_phase_base_url" class="block text-sm font-medium mb-1">Mist API base URL</label>
+            <input id="two_phase_base_url" type="text" class="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700" placeholder="https://api.ac2.mist.com/api/v1" />
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Leave blank to use the default from the server.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-4 space-y-3">
+          <h3 class="text-base font-medium">Stage temporary config</h3>
+          <p class="text-xs text-slate-600 dark:text-slate-300">Paste a Cisco running-config. VLANs and port overrides are created with a <code>temp_</code> prefix.</p>
+          <textarea id="two_phase_config" class="w-full border rounded-lg p-3 min-h-[12rem] dark:bg-slate-900 dark:border-slate-700" placeholder="interface FastEthernet1/0/1&#10; switchport mode access&#10; switchport access vlan 10&#10;..."></textarea>
+          <div class="flex items-center gap-3">
+            <button id="two_phase_stage_btn" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Stage temporary settings</button>
+            <span id="two_phase_stage_spinner" class="hidden text-sm text-slate-500 dark:text-slate-300">Working…</span>
+          </div>
+          <div id="two_phase_stage_status" class="hidden rounded-lg border px-3 py-2 text-sm"></div>
+          <pre id="two_phase_stage_output" class="hidden text-xs mt-2 p-3 bg-slate-50 dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto"></pre>
+        </div>
+
+        <div class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-4 space-y-3">
+          <h3 class="text-base font-medium">Finalize temporary config</h3>
+          <p class="text-xs text-slate-600 dark:text-slate-300">Provide a JSON mapping of old VLAN IDs to their new targets. Temporary VLANs and overrides are removed automatically.</p>
+          <textarea id="two_phase_mapping" class="w-full border rounded-lg p-3 min-h-[12rem] dark:bg-slate-900 dark:border-slate-700" placeholder='{"10": {"vlan_id": 110}, "20": {"vlan_id": 120}}'></textarea>
+          <div class="flex items-center gap-3">
+            <button id="two_phase_finalize_btn" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Finalize staging</button>
+            <span id="two_phase_finalize_spinner" class="hidden text-sm text-slate-500 dark:text-slate-300">Working…</span>
+          </div>
+          <div id="two_phase_finalize_status" class="hidden rounded-lg border px-3 py-2 text-sm"></div>
+          <pre id="two_phase_finalize_output" class="hidden text-xs mt-2 p-3 bg-slate-50 dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto"></pre>
+        </div>
+      </div>
+    </section>
   </div>
   </div>
 
@@ -239,6 +291,24 @@
     const tz = document.getElementById('tz');
     const modelOverride = document.getElementById('model_override');
 
+    const twoPhaseSection = document.getElementById('two_phase_section');
+    const twoPhaseSite = document.getElementById('two_phase_site');
+    const twoPhaseDevice = document.getElementById('two_phase_device');
+    const twoPhaseBaseUrl = document.getElementById('two_phase_base_url');
+    const twoPhaseConfig = document.getElementById('two_phase_config');
+    const twoPhaseMapping = document.getElementById('two_phase_mapping');
+    const twoPhaseStageBtn = document.getElementById('two_phase_stage_btn');
+    const twoPhaseFinalizeBtn = document.getElementById('two_phase_finalize_btn');
+    const twoPhaseStageStatus = document.getElementById('two_phase_stage_status');
+    const twoPhaseFinalizeStatus = document.getElementById('two_phase_finalize_status');
+    const twoPhaseStageOutput = document.getElementById('two_phase_stage_output');
+    const twoPhaseFinalizeOutput = document.getElementById('two_phase_finalize_output');
+    const twoPhaseStageSpinner = document.getElementById('two_phase_stage_spinner');
+    const twoPhaseFinalizeSpinner = document.getElementById('two_phase_finalize_spinner');
+
+    if (twoPhaseSite) twoPhaseSite.innerHTML = siteOptionsHtml('');
+    if (twoPhaseDevice) twoPhaseDevice.innerHTML = deviceOptionsHtml('', '');
+
     // --- Data ---
     let convertedItems = []; // [{ source_file, output_file, json }]
     let rows = []; // [{ idx, site_id, device_id, excludes, exclude_uplinks, member_offset, port_offset, model_override?, userChangedSite? }]
@@ -252,6 +322,32 @@
     function show(el){ el.classList.remove('hidden'); }
     function hide(el){ el.classList.add('hidden'); }
     function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
+
+    function setStatus(el, message, state = 'info'){
+      if (!el) return;
+      el.textContent = message || '';
+      el.classList.remove('status-info', 'status-success', 'status-error');
+      if (!message){
+        el.classList.add('hidden');
+        return;
+      }
+      el.classList.remove('hidden');
+      if (state === 'success') el.classList.add('status-success');
+      else if (state === 'error') el.classList.add('status-error');
+      else el.classList.add('status-info');
+    }
+
+    function setSpinnerVisible(el, visible){
+      if (!el) return;
+      if (visible) el.classList.remove('hidden');
+      else el.classList.add('hidden');
+    }
+
+    function pluralize(count, singular, plural = `${singular}s`){
+      const n = Number.isFinite(count) ? count : Number(count) || 0;
+      const label = (n === 1) ? singular : (plural || `${singular}s`);
+      return `${n} ${label}`;
+    }
 
     async function logTiming(eventName, durationMs, metadata = {}){
       try {
@@ -516,7 +612,7 @@
     });
 
     // --- Sites/Devices ---
-    async function fetchSites(){
+    async function fetchSites(preserveSelection = true){
       try {
         const res = await fetch('/api/sites');
         const data = await res.json();
@@ -525,6 +621,8 @@
       } catch (e){
         sitesCache = [];
         console.error('Failed to fetch sites', e);
+      } finally {
+        await renderTwoPhaseSiteOptions(preserveSelection);
       }
     }
     async function fetchDevices(site_id){
@@ -636,6 +734,49 @@
         opts.push(`<option value="${d.id}" ${sel}>${escapeHtml(label)}</option>`);
       });
       return opts.join('');
+    }
+
+    async function renderTwoPhaseSiteOptions(preserveSelection = true){
+      if (!twoPhaseSite) return;
+      const previousSite = twoPhaseSite.value;
+      let selectedId = preserveSelection ? previousSite : '';
+      if (selectedId && !sitesCache.some(s => s.id === selectedId)){
+        selectedId = '';
+      }
+      if (!selectedId && sitesCache.length){
+        selectedId = sitesCache[0]?.id || '';
+      }
+      twoPhaseSite.innerHTML = siteOptionsHtml(selectedId);
+      if (selectedId){
+        twoPhaseSite.value = selectedId;
+      }
+      const preserveDevices = preserveSelection && selectedId === previousSite;
+      await updateTwoPhaseDevices(selectedId, preserveDevices);
+      if (twoPhaseSection) show(twoPhaseSection);
+    }
+
+    async function updateTwoPhaseDevices(siteId, preserveSelection = true){
+      if (!twoPhaseDevice) return;
+      let selectedDevice = preserveSelection ? twoPhaseDevice.value : '';
+      if (!siteId){
+        twoPhaseDevice.innerHTML = deviceOptionsHtml('', '');
+        return;
+      }
+      await fetchDevices(siteId);
+      const devs = devicesBySite.get(siteId) || [];
+      if (!preserveSelection || !devs.some(d => d.id === selectedDevice)){
+        selectedDevice = '';
+      }
+      twoPhaseDevice.innerHTML = deviceOptionsHtml(siteId, selectedDevice);
+      if (selectedDevice){
+        twoPhaseDevice.value = selectedDevice;
+      }
+    }
+
+    if (twoPhaseSite){
+      twoPhaseSite.addEventListener('change', async () => {
+        await updateTwoPhaseDevices(twoPhaseSite.value, false);
+      });
     }
 
     function renderBatchRows(){
@@ -965,6 +1106,171 @@
           ${mistResp}
         `;
         batchOutput.appendChild(card);
+      });
+    }
+
+    if (twoPhaseStageBtn){
+      twoPhaseStageBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        if (twoPhaseStageBtn.disabled) return;
+
+        const siteId = (twoPhaseSite?.value || '').trim();
+        const deviceId = (twoPhaseDevice?.value || '').trim();
+        const configText = twoPhaseConfig?.value || '';
+        const baseUrl = (twoPhaseBaseUrl?.value || '').trim();
+
+        setStatus(twoPhaseStageStatus, '');
+        if (twoPhaseStageOutput){
+          twoPhaseStageOutput.textContent = '';
+          twoPhaseStageOutput.classList.add('hidden');
+        }
+
+        if (!siteId || !deviceId){
+          setStatus(twoPhaseStageStatus, 'Select a Mist site and switch.', 'error');
+          return;
+        }
+        if (!configText.trim()){
+          setStatus(twoPhaseStageStatus, 'Paste the Cisco running-config to stage.', 'error');
+          return;
+        }
+
+        twoPhaseStageBtn.disabled = true;
+        twoPhaseStageBtn.classList.add('opacity-70', 'cursor-not-allowed');
+        setSpinnerVisible(twoPhaseStageSpinner, true);
+        setStatus(twoPhaseStageStatus, 'Staging temporary configuration…', 'info');
+
+        try {
+          const body = { site_id: siteId, device_id: deviceId, cisco_config_text: configText };
+          if (baseUrl) body.base_url = baseUrl;
+
+          const res = await fetch('/api/two_phase/stage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+
+          let data;
+          try {
+            data = await res.json();
+          } catch (err) {
+            throw new Error(res.statusText || 'Failed to parse response');
+          }
+
+          if (!res.ok || !data?.ok){
+            throw new Error(data?.error || res.statusText || 'Stage failed');
+          }
+
+          const result = data.result || {};
+          const createdCount = Array.isArray(result.created_temp_vlans)
+            ? result.created_temp_vlans.length
+            : Number(result.created_temp_vlans) || 0;
+          const updatedCount = Array.isArray(result.updated_ports)
+            ? result.updated_ports.length
+            : Number(result.updated_ports) || 0;
+          const message = `${pluralize(createdCount, 'temporary VLAN')} created; ${pluralize(updatedCount, 'port')} updated.`;
+          setStatus(twoPhaseStageStatus, message, 'success');
+
+          if (twoPhaseStageOutput){
+            twoPhaseStageOutput.textContent = JSON.stringify(result, null, 2);
+            twoPhaseStageOutput.classList.remove('hidden');
+          }
+        } catch (err){
+          const msg = err?.message ? String(err.message) : String(err);
+          setStatus(twoPhaseStageStatus, `Error staging configuration: ${msg}`, 'error');
+        } finally {
+          twoPhaseStageBtn.disabled = false;
+          twoPhaseStageBtn.classList.remove('opacity-70', 'cursor-not-allowed');
+          setSpinnerVisible(twoPhaseStageSpinner, false);
+        }
+      });
+    }
+
+    if (twoPhaseFinalizeBtn){
+      twoPhaseFinalizeBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        if (twoPhaseFinalizeBtn.disabled) return;
+
+        const siteId = (twoPhaseSite?.value || '').trim();
+        const deviceId = (twoPhaseDevice?.value || '').trim();
+        const mappingText = twoPhaseMapping?.value || '';
+        const baseUrl = (twoPhaseBaseUrl?.value || '').trim();
+
+        setStatus(twoPhaseFinalizeStatus, '');
+        if (twoPhaseFinalizeOutput){
+          twoPhaseFinalizeOutput.textContent = '';
+          twoPhaseFinalizeOutput.classList.add('hidden');
+        }
+
+        if (!siteId || !deviceId){
+          setStatus(twoPhaseFinalizeStatus, 'Select a Mist site and switch.', 'error');
+          return;
+        }
+        if (!mappingText.trim()){
+          setStatus(twoPhaseFinalizeStatus, 'Provide a VLAN mapping JSON object.', 'error');
+          return;
+        }
+
+        let mapping;
+        try {
+          mapping = JSON.parse(mappingText);
+        } catch (err) {
+          setStatus(twoPhaseFinalizeStatus, 'Mapping must be valid JSON.', 'error');
+          return;
+        }
+
+        if (!mapping || Array.isArray(mapping) || typeof mapping !== 'object' || !Object.keys(mapping).length){
+          setStatus(twoPhaseFinalizeStatus, 'Mapping must be a non-empty JSON object keyed by VLAN IDs.', 'error');
+          return;
+        }
+
+        twoPhaseFinalizeBtn.disabled = true;
+        twoPhaseFinalizeBtn.classList.add('opacity-70', 'cursor-not-allowed');
+        setSpinnerVisible(twoPhaseFinalizeSpinner, true);
+        setStatus(twoPhaseFinalizeStatus, 'Finalizing temporary configuration…', 'info');
+
+        try {
+          const body = { site_id: siteId, device_id: deviceId, vlan_mapping_rules: mapping };
+          if (baseUrl) body.base_url = baseUrl;
+
+          const res = await fetch('/api/two_phase/finalize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+
+          let data;
+          try {
+            data = await res.json();
+          } catch (err) {
+            throw new Error(res.statusText || 'Failed to parse response');
+          }
+
+          if (!res.ok || !data?.ok){
+            throw new Error(data?.error || res.statusText || 'Finalize failed');
+          }
+
+          const result = data.result || {};
+          const removedCount = Array.isArray(result.removed_temp_vlans)
+            ? result.removed_temp_vlans.length
+            : Number(result.removed_temp_vlans) || 0;
+          const updatedCount = Array.isArray(result.updated_ports)
+            ? result.updated_ports.length
+            : Number(result.updated_ports) || 0;
+          const message = `${pluralize(removedCount, 'temporary VLAN')} removed; ${pluralize(updatedCount, 'port')} updated.`;
+          setStatus(twoPhaseFinalizeStatus, message, 'success');
+
+          if (twoPhaseFinalizeOutput){
+            twoPhaseFinalizeOutput.textContent = JSON.stringify(result, null, 2);
+            twoPhaseFinalizeOutput.classList.remove('hidden');
+          }
+        } catch (err){
+          const msg = err?.message ? String(err.message) : String(err);
+          setStatus(twoPhaseFinalizeStatus, `Error finalizing configuration: ${msg}`, 'error');
+        } finally {
+          twoPhaseFinalizeBtn.disabled = false;
+          twoPhaseFinalizeBtn.classList.remove('opacity-70', 'cursor-not-allowed');
+          setSpinnerVisible(twoPhaseFinalizeSpinner, false);
+        }
       });
     }
 

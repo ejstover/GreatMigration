@@ -50,6 +50,7 @@ from compliance import SiteAuditRunner, SiteContext, build_default_runner
 from audit_fixes import execute_audit_action
 from audit_actions import AP_RENAME_ACTION_ID
 from audit_history import load_site_history
+from mist_two_phase import MistTwoPhaseManager, MistApiError
 
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
@@ -393,6 +394,50 @@ def _load_mist_token() -> str:
     if not tok:
         raise RuntimeError("Missing MIST_TOKEN environment variable on the server.")
     return tok
+
+
+class TwoPhaseStageRequest(BaseModel):
+    site_id: str = Field(..., min_length=1)
+    device_id: str = Field(..., min_length=1)
+    cisco_config_text: str = Field(..., min_length=1)
+    base_url: Optional[str] = None
+
+    @field_validator("site_id", "device_id")
+    @classmethod
+    def _strip_identifiers(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("Value is required")
+        return cleaned
+
+    @field_validator("cisco_config_text")
+    @classmethod
+    def _ensure_config(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError("Cisco configuration text is required")
+        return value
+
+
+class TwoPhaseFinalizeRequest(BaseModel):
+    site_id: str = Field(..., min_length=1)
+    device_id: str = Field(..., min_length=1)
+    vlan_mapping_rules: Dict[str, Any]
+    base_url: Optional[str] = None
+
+    @field_validator("site_id", "device_id")
+    @classmethod
+    def _strip_identifiers(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("Value is required")
+        return cleaned
+
+    @field_validator("vlan_mapping_rules")
+    @classmethod
+    def _ensure_mapping(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(value, dict) or not value:
+            raise ValueError("vlan_mapping_rules must be a non-empty object")
+        return value
 
 
 def _site_display_name(data: Dict[str, Any], fallback: str = "") -> str:
@@ -1655,6 +1700,108 @@ def api_audit_fix(
             exc,
         )
         return JSONResponse({"ok": False, "error": "Unexpected remediation failure."}, status_code=500)
+
+
+@app.post("/api/two_phase/stage")
+async def api_two_phase_stage(
+    request: Request,
+    payload: TwoPhaseStageRequest,
+) -> JSONResponse:
+    _ensure_push_allowed(request, dry_run=False)
+
+    token = _load_mist_token()
+    base_url = (payload.base_url or DEFAULT_BASE_URL).rstrip("/")
+
+    manager = MistTwoPhaseManager(base_url=base_url, token=token)
+
+    try:
+        result = manager.stage_from_cisco_config(
+            site_id=payload.site_id,
+            device_id=payload.device_id,
+            cisco_config_text=payload.cisco_config_text,
+        )
+    except MistApiError as exc:
+        action_logger.error(
+            "user=%s action=two_phase_stage site=%s device=%s error=%s",
+            _request_user_label(request),
+            payload.site_id,
+            payload.device_id,
+            exc,
+        )
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+    except Exception as exc:  # pragma: no cover - defensive
+        action_logger.exception(
+            "user=%s action=two_phase_stage site=%s device=%s error=%s",
+            _request_user_label(request),
+            payload.site_id,
+            payload.device_id,
+            exc,
+        )
+        return JSONResponse({"ok": False, "error": "Failed to stage configuration."}, status_code=500)
+
+    created = len(result.get("created_temp_vlans") or [])
+    updated = len(result.get("updated_ports") or [])
+    action_logger.info(
+        "user=%s action=two_phase_stage site=%s device=%s created_vlans=%s updated_ports=%s",
+        _request_user_label(request),
+        payload.site_id,
+        payload.device_id,
+        created,
+        updated,
+    )
+
+    return JSONResponse({"ok": True, "result": result})
+
+
+@app.post("/api/two_phase/finalize")
+async def api_two_phase_finalize(
+    request: Request,
+    payload: TwoPhaseFinalizeRequest,
+) -> JSONResponse:
+    _ensure_push_allowed(request, dry_run=False)
+
+    token = _load_mist_token()
+    base_url = (payload.base_url or DEFAULT_BASE_URL).rstrip("/")
+
+    manager = MistTwoPhaseManager(base_url=base_url, token=token)
+
+    try:
+        result = manager.finalize_from_mapping(
+            site_id=payload.site_id,
+            device_id=payload.device_id,
+            vlan_mapping_rules=payload.vlan_mapping_rules,
+        )
+    except MistApiError as exc:
+        action_logger.error(
+            "user=%s action=two_phase_finalize site=%s device=%s error=%s",
+            _request_user_label(request),
+            payload.site_id,
+            payload.device_id,
+            exc,
+        )
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+    except Exception as exc:  # pragma: no cover - defensive
+        action_logger.exception(
+            "user=%s action=two_phase_finalize site=%s device=%s error=%s",
+            _request_user_label(request),
+            payload.site_id,
+            payload.device_id,
+            exc,
+        )
+        return JSONResponse({"ok": False, "error": "Failed to finalize configuration."}, status_code=500)
+
+    removed = len(result.get("removed_temp_vlans") or [])
+    updated = len(result.get("updated_ports") or [])
+    action_logger.info(
+        "user=%s action=two_phase_finalize site=%s device=%s removed_vlans=%s updated_ports=%s",
+        _request_user_label(request),
+        payload.site_id,
+        payload.device_id,
+        removed,
+        updated,
+    )
+
+    return JSONResponse({"ok": True, "result": result})
 
 
 @app.post("/api/convert")
