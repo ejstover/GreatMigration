@@ -2518,6 +2518,8 @@ def _prepare_switch_port_profile_payload(
                 suffix += 1
         combined_existing_networks[key] = data
 
+    original_network_keys = set(networks_new.keys())
+
     (
         networks_new,
         port_profiles_seq,
@@ -2530,6 +2532,127 @@ def _prepare_switch_port_profile_payload(
         port_usages_seq,
         combined_existing_networks,
     )
+
+    removed_network_names = original_network_keys - set(networks_new.keys())
+
+    def _record_targets_removed_network(record: Mapping[str, Any]) -> bool:
+        if not removed_network_names or not isinstance(record, Mapping):
+            return False
+
+        direct_keys = (
+            "port_network",
+            "voip_network",
+            "guest_network",
+            "server_reject_network",
+            "server_fail_network",
+            "native_network",
+        )
+
+        for key in direct_keys:
+            value = record.get(key)
+            if isinstance(value, str) and value in removed_network_names:
+                return True
+
+        for key in ("networks", "dynamic_vlan_networks"):
+            value = record.get(key)
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    if isinstance(item, str) and item in removed_network_names:
+                        return True
+
+        return False
+
+    skipped_usage_names: List[str] = []
+
+    if removed_network_names and port_usages_seq:
+        filtered_usages: List[Dict[str, Any]] = []
+        for profile in port_usages_seq:
+            if _record_targets_removed_network(profile):
+                name = str(profile.get("name") or "").strip()
+                if name:
+                    skipped_usage_names.append(name)
+                continue
+            filtered_usages.append(profile)
+        if skipped_usage_names:
+            port_usages_seq = filtered_usages
+            conflict_warnings.append(
+                "Skipped {count} port usage profile(s) because their VLAN assignments already exist on Mist: {names}.".format(
+                    count=len(skipped_usage_names),
+                    names=", ".join(sorted(skipped_usage_names)),
+                )
+            )
+
+    if removed_network_names and port_profiles_seq:
+        filtered_profiles: List[Dict[str, Any]] = []
+        skipped_profile_names: List[str] = []
+        for profile in port_profiles_seq:
+            if _record_targets_removed_network(profile):
+                name = str(profile.get("name") or "").strip()
+                if name:
+                    skipped_profile_names.append(name)
+                continue
+            filtered_profiles.append(profile)
+        if skipped_profile_names:
+            port_profiles_seq = filtered_profiles
+            conflict_warnings.append(
+                "Skipped {count} port profile(s) because their VLAN assignments already exist on Mist: {names}.".format(
+                    count=len(skipped_profile_names),
+                    names=", ".join(sorted(skipped_profile_names)),
+                )
+            )
+
+    blocked_usage_names = set(skipped_usage_names)
+
+    def _should_skip_config(record: Mapping[str, Any]) -> bool:
+        if not isinstance(record, Mapping):
+            return False
+        usage = record.get("usage")
+        if isinstance(usage, str) and usage in blocked_usage_names:
+            return True
+        return _record_targets_removed_network(record)
+
+    skipped_port_ids: List[str] = []
+    if removed_network_names and isinstance(port_config_new, Mapping):
+        filtered_config: Dict[str, Dict[str, Any]] = {}
+        for port_id, cfg in port_config_new.items():
+            port_key = str(port_id)
+            if not isinstance(cfg, Mapping):
+                continue
+            if _should_skip_config(cfg):
+                skipped_port_ids.append(port_key)
+                continue
+            filtered_config[port_key] = dict(cfg)
+        if skipped_port_ids:
+            port_config_new = filtered_config
+            conflict_warnings.append(
+                "Skipped {count} switchport assignment(s) because their VLAN assignments already exist on Mist: {names}.".format(
+                    count=len(skipped_port_ids),
+                    names=", ".join(sorted(skipped_port_ids)),
+                )
+            )
+
+    if removed_network_names and isinstance(port_overrides_new, Sequence) and not isinstance(
+        port_overrides_new, (str, bytes, bytearray)
+    ):
+        filtered_overrides: List[Dict[str, Any]] = []
+        skipped_override_ports: List[str] = []
+        for override in port_overrides_new:
+            if not isinstance(override, Mapping):
+                continue
+            if _should_skip_config(override):
+                port_id = str(override.get("port_id") or "").strip()
+                if port_id:
+                    skipped_override_ports.append(port_id)
+                continue
+            filtered_overrides.append(dict(override))
+        if skipped_override_ports:
+            port_overrides_new = filtered_overrides
+            conflict_warnings.append(
+                "Skipped {count} port override(s) because their VLAN assignments already exist on Mist: {names}.".format(
+                    count=len(skipped_override_ports),
+                    names=", ".join(sorted(skipped_override_ports)),
+                )
+            )
     if isinstance(existing_config, Mapping):
         merged_config: Dict[str, Dict[str, Any]] = {str(k): dict(v) for k, v in existing_config.items() if isinstance(v, Mapping)}
     else:
