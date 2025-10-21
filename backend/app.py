@@ -2188,25 +2188,6 @@ def _apply_network_rename_to_payload(payload: Mapping[str, Any], rename_map: Map
                 _rename_network_fields(cfg, rename_map)
 
 
-def _sanitize_existing_network_key(name: Optional[str], vlan_id: int) -> str:
-    base = (name or "").strip()
-    sanitized = re.sub(r"[^A-Za-z0-9_-]+", "_", base)
-    sanitized = sanitized.strip("_")
-    if not sanitized:
-        sanitized = f"vlan_{vlan_id}"
-    if not sanitized[0].isalpha():
-        sanitized = f"vlan_{vlan_id}_{sanitized}" if sanitized else f"vlan_{vlan_id}"
-    if len(sanitized) > 32:
-        sanitized = sanitized[:32]
-    if not sanitized:
-        sanitized = f"vlan_{vlan_id}"
-    if not sanitized[0].isalpha():
-        sanitized = f"vlan_{vlan_id}_{sanitized}"
-        if len(sanitized) > 32:
-            sanitized = sanitized[:32]
-    return sanitized
-
-
 def _collect_network_entries(networks: Mapping[str, Any]) -> List[Dict[str, Any]]:
     entries: List[Dict[str, Any]] = []
     if not isinstance(networks, Mapping):
@@ -2270,36 +2251,15 @@ def _collect_existing_vlan_names(
     return conflicts
 
 
-def _build_existing_network_payload(
+def _collect_existing_vlan_details(
     template_networks: Dict[str, Dict[str, Any]],
     device_networks: Dict[str, Dict[str, Any]],
-) -> Tuple[Dict[str, Dict[str, Any]], Dict[int, Set[str]]]:
+) -> Tuple[Set[int], Dict[int, Set[str]]]:
     template_entries = _collect_network_entries(template_networks)
     device_entries = _collect_network_entries(device_networks)
     deduped = _dedupe_with_template_priority(template_entries, device_entries)
     conflicts = _collect_existing_vlan_names(device_networks, template_networks)
-    payload: Dict[str, Dict[str, Any]] = {}
-    used_keys: Set[str] = set()
-    for vid in sorted(deduped):
-        preferred_name = deduped[vid].get("name") if isinstance(deduped[vid], Mapping) else None
-        key = _sanitize_existing_network_key(preferred_name if isinstance(preferred_name, str) else None, vid)
-        base_key = key
-        suffix = 2
-        while key in used_keys:
-            suffix_str = str(suffix)
-            max_base_len = max(0, 32 - len(suffix_str) - 1)
-            trimmed_base = base_key[:max_base_len] or f"vlan_{vid}"[:max_base_len]
-            if not trimmed_base:
-                trimmed_base = f"vlan_{vid}"[: max(0, 32 - len(suffix_str) - 1)]
-            candidate = f"{trimmed_base}_{suffix_str}" if trimmed_base else f"vlan_{vid}_{suffix_str}"
-            if len(candidate) > 32:
-                candidate = candidate[:32]
-            key = candidate
-            suffix += 1
-        used_keys.add(key)
-        payload[key] = {"vlan_id": str(vid)}
-        conflicts.setdefault(vid, set()).add(preferred_name if isinstance(preferred_name, str) and preferred_name else key)
-    return payload, conflicts
+    return set(deduped.keys()), conflicts
 
 
 def _resolve_network_conflicts(
@@ -2637,7 +2597,7 @@ def _prepare_switch_port_profile_payload(
 
     derived_networks = _load_site_template_networks(base_url, headers, site_id, candidate_org_ids)
 
-    existing_network_payload, existing_conflicts = _build_existing_network_payload(
+    existing_vlan_ids, existing_conflicts = _collect_existing_vlan_details(
         derived_networks,
         existing_networks,
     )
@@ -2779,14 +2739,15 @@ def _prepare_switch_port_profile_payload(
             )
     request_body: Dict[str, Any] = {}
     networks_payload: Dict[str, Dict[str, Any]] = {}
-    if existing_network_payload:
-        networks_payload.update(existing_network_payload)
     if networks_new:
-        for name, values in networks_new.items():
+        for name in sorted(networks_new):
+            values = networks_new[name]
             if not isinstance(values, Mapping) or not name:
                 continue
             vid = _int_or_none(values.get("vlan_id") or values.get("id"))
             if vid is None:
+                continue
+            if vid in existing_vlan_ids:
                 continue
             networks_payload[name] = {"vlan_id": str(vid)}
     if networks_payload:
