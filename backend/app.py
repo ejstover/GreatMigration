@@ -2490,6 +2490,30 @@ def _load_site_template_networks(
     elif isinstance(raw_templates, list):
         template_entries.extend([entry for entry in raw_templates if isinstance(entry, Mapping)])
 
+    if SWITCH_TEMPLATE_ID:
+        has_env_template = False
+        for entry in template_entries:
+            if not isinstance(entry, Mapping):
+                continue
+            for key in (
+                "template_id",
+                "id",
+                "networktemplate_id",
+                "network_template_id",
+                "switch_template_id",
+            ):
+                value = entry.get(key)
+                if isinstance(value, str) and value.strip() == SWITCH_TEMPLATE_ID:
+                    has_env_template = True
+                    break
+            if has_env_template:
+                break
+        if not has_env_template:
+            stub: Dict[str, Any] = {"id": SWITCH_TEMPLATE_ID}
+            if DEFAULT_ORG_ID:
+                stub["org_id"] = DEFAULT_ORG_ID
+            template_entries.append(stub)
+
     if not template_entries:
         return {}
 
@@ -2518,6 +2542,8 @@ def _load_site_template_networks(
             org_value = entry.get(key) if isinstance(entry, Mapping) else None
             if isinstance(org_value, str) and org_value.strip():
                 entry_org_candidates.append(org_value.strip())
+        if not entry_org_candidates and DEFAULT_ORG_ID:
+            entry_org_candidates.append(DEFAULT_ORG_ID)
 
         tried_orgs: Set[str] = set()
         for org_id in [*entry_org_candidates, *base_org_candidates]:
