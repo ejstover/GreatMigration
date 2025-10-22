@@ -191,12 +191,12 @@
                   <input id="apply_temp_config" type="checkbox" class="mt-1 h-4 w-4" />
                   <span>
                   <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 1 · Stage</span>
-                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Stage the temporary Cisco layout</span>
-                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Create VLANs, port profiles, and switchport assignments that mirror the legacy Cisco network on the Juniper hardware.</span>
+                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Review the temporary Cisco layout</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Build the VLAN, port profile, and switchport payloads without sending them so you can validate what Step 2 will push to Mist.</span>
                 </span>
               </span>
               <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
-              <span class="tip">Stages the generated payload as a temporary config on each switch after a successful push. This is the LCM staging step for the Cisco → Juniper migration.</span>
+              <span class="tip">Generates the temporary VLAN and port assignment payload and shows the exact Mist requests for review. No configuration is pushed during this step.</span>
             </label>
 
             <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
@@ -204,12 +204,12 @@
                 <input id="finalize_assignments" type="checkbox" class="mt-1 h-4 w-4" />
                 <span>
                   <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 2 · Finalize</span>
-                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Commit LCM assignments</span>
-                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Move the staged temporary assignments into production once you are ready to complete the cutover.</span>
+                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Push the temporary Cisco layout</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Apply the temporary VLANs, port profiles, and switchport overrides to the Juniper switch via Mist when you are ready to stage the cutover.</span>
                 </span>
               </span>
               <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
-              <span class="tip">Moves the temporary port assignments into production after staging completes. Use this when the LCM workflow is ready to finalize.</span>
+              <span class="tip">Sends the temporary VLAN and port usage payloads to Mist-managed switches so the legacy Cisco layout runs on the Juniper hardware.</span>
             </label>
 
             <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
@@ -218,11 +218,11 @@
                 <span>
                   <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 3 · Deploy</span>
                   <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Deploy the final Juniper config</span>
-                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and push the converted Cisco → Juniper payload when you are ready to run production.</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and push the converted Cisco → Juniper payload when you are ready to promote the new standard.</span>
                 </span>
               </span>
               <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
-              <span class="tip">Wipes the temporary lifecycle config, then applies the converted Juniper configuration so the switch runs the new standard.</span>
+              <span class="tip">Resets the temporary lifecycle payload on Mist and then applies the converted Juniper configuration so the switch runs the new standard VLANs.</span>
             </label>
           </div>
           </div>
