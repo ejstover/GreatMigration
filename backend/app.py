@@ -2290,6 +2290,8 @@ def _resolve_network_conflicts(
         if not conflict_names:
             continue
         networks_new.pop(original_name, None)
+        preferred_name = sorted(conflict_names)[0]
+        rename_map[original_name] = preferred_name
         warnings.append(
             "Detected VLAN ID {vid} already configured on Mist as {conflicts}; "
             "no temporary network changes were staged for this VLAN.".format(
@@ -2562,7 +2564,26 @@ def _prepare_switch_port_profile_payload(
         existing_conflicts,
     )
 
+    if rename_map:
+        if isinstance(port_config_new, Mapping):
+            port_config_new = {key: dict(value) for key, value in port_config_new.items() if isinstance(value, Mapping)}
+            for cfg in port_config_new.values():
+                _rename_network_fields(cfg, rename_map)
+        if isinstance(port_overrides_new, Sequence) and not isinstance(
+            port_overrides_new, (str, bytes, bytearray)
+        ):
+            updated_overrides: List[Dict[str, Any]] = []
+            for override in port_overrides_new:
+                if not isinstance(override, Mapping):
+                    continue
+                new_override = dict(override)
+                _rename_network_fields(new_override, rename_map)
+                updated_overrides.append(new_override)
+            port_overrides_new = updated_overrides
+
     removed_network_names = original_network_keys - set(networks_new.keys())
+    if rename_map:
+        removed_network_names -= set(rename_map.keys())
 
     def _record_targets_removed_network(record: Mapping[str, Any]) -> bool:
         if not removed_network_names or not isinstance(record, Mapping):
