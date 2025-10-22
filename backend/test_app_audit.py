@@ -239,6 +239,83 @@ def test_build_temp_config_payload_groups_port_profiles(app_module):
     assert len(voice_overrides) == 10
 
 
+def test_remove_temp_config_returns_preview_when_dry_run(app_module):
+    row = {
+        "ok": True,
+        "site_id": "site-1",
+        "device_id": "device-1",
+        "_site_deployment_payload": {"port_config": {"ge-0/0/1": {"usage": "end_user"}}},
+    }
+
+    result = app_module._remove_temporary_config_for_rows(
+        "https://example.com/api/v1",
+        "token",
+        [row],
+        dry_run=True,
+    )
+
+    assert result["skipped"] is True
+    assert result["total"] == 1
+    payloads = result.get("payloads") or []
+    assert len(payloads) == 1
+    preview = payloads[0]["payload"]
+    assert preview["wipe_request"] == {
+        "networks": {},
+        "port_usages": {},
+        "port_usage": {},
+        "port_config": {},
+        "port_overrides": {},
+    }
+    assert preview["push_request"]["port_config"]["ge-0/0/1"]["usage"] == "end_user"
+
+
+def test_remove_temp_config_wipes_and_pushes(monkeypatch, app_module):
+    calls: list[Dict[str, Any]] = []
+
+    def fake_put(url: str, headers: Dict[str, str], json: Dict[str, Any], timeout: int = 60):
+        calls.append({"url": url, "json": json})
+
+        class Resp:
+            status_code = 200
+
+            def json(self):
+                return {"ok": True}
+
+            text = ""
+
+        return Resp()
+
+    monkeypatch.setattr(app_module.requests, "put", fake_put)
+
+    final_payload = {"port_config": {"ge-0/0/5": {"usage": "access"}}}
+    row = {
+        "ok": True,
+        "site_id": "site-1",
+        "device_id": "device-1",
+        "_site_deployment_payload": final_payload,
+    }
+
+    result = app_module._remove_temporary_config_for_rows(
+        "https://example.com/api/v1",
+        "token",
+        [row],
+        dry_run=False,
+    )
+
+    assert result["ok"] is True
+    assert result["successes"] == 1
+    assert result["failures"] == []
+    assert len(calls) == 2
+    assert calls[0]["json"] == {
+        "networks": {},
+        "port_usages": {},
+        "port_usage": {},
+        "port_config": {},
+        "port_overrides": {},
+    }
+    assert calls[1]["json"] == final_payload
+
+
 def test_load_site_history_parses_breakdown(tmp_path):
     from audit_history import load_site_history
 

@@ -2801,6 +2801,22 @@ def _configure_switch_port_profile_override(
     return result
 
 
+def _put_device_payload(
+    base_url: str,
+    token: str,
+    site_id: str,
+    device_id: str,
+    payload: Mapping[str, Any],
+) -> Dict[str, Any]:
+    url = f"{base_url}/sites/{site_id}/devices/{device_id}"
+    headers = _mist_headers(token)
+    resp = requests.put(url, headers=headers, json=payload, timeout=60)
+    data = _safe_json_response(resp)
+    if not (200 <= resp.status_code < 300):
+        raise MistAPIError(resp.status_code, _extract_mist_error(resp), response=data)
+    return {"status": resp.status_code, "response": data}
+
+
 def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
     source = row.get("_temp_config_source")
     if not isinstance(source, Mapping):
@@ -2965,6 +2981,26 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
         payload["vlans"] = networks
 
     return payload
+
+
+def _get_site_deployment_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    payload = row.get("_site_deployment_payload")
+    if isinstance(payload, Mapping):
+        return copy.deepcopy(payload)
+    payload = row.get("payload")
+    if isinstance(payload, Mapping):
+        return copy.deepcopy(payload)
+    return None
+
+
+def _build_device_reset_payload() -> Dict[str, Any]:
+    return {
+        "networks": {},
+        "port_usages": {},
+        "port_usage": {},
+        "port_config": {},
+        "port_overrides": {},
+    }
 
 
 def _apply_temporary_config_for_rows(
@@ -3282,18 +3318,158 @@ def _remove_temporary_config_for_rows(
     *,
     dry_run: bool,
 ) -> Dict[str, Any]:
-    return _invoke_batch_phase(
-        results,
-        base_url=base_url,
-        token=token,
-        dry_run=dry_run,
-        method="delete",
-        path_template="/sites/{site_id}/devices/{device_id}/temp_port_config",
-        success_template="Removed temporary config from {count} device(s).",
-        partial_template="Removed temporary config from {successes}/{total} device(s). Manual follow-up required.",
-        skip_message="Skipped removing temporary config for {total} device(s) during a preview-only run.",
-        empty_message="No temporary config records to remove for the submitted batch.",
-    )
+    ok_rows = [r for r in results if r.get("ok") and r.get("site_id") and r.get("device_id")]
+    total = len(ok_rows)
+    payload_records: List[Dict[str, Any]] = []
+
+    if total == 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "No successful rows available to clean up temporary configuration.",
+            "successes": 0,
+            "failures": [],
+            "total": 0,
+            "payloads": [],
+        }
+
+    reset_template = _build_device_reset_payload()
+
+    if dry_run:
+        for row in ok_rows:
+            site_id = str(row.get("site_id") or "").strip()
+            device_id = str(row.get("device_id") or "").strip()
+            final_payload = _get_site_deployment_payload(row) or {}
+            payload_records.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "payload": {
+                        "wipe_request": copy.deepcopy(reset_template),
+                        "push_request": final_payload,
+                    },
+                }
+            )
+
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "Skipped cleaning up temporary config during a preview-only run.",
+            "successes": 0,
+            "failures": [],
+            "total": total,
+            "payloads": payload_records,
+        }
+
+    successes = 0
+    failures: List[Dict[str, Any]] = []
+
+    for row in ok_rows:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        wipe_payload = _build_device_reset_payload()
+        final_payload = _get_site_deployment_payload(row)
+        record: Dict[str, Any] = {
+            "site_id": site_id,
+            "device_id": device_id,
+            "payload": {
+                "wipe_request": copy.deepcopy(wipe_payload),
+                "push_request": copy.deepcopy(final_payload) if isinstance(final_payload, Mapping) else {},
+            },
+        }
+        payload_records.append(record)
+
+        if not final_payload:
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "status": None,
+                    "message": "No converted config payload available for the cleanup step.",
+                }
+            )
+            continue
+
+        try:
+            wipe_result = _put_device_payload(base_url, token, site_id, device_id, wipe_payload)
+            record["wipe_result"] = wipe_result
+        except MistAPIError as exc:
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "status": exc.status_code,
+                    "message": f"Unable to clear temporary config: {exc}",
+                }
+            )
+            record["wipe_error"] = str(exc)
+            continue
+        except Exception as exc:  # pragma: no cover - network failures reported to UI
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "status": None,
+                    "message": f"Unable to clear temporary config: {exc}",
+                }
+            )
+            record["wipe_error"] = str(exc)
+            continue
+
+        try:
+            push_result = _put_device_payload(base_url, token, site_id, device_id, final_payload)
+            record["device_result"] = {
+                "ok": True,
+                "status": push_result.get("status"),
+                "response": push_result.get("response"),
+                "request": copy.deepcopy(final_payload),
+            }
+            successes += 1
+        except MistAPIError as exc:
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "status": exc.status_code,
+                    "message": f"Unable to push converted config: {exc}",
+                }
+            )
+            record["device_result"] = {
+                "ok": False,
+                "status": exc.status_code,
+                "message": str(exc),
+                "response": exc.response,
+            }
+        except Exception as exc:  # pragma: no cover - network failures reported to UI
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_id": device_id,
+                    "status": None,
+                    "message": f"Unable to push converted config: {exc}",
+                }
+            )
+            record["device_result"] = {
+                "ok": False,
+                "status": None,
+                "message": str(exc),
+            }
+
+    ok = successes == total
+
+    return {
+        "ok": ok,
+        "skipped": False,
+        "message": (
+            "Cleared temporary config and pushed converted assignments for {count} device(s)."
+            if ok
+            else "Cleared temporary config and pushed converted assignments for {successes}/{total} device(s). Manual follow-up required."
+        ).format(count=successes, successes=successes, total=total),
+        "successes": successes,
+        "failures": failures,
+        "total": total,
+        "payloads": payload_records,
+    }
 
 
 @app.post("/api/push")
@@ -3467,6 +3643,9 @@ async def api_push_batch(
             row_result["row_index"] = i
             row_result["site_id"] = site_id
             row_result["device_id"] = device_id
+            payload_for_reuse = row_result.get("payload")
+            if isinstance(payload_for_reuse, Mapping):
+                row_result["_site_deployment_payload"] = copy.deepcopy(payload_for_reuse)
             if row_result.get("ok"):
                 names = set((row_result.get("payload") or {}).get("port_config", {}).keys())
                 used = used_ifnames.setdefault(device_id, set())
@@ -3610,6 +3789,7 @@ async def api_push_batch(
     for row in results:
         if isinstance(row, dict):
             row.pop("_temp_config_source", None)
+            row.pop("_site_deployment_payload", None)
 
     top_ok = all(r.get("ok") for r in results) if results else False
     phase_ok = all(status.get("ok") or status.get("skipped") for status in phase_status.values())
