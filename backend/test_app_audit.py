@@ -217,8 +217,7 @@ def test_build_temp_config_payload_groups_port_profiles(app_module):
     usages = payload.get("port_usages")
     assert isinstance(usages, dict)
     assert len(usages) == 2
-    for name in usages:
-        assert name.startswith("old_")
+    assert set(usages.keys()) == {"old_access_vlan17", "old_access_vlan100_voice120"}
 
     port_config = payload.get("port_config")
     assert isinstance(port_config, dict)

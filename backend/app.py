@@ -2307,35 +2307,43 @@ def _resolve_network_conflicts(
     return networks_new, port_profiles_seq, port_usages_seq, rename_map, warnings
 
 
-def _generate_temp_usage_name(key: tuple, *, network_labels: Mapping[str, Optional[str]]) -> str:
-    mode, data_network, voice_network, native_network, allowed_networks = key
-    parts = ["old", "lcm", "acc" if mode == "access" else "trk"]
-    if mode == "access" and data_network:
-        parts.append(network_labels.get(data_network) or data_network)
-    if mode == "trunk" and native_network:
-        parts.append(network_labels.get(native_network) or native_network)
-    if voice_network:
-        parts.append(f"vo_{network_labels.get(voice_network) or voice_network}")
-    if allowed_networks:
-        preview = "-".join((network_labels.get(name) or name) for name in list(allowed_networks)[:3])
-        if preview:
-            parts.append(f"allow_{preview}{'+' if len(allowed_networks) > 3 else ''}")
-    digest_src = json.dumps(
-        {
-            "mode": mode,
-            "data_network": data_network,
-            "voice_network": voice_network,
-            "native_network": native_network,
-            "allowed_networks": list(allowed_networks),
-        },
-        sort_keys=True,
-    )
-    suffix = hashlib.sha1(digest_src.encode("utf-8")).hexdigest()[:6]
-    name = "_".join(parts + [suffix])
-    # Ensure Mist-friendly characters
-    name = re.sub(r"[^a-z0-9_-]", "_", name.lower())
+def _generate_temp_usage_name(
+    *,
+    mode: str,
+    data_vlan: Optional[int],
+    voice_vlan: Optional[int],
+    native_vlan: Optional[int],
+    allowed_vlans: Sequence[int],
+) -> str:
+    parts: List[str] = ["old", "access" if mode == "access" else "trunk"]
+
+    if mode == "access":
+        if data_vlan is not None:
+            parts.append(f"vlan{data_vlan}")
+        else:
+            parts.append("vlan_unassigned")
+        if voice_vlan is not None:
+            parts.append(f"voice{voice_vlan}")
+    else:
+        if native_vlan is not None:
+            parts.append(f"native{native_vlan}")
+        if allowed_vlans:
+            allowed_tokens = [f"v{vid}" for vid in allowed_vlans]
+            parts.append("allow_" + "_".join(allowed_tokens))
+        else:
+            parts.append("all")
+
+    name = "_".join(parts)
+    name = re.sub(r"[^A-Za-z0-9_-]", "_", name)
+    name = name.lower()
     if not name.startswith("old_"):
         name = f"old_{name}"
+
+    if len(name) > 32:
+        digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]
+        prefix = name[: max(32 - 7, 4)].rstrip("-_")
+        name = f"{prefix}_{digest}" if prefix else f"old_{digest}"
+
     return name
 
 
@@ -2788,7 +2796,6 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
     networks: List[Dict[str, Any]] = []
     seen_vlan_ids: set[int] = set()
     vlan_name_map: Dict[int, str] = {}
-    vlan_label_map: Dict[str, Optional[str]] = {}
 
     def _register_vlan(vlan_id: Optional[int], raw_name: Optional[str] = None) -> Optional[str]:
         if vlan_id is None:
@@ -2797,8 +2804,6 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
             return vlan_name_map[vlan_id]
         network_name = _generate_temp_network_name(vlan_id, raw_name)
         vlan_name_map[vlan_id] = network_name
-        if network_name not in vlan_label_map:
-            vlan_label_map[network_name] = (raw_name.strip() if isinstance(raw_name, str) else raw_name) or None
         if vlan_id not in seen_vlan_ids:
             seen_vlan_ids.add(vlan_id)
             networks.append(
@@ -2845,12 +2850,17 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
                 allowed_network_list.append(network_name)
         allowed_networks = tuple(allowed_network_list)
 
-        usage_key = (mode, data_network, voice_network, native_network, allowed_networks)
         usage_fingerprint = (mode, data_vlan, voice_vlan, native_vlan, allowed_vlan_ids)
 
         profile = port_usages.get(usage_fingerprint)
         if profile is None:
-            usage_name = _generate_temp_usage_name(usage_key, network_labels=vlan_label_map)
+            usage_name = _generate_temp_usage_name(
+                mode=mode,
+                data_vlan=data_vlan,
+                voice_vlan=voice_vlan,
+                native_vlan=native_vlan,
+                allowed_vlans=allowed_vlan_ids,
+            )
             profile = {
                 "name": usage_name,
                 "mode": mode or None,
