@@ -30,17 +30,42 @@ GreatMigration ships with a responsive FastAPI + HTMX interface backed by a Mist
 * Receive Juniper (or custom) replacement suggestions based on curated mappings.
 * Export a PDF summary for procurement or change records.
 
+**How to use**
+
+1. Navigate to **Hardware Conversion → Upload bundle** in the web UI.
+2. Drag-and-drop a `show tech-support` archive (or browse to select one).
+3. Review the parsed chassis, line cards, and optics that appear in the results grid.
+4. Adjust suggested replacements if needed, then download the PDF report or CSV export for planning.
+
 ### Port profile rules
 
 * Maintain reusable mappings between detected Cisco interface traits and Mist port profiles.
 * Build rules with multiple conditions (mode, description regex, VLANs, etc.) using a drag-and-drop priority list.
 * Persist rule sets in `backend/port_rules.json` so they can be version-controlled or shared.
 
+**How to use**
+
+1. Open **Rules → Port Profiles** to see the existing rule stack.
+2. Click **Add rule** to describe the Cisco traits (mode, access VLAN, voice VLAN, description regex, LLDP match, etc.).
+3. Choose the Mist port usage that should be applied when a port matches the conditions.
+4. Reorder rules to set priority—first match wins during conversions.
+5. Use **Export JSON** to capture the current rule file or **Import JSON** to load a curated set into `backend/port_rules.json`.
+
 ### Config conversion
 
 * Translate legacy switch configs into Mist-ready JSON payloads.
 * Batch map converted payloads to Mist sites and devices, tweak chassis member offsets, exclude uplinks, and override device models.
 * Stage configurations or push live updates using the Site Deployment Automation controls; push options require push rights.
+
+**How to use**
+
+1. Visit **Config Conversion** and upload one or more Cisco configuration files (raw CLI or archive).
+2. Inspect the parsed inventory and optionally adjust offsets/exclusions so the converted members align with target hardware.
+3. Select the destination Mist org/site/device for each row. The UI displays the generated Mist payload preview.
+4. Use the **Site Deployment Automation** section:
+   * Choose **Stage/Test** to download the Mist payload or perform a dry run without changing devices.
+   * Choose **Push changes** to send the converted configuration to Mist (requires push permissions).
+5. Download the JSON or CSV exports for documentation or manual review at any stage.
 
 ### Compliance audit & 1 Click Fix
 
@@ -50,6 +75,14 @@ GreatMigration ships with a responsive FastAPI + HTMX interface backed by a Mist
   * **Access point naming:** rename Mist APs to match the required pattern using LLDP neighbour data. Buttons appear per device so you can remediate selectively.
   * **Switch static DNS cleanup:** remove statically configured management DNS servers from `ip_config` while respecting lab vs. production template assignments. Pre-checks verify the expected template and DNS site variables; buttons stay disabled and display guidance until prerequisites are met.
 * UI status badges show live Mist API feedback next to each button so operators immediately see success, skipped states, or pre-check failures.
+
+**How to use**
+
+1. Open **Compliance Audit** and pick the Mist org and sites you want to evaluate.
+2. Click **Run audit** to fetch live Mist data and generate the compliance report.
+3. Expand each site card to review checks, affected devices, and recommended fixes.
+4. For push-enabled users, click the appropriate **1 Click Fix** buttons (e.g., AP rename, DNS cleanup). Each button re-validates prerequisites before issuing Mist API calls.
+5. Download the audit summary or device-level CSV exports for change records or further analysis.
 
 ---
 
