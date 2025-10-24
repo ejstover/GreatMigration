@@ -70,7 +70,19 @@ def validate_rules_doc(doc: Dict[str, Any]) -> None:
     if not isinstance(rules, list):
         raise ValueError("Rules document missing 'rules' list")
 
-    allowed_when = {"mode", "data_vlan", "voice_vlan", "native_vlan", "description_regex"}
+    allowed_when = {
+        "mode",
+        "data_vlan",
+        "data_vlan_in",
+        "voice_vlan",
+        "native_vlan",
+        "allowed_vlans",
+        "has_voice",
+        "description_regex",
+        "name_regex",
+        "juniper_if_regex",
+        "any",
+    }
     allowed_set = {"usage"}
 
     for idx, rule in enumerate(rules, 1):
@@ -87,11 +99,31 @@ def validate_rules_doc(doc: Dict[str, Any]) -> None:
                     int(v)
                 except Exception:
                     raise ValueError(f"Rule {idx} condition '{k}' must be an integer")
+            if k == "data_vlan_in":
+                if not isinstance(v, (list, tuple, set)):
+                    raise ValueError("data_vlan_in condition must be a list of VLAN IDs")
+                for item in v:
+                    try:
+                        int(item)
+                    except Exception:
+                        raise ValueError("data_vlan_in values must be integers")
+            if k == "allowed_vlans":
+                if not isinstance(v, (list, tuple, set, str)):
+                    raise ValueError("allowed_vlans conditions must be a list or comma string")
             if k == "description_regex":
                 try:
                     re.compile(str(v))
                 except re.error as e:
                     raise ValueError(f"Rule {idx} has invalid regex: {e}")
+            if k in {"name_regex", "juniper_if_regex"}:
+                try:
+                    re.compile(str(v))
+                except re.error as e:
+                    raise ValueError(f"Rule {idx} has invalid regex: {e}")
+            if k == "has_voice" and not isinstance(v, bool):
+                raise ValueError("has_voice condition must be boolean")
+            if k == "any" and not isinstance(v, bool):
+                raise ValueError("any condition must be boolean")
         setp = rule.get("set", {})
         if not isinstance(setp, dict):
             raise ValueError(f"Rule {idx} 'set' must be an object")
@@ -182,10 +214,8 @@ def evaluate_rule(when: Dict[str, Any], intf: Dict[str, Any]) -> bool:
             if voice_vlan != int(v): return False
         elif k == "native_vlan":
             if native_vlan != int(v): return False
-        elif k == "allowed_vlans_contains":
-            if int(v) not in allowed_vlans_set: return False
-        elif k == "allowed_vlans_equals":
-            if allowed_vlans_set != set(int(x) for x in (v or [])): return False
+        elif k == "allowed_vlans":
+            if allowed_vlans_set != set(_normalize_vlan_list(v)): return False
         elif k == "has_voice":
             if bool(voice_vlan) != bool(v): return False
         elif k == "description_regex":
