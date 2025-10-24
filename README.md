@@ -26,16 +26,28 @@ GreatMigration ships with a responsive FastAPI + HTMX interface backed by a Mist
 
 ### Hardware conversion
 
-* Upload Cisco `show tech-support` bundles to identify hardware that needs replacement.
+* Collect Cisco hardware details either by uploading `show tech-support` bundles **or** by letting the app log in over SSH.
 * Receive Juniper (or custom) replacement suggestions based on curated mappings.
 * Export a PDF summary for procurement or change records.
 
 **How to use**
 
-1. Navigate to **Hardware Conversion → Upload bundle** in the web UI.
-2. Drag-and-drop a `show tech-support` archive (or browse to select one).
+1. Navigate to **Hardware Conversion** in the web UI.
+2. Choose one of the collection methods:
+   * **Upload bundle** – drag-and-drop a `show tech-support` archive (or browse to select one).
+   * **SSH collect** – provide the device IP/hostname plus credentials and start a job; the worker logs in and executes
+     `show inventory`, `show interface status`, `show interfaces`, and `show running-config`, then persists the raw text for auditing.
 3. Review the parsed chassis, line cards, and optics that appear in the results grid.
 4. Adjust suggested replacements if needed, then download the PDF report or CSV export for planning.
+
+**How it works**
+
+* Uploads and SSH jobs both flow through `translate_showtech.parse_showtech`, which normalizes Cisco hardware tables and drives
+  the recommendation engine (`translate_showtech.load_mapping`, `find_copper_10g_ports`).
+* SSH collection is orchestrated by `backend/ssh_collect.py`: a thread pool launches Netmiko sessions per device, runs the
+  command set above, captures stdout to disk, and synthesizes a `show tech` bundle so the same parser can be reused.
+* Replacement suggestions are computed from `backend/device_map.sample.json` (or your customized `device_map.json`) and surfaced
+  alongside interface counts so you can spot copper-to-fiber mismatches before ordering hardware.
 
 ### Port profile rules
 
@@ -46,10 +58,19 @@ GreatMigration ships with a responsive FastAPI + HTMX interface backed by a Mist
 **How to use**
 
 1. Open **Rules → Port Profiles** to see the existing rule stack.
-2. Click **Add rule** to describe the Cisco traits (mode, access VLAN, voice VLAN, description regex, LLDP match, etc.).
+2. Click **Add rule** to describe the Cisco traits (mode, access VLAN, voice VLAN, native VLAN, description regex, etc.).
 3. Choose the Mist port usage that should be applied when a port matches the conditions.
 4. Reorder rules to set priority—first match wins during conversions.
 5. Use **Export JSON** to capture the current rule file or **Import JSON** to load a curated set into `backend/port_rules.json`.
+
+**How it works**
+
+* Rules are stored in JSON and validated/loaded through `push_mist_port_config.load_rules` so malformed entries are rejected early.
+* During conversions the backend evaluates interfaces against each rule (`evaluate_rule`) using traits such as mode, access/voice
+  VLANs, native VLAN, allowed VLAN membership, and description/name regex matches; the first rule that returns `True` supplies
+  the target `usage`.
+* The matched usage is injected into the generated Mist `port_config` payloads before staging or pushing so rule tweaks immediately
+  impact both dry runs and live updates.
 
 ### Config conversion
 
@@ -67,6 +88,17 @@ GreatMigration ships with a responsive FastAPI + HTMX interface backed by a Mist
    * Choose **Push changes** to send the converted configuration to Mist (requires push permissions).
 5. Download the JSON or CSV exports for documentation or manual review at any stage.
 
+**How it works**
+
+* File uploads flow through `convertciscotojson.convert_one_file`, which relies on `CiscoConfParse` to model every interface, infer
+  EX4100 member types, and translate Cisco naming into Mist FPC/port identifiers while preserving VLAN, PoE, QoS, and description
+  details.
+* Batch pushes reuse `_build_payload_for_row` inside `backend/app.py` to merge the converted `port_config` with Mist site/device
+  selections, apply rule-driven port usages, enforce capacity checks (`validate_port_config_against_model`), and PUT the results to
+  `/sites/{site_id}/devices/{device_id}`.
+* Lifecycle Management (LCM) automation reuses the same converted payloads for Step 3 after staging temporary VLANs/port profiles
+  in earlier steps, ensuring the final Juniper configuration exactly matches the Cisco source minus deprecated interfaces.
+
 ### Compliance audit & 1 Click Fix
 
 * Audit one or more Mist sites for required variables, device naming conventions, template adherence, documentation completeness, and configuration overrides.
@@ -83,6 +115,17 @@ GreatMigration ships with a responsive FastAPI + HTMX interface backed by a Mist
 3. Expand each site card to review checks, affected devices, and recommended fixes.
 4. For push-enabled users, click the appropriate **1 Click Fix** buttons (e.g., AP rename, DNS cleanup). Each button re-validates prerequisites before issuing Mist API calls.
 5. Download the audit summary or device-level CSV exports for change records or further analysis.
+
+**How it works**
+
+* The audit engine (`backend/compliance.py`) hydrates a `SiteContext` with data from Mist site, derived setting, template, and device
+  APIs, then runs a library of `ComplianceCheck` subclasses to flag naming violations, missing variables, override drift, and
+  documentation gaps.
+* Findings are serialized through `audit_history` so the UI can show site/device counts and let you export CSV snapshots for change
+  control.
+* 1 Click Fix actions map to helpers in `audit_fixes.py`/`audit_actions.py`; each button re-checks prerequisites, stages a dry run
+  when requested, and otherwise issues Mist REST calls (e.g., rename APs, clear DNS overrides) while streaming per-device status
+  back to the browser.
 
 ---
 
