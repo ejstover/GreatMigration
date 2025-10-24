@@ -77,8 +77,6 @@ def validate_rules_doc(doc: Dict[str, Any]) -> None:
         "voice_vlan",
         "native_vlan",
         "allowed_vlans",
-        "allowed_vlans_contains",
-        "allowed_vlans_equals",
         "has_voice",
         "description_regex",
         "name_regex",
@@ -109,14 +107,9 @@ def validate_rules_doc(doc: Dict[str, Any]) -> None:
                         int(item)
                     except Exception:
                         raise ValueError("data_vlan_in values must be integers")
-            if k in {"allowed_vlans", "allowed_vlans_equals"}:
+            if k == "allowed_vlans":
                 if not isinstance(v, (list, tuple, set, str)):
                     raise ValueError("allowed_vlans conditions must be a list or comma string")
-            if k == "allowed_vlans_contains":
-                try:
-                    int(v)
-                except Exception:
-                    raise ValueError("allowed_vlans_contains must be a VLAN ID")
             if k == "description_regex":
                 try:
                     re.compile(str(v))
@@ -221,10 +214,6 @@ def evaluate_rule(when: Dict[str, Any], intf: Dict[str, Any]) -> bool:
             if voice_vlan != int(v): return False
         elif k == "native_vlan":
             if native_vlan != int(v): return False
-        elif k == "allowed_vlans_contains":
-            if int(v) not in allowed_vlans_set: return False
-        elif k == "allowed_vlans_equals":
-            if allowed_vlans_set != set(_normalize_vlan_list(v)): return False
         elif k == "allowed_vlans":
             if allowed_vlans_set != set(_normalize_vlan_list(v)): return False
         elif k == "has_voice":

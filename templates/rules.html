@@ -132,11 +132,9 @@
       { value: 'voice_vlan' },
       { value: 'native_vlan' },
       { value: 'description_regex' },
-      { value: 'allowed_vlans', help: 'Comma separated VLAN IDs. Example: 10,20,30' },
-      { value: 'allowed_vlans_equals', help: 'Comma separated VLAN IDs that must exactly match the switchport allowed list.' },
-      { value: 'allowed_vlans_contains', help: 'Single VLAN ID that must be present in the switchport allowed list.' }
+      { value: 'allowed_vlans', help: 'Comma separated VLAN IDs. Example: 10,20,30' }
     ];
-    const listFields = new Set(['allowed_vlans', 'allowed_vlans_equals']);
+    const listFields = new Set(['allowed_vlans']);
 
     function createConditionRow(cond){
       const div = document.createElement('div');
@@ -187,8 +185,6 @@
       sel.addEventListener('change',()=>{
         if(listFields.has(sel.value)){
           val.placeholder = 'e.g. 10,20,30';
-        } else if(sel.value==='allowed_vlans_contains'){
-          val.placeholder = 'e.g. 10';
         } else {
           val.placeholder = '';
         }
@@ -196,8 +192,6 @@
       });
       if(listFields.has(sel.value)){
         val.placeholder = 'e.g. 10,20,30';
-      } else if(sel.value==='allowed_vlans_contains'){
-        val.placeholder = 'e.g. 10';
       }
       toggleTip();
       return div;
@@ -249,11 +243,6 @@
               const nums = parts.map(p=>Number(p)).filter(n=>!Number.isNaN(n));
               when[f] = nums;
             }
-            return;
-          }
-          if(f==='allowed_vlans_contains'){
-            const num = Number(raw);
-            if(!Number.isNaN(num)) when[f]=num;
             return;
           }
           if(isNaN(Number(raw))){ when[f]=raw; }
