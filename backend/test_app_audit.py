@@ -178,6 +178,144 @@ def test_fetch_site_context_filters_recent_last_seen(monkeypatch, app_module):
     assert device_ids == ["recent", "recent-iso", "recent-ms"]
 
 
+def test_build_temp_config_payload_groups_port_profiles(app_module):
+    row = {
+        "_temp_config_source": {
+            "vlans": [
+                {"id": 17, "name": "17"},
+                {"id": 100, "name": "Data"},
+                {"id": 120, "name": "Voice"},
+            ],
+            "interfaces": [],
+        }
+    }
+
+    for idx in range(1, 17):
+        row["_temp_config_source"]["interfaces"].append(
+            {
+                "mode": "access",
+                "data_vlan": 17,
+                "juniper_if": f"ge-0/0/{idx}",
+                "name": f"Gig{idx}",
+            }
+        )
+
+    for idx in range(17, 27):
+        row["_temp_config_source"]["interfaces"].append(
+            {
+                "mode": "access",
+                "data_vlan": 100,
+                "voice_vlan": 120,
+                "juniper_if": f"ge-0/0/{idx}",
+                "name": f"Gig{idx}",
+            }
+        )
+
+    payload = app_module._build_temp_config_payload(row)
+    assert payload is not None
+
+    usages = payload.get("port_usages")
+    assert isinstance(usages, dict)
+    assert len(usages) == 2
+    assert set(usages.keys()) == {"old_access_vlan17", "old_access_vlan100_voice120"}
+
+    port_config = payload.get("port_config")
+    assert isinstance(port_config, dict)
+    first_usage = port_config["ge-0/0/1"]["usage"]
+    voice_usage = port_config["ge-0/0/17"]["usage"]
+
+    for idx in range(1, 17):
+        assert port_config[f"ge-0/0/{idx}"]["usage"] == first_usage
+
+    for idx in range(17, 27):
+        assert port_config[f"ge-0/0/{idx}"]["usage"] == voice_usage
+
+    overrides = payload.get("port_overrides")
+    assert isinstance(overrides, list)
+    assert len(overrides) == 26
+    access_overrides = [o for o in overrides if o.get("usage") == first_usage]
+    voice_overrides = [o for o in overrides if o.get("usage") == voice_usage]
+    assert len(access_overrides) == 16
+    assert len(voice_overrides) == 10
+
+
+def test_remove_temp_config_returns_preview_when_dry_run(app_module):
+    row = {
+        "ok": True,
+        "site_id": "site-1",
+        "device_id": "device-1",
+        "_site_deployment_payload": {"port_config": {"ge-0/0/1": {"usage": "end_user"}}},
+    }
+
+    result = app_module._remove_temporary_config_for_rows(
+        "https://example.com/api/v1",
+        "token",
+        [row],
+        dry_run=True,
+    )
+
+    assert result["skipped"] is True
+    assert result["total"] == 1
+    payloads = result.get("payloads") or []
+    assert len(payloads) == 1
+    preview = payloads[0]["payload"]
+    assert preview["wipe_request"] == {
+        "networks": {},
+        "port_usages": {},
+        "port_usage": {},
+        "port_config": {},
+        "port_overrides": {},
+    }
+    assert preview["push_request"]["port_config"]["ge-0/0/1"]["usage"] == "end_user"
+
+
+def test_remove_temp_config_wipes_and_pushes(monkeypatch, app_module):
+    calls: list[Dict[str, Any]] = []
+
+    def fake_put(url: str, headers: Dict[str, str], json: Dict[str, Any], timeout: int = 60):
+        calls.append({"url": url, "json": json})
+
+        class Resp:
+            status_code = 200
+
+            def json(self):
+                return {"ok": True}
+
+            text = ""
+
+        return Resp()
+
+    monkeypatch.setattr(app_module.requests, "put", fake_put)
+
+    final_payload = {"port_config": {"ge-0/0/5": {"usage": "access"}}}
+    row = {
+        "ok": True,
+        "site_id": "site-1",
+        "device_id": "device-1",
+        "_site_deployment_payload": final_payload,
+    }
+
+    result = app_module._remove_temporary_config_for_rows(
+        "https://example.com/api/v1",
+        "token",
+        [row],
+        dry_run=False,
+    )
+
+    assert result["ok"] is True
+    assert result["successes"] == 1
+    assert result["failures"] == []
+    assert len(calls) == 2
+    assert calls[0]["json"] == {
+        "networks": {},
+        "port_usages": {},
+        "port_usage": {},
+        "port_config": {},
+        "port_overrides": {},
+    }
+    assert calls[1]["json"] == final_payload
+
+
 def test_load_site_history_parses_breakdown(tmp_path):
     from audit_history import load_site_history
 
