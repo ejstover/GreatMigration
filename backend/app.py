@@ -3,13 +3,15 @@ import json
 import tempfile
 import re
 import math
+import hashlib
 from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set
+from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set, Tuple
 from zoneinfo import ZoneInfo
 from time import perf_counter
+import copy
 
 import requests
 from fastapi import FastAPI, UploadFile, File, Form, Request, Body, HTTPException
@@ -404,6 +406,14 @@ def _site_display_name(data: Dict[str, Any], fallback: str = "") -> str:
         return fallback
     value = data.get("id")
     return str(value) if value is not None else ""
+
+
+def _mist_headers(token: str) -> Dict[str, str]:
+    return {
+        "Authorization": f"Token {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
 
 
 def _mist_get_json(
@@ -1692,7 +1702,7 @@ async def api_convert(
     return JSONResponse({"ok": True, "items": results})
 
 
-def _build_payload_for_row(
+def _prepare_switch_port_profile_payload(
     *,
     base_url: str,
     tz: str,
@@ -1702,28 +1712,30 @@ def _build_payload_for_row(
     payload_in: Dict[str, Any],
     model_override: Optional[str],
     excludes: Optional[str],
-    exclude_uplinks: bool,
+    exclude_uplinks: bool = False,
     member_offset: int,
     port_offset: int,
     normalize_modules: bool,
-    dry_run: bool,
 ) -> Dict[str, Any]:
-    """
-    Shared logic used by both /api/push and /api/push_batch for a single row.
-    Returns a dict with keys: ok, payload, validation, device_model,
-    (and for live push: status/response)
-    """
-    # Resolve model
+    """Build the Mist payload used to configure switch port profile overrides."""
+
     model = model_override or get_device_model(base_url, site_id, device_id, token)
 
-    # Build port_config
+    temp_source: Optional[Dict[str, Any]]
+    if isinstance(payload_in, Mapping):
+        temp_source = copy.deepcopy(payload_in)
+    elif isinstance(payload_in, list):
+        temp_source = {"interfaces": copy.deepcopy(payload_in)}
+    else:
+        temp_source = None
+
     port_config = ensure_port_config(payload_in, model)
-
-    # Apply member/port remap BEFORE excludes
-    port_config = remap_members(port_config, member_offset=int(member_offset or 0), normalize=bool(normalize_modules))
+    port_config = remap_members(
+        port_config,
+        member_offset=int(member_offset or 0),
+        normalize=bool(normalize_modules),
+    )
     port_config = remap_ports(port_config, port_offset=int(port_offset or 0), model=model)
-
-    # Apply excludes AFTER remap
 
     def _expand_if_range(val: str) -> List[str]:
         m = re.search(r"\[(\d+)-(\d+)\]", val)
@@ -1746,11 +1758,16 @@ def _build_payload_for_row(
 
     if exclude_set:
         port_config = {k: v for k, v in port_config.items() if k not in exclude_set}
+        if isinstance(temp_source, dict) and isinstance(temp_source.get("interfaces"), list):
+            filtered_interfaces = [
+                intf
+                for intf in temp_source.get("interfaces", [])
+                if isinstance(intf, Mapping) and str(intf.get("juniper_if") or "").strip() not in exclude_set
+            ]
+            temp_source["interfaces"] = filtered_interfaces
 
-    # Capacity validation (block live push; warn on dry-run)
     validation = validate_port_config_against_model(port_config, model)
 
-    # Timestamp descriptions
     ts = timestamp_str(tz)
     final_port_config: Dict[str, Dict[str, Any]] = {}
     for ifname, cfg in port_config.items():
@@ -1761,30 +1778,89 @@ def _build_payload_for_row(
 
     put_body = {"port_config": final_port_config}
     url = f"{base_url}/sites/{site_id}/devices/{device_id}"
-    headers = {"Authorization": f"Token {token}", "Content-Type": "application/json", "Accept": "application/json"}
+
+    return {
+        "device_model": model,
+        "validation": validation,
+        "payload": put_body,
+        "url": url,
+        "member_offset": int(member_offset or 0),
+        "port_offset": int(port_offset or 0),
+        "normalize_modules": bool(normalize_modules),
+        "_temp_config_source": temp_source,
+    }
+
+
+def _configure_switch_port_profile_override(
+    *,
+    base_url: str,
+    tz: str,
+    token: str,
+    site_id: str,
+    device_id: str,
+    payload_in: Dict[str, Any],
+    model_override: Optional[str],
+    excludes: Optional[str],
+    exclude_uplinks: bool = False,
+    member_offset: int,
+    port_offset: int,
+    normalize_modules: bool,
+    dry_run: bool,
+) -> Dict[str, Any]:
+    """Configure a switch port profile override and return Mist response details."""
+
+    prepared = _prepare_switch_port_profile_payload(
+        base_url=base_url,
+        tz=tz,
+        token=token,
+        site_id=site_id,
+        device_id=device_id,
+        payload_in=payload_in,
+        model_override=model_override,
+        excludes=excludes,
+        exclude_uplinks=exclude_uplinks,
+        member_offset=member_offset,
+        port_offset=port_offset,
+        normalize_modules=normalize_modules,
+    )
+
+    put_body = prepared["payload"]
+    validation = prepared["validation"]
+    url = prepared["url"]
 
     if dry_run:
-        return {
+        result = {
             "ok": True,
             "dry_run": True,
-            "device_model": model,
+            "device_model": prepared["device_model"],
             "url": url,
-            "member_offset": int(member_offset or 0),
-            "port_offset": int(port_offset or 0),
-            "normalize_modules": bool(normalize_modules),
+            "member_offset": prepared["member_offset"],
+            "port_offset": prepared["port_offset"],
+            "normalize_modules": prepared["normalize_modules"],
             "validation": validation,
-            "payload": put_body
+            "payload": put_body,
         }
+        if prepared.get("_temp_config_source") is not None:
+            result["_temp_config_source"] = prepared["_temp_config_source"]
+        return result
 
-    # live push
     if not validation.get("ok"):
-        return {
+        result = {
             "ok": False,
             "dry_run": False,
             "error": "Model capacity mismatch",
             "validation": validation,
-            "payload": put_body
+            "payload": put_body,
         }
+        if prepared.get("_temp_config_source") is not None:
+            result["_temp_config_source"] = prepared["_temp_config_source"]
+        return result
+
+    headers = {
+        "Authorization": f"Token {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
 
     resp = requests.put(url, headers=headers, json=put_body, timeout=60)
     try:
@@ -1792,13 +1868,338 @@ def _build_payload_for_row(
     except Exception:
         content = {"text": resp.text}
 
-    return {
+    result = {
         "ok": 200 <= resp.status_code < 300,
         "dry_run": False,
         "status": resp.status_code,
         "response": content,
-        "payload": put_body
+        "payload": put_body,
     }
+    if prepared.get("_temp_config_source") is not None:
+        result["_temp_config_source"] = prepared["_temp_config_source"]
+    return result
+
+
+def _collect_lcm_rows(results: Sequence[Any]) -> List[Mapping[str, Any]]:
+    eligible: List[Mapping[str, Any]] = []
+    for row in results:
+        if not isinstance(row, Mapping):
+            continue
+        if not row.get("ok"):
+            continue
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        if not site_id or not device_id:
+            continue
+        eligible.append(row)
+    return eligible
+
+
+def _extract_lcm_payload(row: Mapping[str, Any]) -> Dict[str, Any]:
+    body: Dict[str, Any] = {}
+    payload = row.get("payload")
+    if isinstance(payload, Mapping):
+        port_cfg = payload.get("port_config")
+        if isinstance(port_cfg, Mapping):
+            body["port_config"] = port_cfg
+    temp_source = row.get("_temp_config_source")
+    if isinstance(temp_source, Mapping):
+        body["temporary_config"] = temp_source
+    return body
+
+
+def _mist_response_error(resp: requests.Response) -> str:
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+
+    if isinstance(data, Mapping):
+        for key in ("detail", "error", "message", "msg"):
+            val = data.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        errors_field = data.get("errors")
+        if isinstance(errors_field, Sequence):
+            joined = "; ".join(str(item).strip() for item in errors_field if str(item).strip())
+            if joined:
+                return joined
+
+    text = (resp.text or "").strip()
+    if text:
+        return text
+    return f"Mist API returned HTTP {resp.status_code}"
+
+
+def _lcm_failure_entry(row: Mapping[str, Any], message: str, status: Optional[int] = None) -> Dict[str, Any]:
+    entry: Dict[str, Any] = {
+        "site_id": row.get("site_id"),
+        "device_id": row.get("device_id"),
+        "message": message,
+    }
+    if status is not None:
+        entry["status"] = status
+    if row.get("row_index") is not None:
+        entry["row_index"] = row.get("row_index")
+    return entry
+
+
+def _apply_temporary_config_for_rows(
+    *,
+    base_url: str,
+    token: str,
+    results: Sequence[Any],
+    dry_run: bool,
+) -> Dict[str, Any]:
+    eligible = _collect_lcm_rows(results)
+    total = len(eligible)
+    if total == 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "No rows available to stage temporary config.",
+            "successes": 0,
+            "failures": [],
+            "total": 0,
+        }
+
+    if dry_run:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "Skipped staging temporary config during a preview-only run.",
+            "successes": 0,
+            "failures": [],
+            "total": total,
+        }
+
+    headers = {
+        "Authorization": f"Token {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    successes = 0
+    failures: List[Dict[str, Any]] = []
+    for row in eligible:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        url = f"{base_url}/sites/{site_id}/devices/{device_id}/lcm/apply"
+        body = _extract_lcm_payload(row)
+        if not body:
+            failures.append(_lcm_failure_entry(row, "No temporary configuration payload available."))
+            continue
+
+        try:
+            resp = requests.post(url, headers=headers, json=body, timeout=60)
+        except requests.RequestException as exc:
+            failures.append(_lcm_failure_entry(row, f"Request failed: {exc}"))
+            continue
+
+        if 200 <= resp.status_code < 300:
+            successes += 1
+        else:
+            failures.append(
+                _lcm_failure_entry(row, _mist_response_error(resp), status=resp.status_code)
+            )
+
+    message = (
+        "Applied temporary config to {count} device(s).".format(count=successes)
+        if successes == total
+        else "Applied temporary config to {successes}/{total} device(s). Check batch results for details.".format(
+            successes=successes, total=total
+        )
+    )
+
+    return {
+        "ok": successes == total,
+        "skipped": False,
+        "message": message,
+        "successes": successes,
+        "failures": failures,
+        "total": total,
+    }
+
+
+def _finalize_assignments_for_rows(
+    *,
+    base_url: str,
+    token: str,
+    results: Sequence[Any],
+    dry_run: bool,
+) -> Dict[str, Any]:
+    eligible = _collect_lcm_rows(results)
+    total = len(eligible)
+    if total == 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "No rows available to finalize assignments.",
+            "successes": 0,
+            "failures": [],
+            "total": 0,
+        }
+
+    if dry_run:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "Skipped finalizing assignments during a preview-only run.",
+            "successes": 0,
+            "failures": [],
+            "total": total,
+        }
+
+    headers = {
+        "Authorization": f"Token {token}",
+        "Accept": "application/json",
+    }
+
+    successes = 0
+    failures: List[Dict[str, Any]] = []
+    for row in eligible:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        url = f"{base_url}/sites/{site_id}/devices/{device_id}/lcm/finalize"
+        try:
+            resp = requests.post(url, headers=headers, timeout=60)
+        except requests.RequestException as exc:
+            failures.append(_lcm_failure_entry(row, f"Request failed: {exc}"))
+            continue
+
+        if 200 <= resp.status_code < 300:
+            successes += 1
+        else:
+            failures.append(
+                _lcm_failure_entry(row, _mist_response_error(resp), status=resp.status_code)
+            )
+
+    message = (
+        "Finalized temporary assignments on {count} device(s).".format(count=successes)
+        if successes == total
+        else "Finalized temporary assignments on {successes}/{total} device(s). Check batch results for details.".format(
+            successes=successes, total=total
+        )
+    )
+
+    return {
+        "ok": successes == total,
+        "skipped": False,
+        "message": message,
+        "successes": successes,
+        "failures": failures,
+        "total": total,
+    }
+
+
+def _remove_temporary_config_for_rows(
+    *,
+    base_url: str,
+    token: str,
+    results: Sequence[Any],
+    dry_run: bool,
+) -> Dict[str, Any]:
+    eligible = _collect_lcm_rows(results)
+    total = len(eligible)
+    if total == 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "No rows available to remove temporary config.",
+            "successes": 0,
+            "failures": [],
+            "total": 0,
+        }
+
+    if dry_run:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "Skipped removing temporary config during a preview-only run.",
+            "successes": 0,
+            "failures": [],
+            "total": total,
+        }
+
+    headers = {
+        "Authorization": f"Token {token}",
+        "Accept": "application/json",
+    }
+
+    successes = 0
+    failures: List[Dict[str, Any]] = []
+    for row in eligible:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        url = f"{base_url}/sites/{site_id}/devices/{device_id}/lcm/remove"
+        try:
+            resp = requests.post(url, headers=headers, timeout=60)
+        except requests.RequestException as exc:
+            failures.append(_lcm_failure_entry(row, f"Request failed: {exc}"))
+            continue
+
+        if 200 <= resp.status_code < 300:
+            successes += 1
+        else:
+            failures.append(
+                _lcm_failure_entry(row, _mist_response_error(resp), status=resp.status_code)
+            )
+
+    message = (
+        "Removed temporary config from {count} device(s).".format(count=successes)
+        if successes == total
+        else "Removed temporary config from {successes}/{total} device(s). Check batch results for details.".format(
+            successes=successes, total=total
+        )
+    )
+
+    return {
+        "ok": successes == total,
+        "skipped": False,
+        "message": message,
+        "successes": successes,
+        "failures": failures,
+        "total": total,
+    }
+
+
+def _build_payload_for_row(
+    *,
+    base_url: str,
+    tz: str,
+    token: str,
+    site_id: str,
+    device_id: str,
+    payload_in: Dict[str, Any],
+    model_override: Optional[str],
+    excludes: Optional[str],
+    exclude_uplinks: bool = False,
+    member_offset: int,
+    port_offset: int,
+    normalize_modules: bool,
+    dry_run: bool,
+) -> Dict[str, Any]:
+    """
+    Shared logic used by both /api/push and /api/push_batch for a single row.
+    Returns a dict with keys: ok, payload, validation, device_model,
+    (and for live push: status/response)
+    """
+
+    return _configure_switch_port_profile_override(
+        base_url=base_url,
+        tz=tz,
+        token=token,
+        site_id=site_id,
+        device_id=device_id,
+        payload_in=payload_in,
+        model_override=model_override,
+        excludes=excludes,
+        exclude_uplinks=exclude_uplinks,
+        member_offset=member_offset,
+        port_offset=port_offset,
+        normalize_modules=normalize_modules,
+        dry_run=dry_run,
+    )
 
 
 @app.post("/api/push")
@@ -1820,8 +2221,6 @@ async def api_push(
     """
     Single push. Response includes `payload` (the exact body to Mist) and `validation`.
     """
-    _ensure_push_allowed(request, dry_run=dry_run)
-
     try:
         payload_in = json.loads(input_json)
     except Exception as e:
@@ -1848,11 +2247,15 @@ async def api_push(
 async def api_push_batch(
     request: Request,
     rows: str = Form(...),  # JSON array of rows
-    dry_run: bool = Form(True),
     base_url: str = Form(DEFAULT_BASE_URL),
     tz: str = Form(DEFAULT_TZ),
     model_override: Optional[str] = Form(None),  # optional global override (row can still override)
     normalize_modules: bool = Form(True),
+    apply_temp_config: bool = Form(False),
+    finalize_assignments: bool = Form(False),
+    remove_temp_config: bool = Form(False),
+    stage_site_deployment: bool = Form(False),
+    push_site_deployment: bool = Form(False),
 ) -> JSONResponse:
     """
     Batch push. Each row can specify: site_id, device_id, input_json (object),
@@ -1862,10 +2265,54 @@ async def api_push_batch(
     NOTE: Duplicate devices ARE allowed as long as (device_id, member_offset, port_offset) triples are unique.
     If the same triple appears more than once, those rows are rejected with a clear error.
     """
-    _ensure_push_allowed(request, dry_run=dry_run)
-
     token = _load_mist_token()
     base_url = base_url.rstrip("/")
+
+    stage_site_deployment = bool(stage_site_deployment)
+    push_site_deployment = bool(push_site_deployment)
+    apply_temp_config = bool(apply_temp_config)
+    finalize_assignments = bool(finalize_assignments)
+    remove_temp_config = bool(remove_temp_config)
+    site_selection_count = int(stage_site_deployment) + int(push_site_deployment)
+    lcm_selection_count = int(apply_temp_config) + int(finalize_assignments) + int(remove_temp_config)
+    site_actions_selected = stage_site_deployment or push_site_deployment
+    lcm_actions_selected = bool(apply_temp_config or finalize_assignments or remove_temp_config)
+
+    preview_only = not (
+        push_site_deployment or apply_temp_config or finalize_assignments or remove_temp_config
+    )
+
+    _ensure_push_allowed(request, dry_run=preview_only)
+
+    if site_actions_selected and lcm_actions_selected:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Select either Site Deployment Automation or Lifecycle Automation actions, not both."
+            },
+            status_code=400,
+        )
+
+    if site_selection_count > 1:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Select only one Site Deployment Automation phase per run.",
+            },
+            status_code=400,
+        )
+
+    if lcm_selection_count > 1:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Select only one Lifecycle Automation phase per run.",
+            },
+            status_code=400,
+        )
+
+    should_push_live = push_site_deployment
+    effective_dry_run = not should_push_live
 
     try:
         row_list = json.loads(rows)
@@ -1921,7 +2368,7 @@ async def api_push_batch(
                 payload_in=payload_in, model_override=row_model_override,
                 excludes=excludes, exclude_uplinks=exclude_uplinks,
                 member_offset=member_offset, port_offset=port_offset, normalize_modules=normalize_modules,
-                dry_run=dry_run,
+                dry_run=effective_dry_run,
             )
             row_result["row_index"] = i
             row_result["site_id"] = site_id
@@ -1940,5 +2387,145 @@ async def api_push_batch(
         except Exception as e:
             results.append({"ok": False, "row_index": i, "error": f"Server error: {e}"})
 
+    phase_status: Dict[str, Dict[str, Any]] = {}
+
+    if site_actions_selected:
+        total_rows = len(results)
+        successes = sum(1 for r in results if r.get("ok"))
+        failures: List[Dict[str, Any]] = []
+        for r in results:
+            if r.get("ok"):
+                continue
+            message = ""
+            error_text = r.get("error")
+            if isinstance(error_text, str) and error_text.strip():
+                message = error_text.strip()
+            else:
+                validation_data = r.get("validation")
+                if isinstance(validation_data, Mapping):
+                    errors_list = validation_data.get("errors")
+                    if isinstance(errors_list, Sequence) and not isinstance(errors_list, (str, bytes, bytearray)):
+                        joined = "; ".join(
+                            str(item).strip() for item in errors_list if str(item).strip()
+                        )
+                        if joined:
+                            message = joined
+            status_val = r.get("status") if isinstance(r.get("status"), int) else None
+            if not message:
+                if status_val is not None:
+                    message = f"Mist API returned HTTP {status_val}"
+                else:
+                    message = "Conversion failed."
+            failures.append(
+                {
+                    "site_id": r.get("site_id"),
+                    "device_id": r.get("device_id"),
+                    "status": status_val,
+                    "message": message,
+                }
+            )
+
+        if stage_site_deployment:
+            if total_rows == 0:
+                phase_status["site_stage"] = {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "No rows submitted for Site Deployment staging.",
+                    "successes": 0,
+                    "failures": [],
+                    "total": 0,
+                }
+            else:
+                phase_status["site_stage"] = {
+                    "ok": successes == total_rows,
+                    "skipped": False,
+                    "message": (
+                        "Prepared converted Mist payloads for {count} device(s)."
+                        if successes == total_rows
+                        else "Prepared converted Mist payloads for {successes}/{total} device(s). Check batch results for details."
+                    ).format(count=successes, successes=successes, total=total_rows),
+                    "successes": successes,
+                    "failures": failures,
+                    "total": total_rows,
+                }
+
+        if push_site_deployment:
+            if not should_push_live:
+                phase_status["site_push"] = {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "Skipped pushing converted config during a preview-only run.",
+                    "successes": 0,
+                    "failures": [],
+                    "total": len(results),
+                }
+            elif len(results) == 0:
+                phase_status["site_push"] = {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "No rows available to push converted config.",
+                    "successes": 0,
+                    "failures": [],
+                    "total": 0,
+                }
+            else:
+                phase_status["site_push"] = {
+                    "ok": successes == len(results),
+                    "skipped": False,
+                    "message": (
+                        "Pushed converted config to {count} device(s)."
+                        if successes == len(results)
+                        else "Pushed converted config to {successes}/{total} device(s). Check batch results for details."
+                    ).format(count=successes, successes=successes, total=len(results)),
+                    "successes": successes,
+                    "failures": failures,
+                    "total": len(results),
+                }
+
+    if not site_actions_selected:
+        for row in results:
+            if isinstance(row, dict):
+                row.pop("payload", None)
+                row.pop("response", None)
+                row.pop("status", None)
+
+    if apply_temp_config:
+        phase_status["apply_temporary_config"] = _apply_temporary_config_for_rows(
+            base_url=base_url,
+            token=token,
+            results=results,
+            dry_run=preview_only,
+        )
+
+    if finalize_assignments:
+        phase_status["finalize_assignments"] = _finalize_assignments_for_rows(
+            base_url=base_url,
+            token=token,
+            results=results,
+            dry_run=preview_only,
+        )
+
+    if remove_temp_config:
+        phase_status["remove_temporary_config"] = _remove_temporary_config_for_rows(
+            base_url=base_url,
+            token=token,
+            results=results,
+            dry_run=preview_only,
+        )
+
+    for row in results:
+        if isinstance(row, dict):
+            row.pop("_temp_config_source", None)
+
     top_ok = all(r.get("ok") for r in results) if results else False
-    return JSONResponse({"ok": top_ok, "dry_run": bool(dry_run), "results": results})
+    phase_ok = all(status.get("ok") or status.get("skipped") for status in phase_status.values())
+    overall_ok = top_ok and phase_ok
+
+    return JSONResponse(
+        {
+            "ok": overall_ok,
+            "dry_run": preview_only,
+            "results": results,
+            "phase_status": phase_status,
+        }
+    )
