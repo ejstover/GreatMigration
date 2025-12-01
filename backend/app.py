@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set, Tuple
+from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 from time import perf_counter
 import copy
@@ -2349,6 +2350,112 @@ def _generate_temp_usage_name(
     return name
 
 
+@dataclass(frozen=True)
+class NormalizedPort:
+    name: str
+    target_port: str
+    type: str  # "physical" or "port-channel"
+    mode: str  # "access" or "trunk"
+    access_vlan: Optional[int] = None
+    voice_vlan: Optional[int] = None
+    native_vlan: Optional[int] = None
+    allowed_vlans: Tuple[int, ...] = ()
+    poe: bool = False
+    stp_edge: bool = False
+    stp_bpdu_guard: bool = False
+    members: Tuple[str, ...] = ()
+
+
+def _normalize_vlan_range(vlans: Sequence[int]) -> str:
+    if not vlans:
+        return ""
+    items = sorted(set(vlans))
+    ranges: List[str] = []
+    start = prev = items[0]
+    for v in items[1:]:
+        if v == prev + 1:
+            prev = v
+            continue
+        if start == prev:
+            ranges.append(f"{start}")
+        else:
+            ranges.append(f"{start}-{prev}")
+        start = prev = v
+    if start == prev:
+        ranges.append(f"{start}")
+    else:
+        ranges.append(f"{start}-{prev}")
+    return ",".join(ranges)
+
+
+def _build_port_profile_signature(port: NormalizedPort) -> Tuple:
+    allowed_norm = _normalize_vlan_range(port.allowed_vlans)
+    return (
+        port.mode,
+        port.access_vlan,
+        port.voice_vlan,
+        port.native_vlan,
+        allowed_norm,
+        port.poe,
+        port.stp_edge,
+        port.stp_bpdu_guard,
+        port.type == "port-channel",
+    )
+
+
+def _generate_profile_name_from_signature(sig: Tuple) -> str:
+    (mode, access_vlan, voice_vlan, native_vlan, allowed_norm, poe, stp_edge, bpdu_guard, is_lag) = sig
+    parts: List[str] = []
+    if is_lag:
+        parts.append("LAG")
+    parts.append(mode.upper())
+
+    if mode == "access":
+        if access_vlan:
+            parts.append(f"V{access_vlan}")
+        if voice_vlan:
+            parts.append(f"VV{voice_vlan}")
+    else:
+        if native_vlan:
+            parts.append(f"N{native_vlan}")
+        if allowed_norm:
+            parts.append(f"A{allowed_norm}")
+
+    if poe:
+        parts.append("POE")
+    if stp_edge:
+        parts.append("EDGE")
+    if bpdu_guard:
+        parts.append("BPDUG")
+
+    base = "AUTO_" + "_".join(parts)
+    if len(base) > 63:
+        digest = hashlib.sha1(base.encode("utf-8")).hexdigest()[:6]
+        base = f"{base[:55]}_{digest}"
+    return base
+
+
+def _build_port_profile_payload(profile_name: str, sig: Tuple) -> Dict[str, Any]:
+    (mode, access_vlan, voice_vlan, native_vlan, allowed_norm, poe, stp_edge, bpdu_guard, is_lag) = sig
+    payload: Dict[str, Any] = {
+        "name": profile_name,
+        "description": "Generated from Cisco config",
+        "port_mode": mode,
+        "poe": poe,
+        "stp_edge": stp_edge,
+        "bpdu_guard": bpdu_guard,
+        "is_lag": is_lag,
+    }
+    if mode == "access":
+        payload["vlan"] = access_vlan
+        if voice_vlan:
+            payload["voice_vlan"] = voice_vlan
+    else:
+        payload["native_vlan"] = native_vlan
+        payload["allowed_vlans"] = allowed_norm
+    return _compact_dict(payload)
+
+
 def _normalize_port_profile_list(value: Any) -> List[Dict[str, Any]]:
     profiles: Dict[str, Dict[str, Any]] = {}
     if isinstance(value, Mapping):
@@ -2489,12 +2596,40 @@ def _load_site_template_networks(
     return discovered
 
 
+def _merge_new_vlan_networks(
+    existing_networks: Mapping[str, Any],
+    networks_new: Mapping[str, Any],
+    existing_vlan_ids: Set[int],
+) -> Dict[str, Dict[str, Any]]:
+    merged: Dict[str, Dict[str, Any]] = {}
+    for name, data in existing_networks.items():
+        if not isinstance(data, Mapping):
+            continue
+        merged[name] = dict(data)
+
+    added = False
+    for name in sorted(networks_new):
+        values = networks_new[name]
+        if not isinstance(values, Mapping) or not name:
+            continue
+        vid = _int_or_none(values.get("vlan_id") or values.get("id"))
+        if vid is None or vid in existing_vlan_ids:
+            continue
+        payload = {k: v for k, v in values.items() if k not in {"id", "name"} and v not in (None, "")}
+        payload["vlan_id"] = vid
+        merged[name] = payload
+        added = True
+
+    return merged if added else {}
+
+
 def _prepare_switch_port_profile_payload(
     base_url: str,
     token: str,
     site_id: str,
-    device_id: str,
     payload: Mapping[str, Any],
+    *,
+    default_device_id: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], List[str], Dict[str, str]]:
     networks_new = _normalize_network_map(payload.get("networks"), sanitize=True)
     if not networks_new:
@@ -2516,25 +2651,32 @@ def _prepare_switch_port_profile_payload(
     ):
         return {}, [], {}
 
-    url = f"{base_url}/sites/{site_id}/devices/{device_id}"
+    url = f"{base_url}/sites/{site_id}/setting"
     headers = _mist_headers(token)
 
     resp_get = requests.get(url, headers=headers, timeout=60)
     if not (200 <= resp_get.status_code < 300):
         raise MistAPIError(resp_get.status_code, _extract_mist_error(resp_get), response=_safe_json_response(resp_get))
 
-    current = resp_get.json() or {}
+    current_setting = resp_get.json() or {}
+    switch_section = current_setting.get("switch") if isinstance(current_setting.get("switch"), Mapping) else {}
+
     existing_profile_field = "port_profiles"
-    if "port_usages" in current:
+    if isinstance(switch_section, Mapping) and "port_usages" in switch_section:
         existing_profile_field = "port_usages"
-    existing_profiles = _normalize_port_profile_list(current.get(existing_profile_field))
-    existing_overrides = _normalize_port_override_list(current.get("port_overrides"))
-    existing_networks = _normalize_network_map(current.get("networks"), sanitize=False)
+    existing_profiles = _normalize_port_profile_list(switch_section.get(existing_profile_field))
+    existing_overrides = _normalize_port_override_list(switch_section.get("port_overrides"))
+
+    existing_networks = _normalize_network_map(current_setting.get("networks"), sanitize=False)
     if not existing_networks:
-        existing_networks = _normalize_network_map(current.get("vlans"), sanitize=False)
+        existing_networks = _normalize_network_map(current_setting.get("vlans"), sanitize=False)
+    if not existing_networks and isinstance(switch_section, Mapping):
+        existing_networks = _normalize_network_map(switch_section.get("networks"), sanitize=False)
+    if not existing_networks and isinstance(switch_section, Mapping):
+        existing_networks = _normalize_network_map(switch_section.get("vlans"), sanitize=False)
 
     candidate_org_ids = _collect_candidate_org_ids(
-        [current],
+        [current_setting],
         [payload],
         port_profiles_seq,
         port_usages_seq,
@@ -2704,23 +2846,13 @@ def _prepare_switch_port_profile_payload(
                 )
             )
     request_body: Dict[str, Any] = {}
-    networks_payload: Dict[str, Dict[str, Any]] = {}
-    if networks_new:
-        for name in sorted(networks_new):
-            values = networks_new[name]
-            if not isinstance(values, Mapping) or not name:
-                continue
-            vid = _int_or_none(values.get("vlan_id") or values.get("id"))
-            if vid is None:
-                continue
-            if vid in existing_vlan_ids:
-                continue
-            networks_payload[name] = {"vlan_id": str(vid)}
+    networks_payload = _merge_new_vlan_networks(existing_networks, networks_new, existing_vlan_ids)
     if networks_payload:
         request_body["networks"] = networks_payload
 
+    switch_payload: Dict[str, Any] = {}
     if port_usages_seq:
-        request_body["port_usages"] = {
+        switch_payload["port_usages"] = {
             str(profile.get("name") or "").strip(): _compact_dict(
                 {k: v for k, v in profile.items() if k != "name"}
             )
@@ -2728,7 +2860,7 @@ def _prepare_switch_port_profile_payload(
             if isinstance(profile, Mapping) and str(profile.get("name") or "").strip()
         }
     elif port_profiles_seq:
-        request_body[existing_profile_field] = [
+        switch_payload[existing_profile_field] = [
             _compact_dict(dict(value))
             for value in port_profiles_seq
             if isinstance(value, Mapping)
@@ -2741,18 +2873,15 @@ def _prepare_switch_port_profile_payload(
         for override in port_overrides_new:
             if not isinstance(override, Mapping):
                 continue
-            overrides_payload.append(dict(override))
+            updated_override = dict(override)
+            if default_device_id and not updated_override.get("device_id"):
+                updated_override["device_id"] = default_device_id
+            overrides_payload.append(updated_override)
         if overrides_payload:
-            request_body["port_overrides"] = overrides_payload
+            switch_payload["port_overrides"] = overrides_payload
 
-    if isinstance(port_config_new, Mapping):
-        config_payload: Dict[str, Dict[str, Any]] = {}
-        for port_id, cfg in port_config_new.items():
-            if not isinstance(cfg, Mapping):
-                continue
-            config_payload[str(port_id)] = dict(cfg)
-        if config_payload:
-            request_body["port_config"] = config_payload
+    if switch_payload:
+        request_body["switch"] = switch_payload
 
     return request_body, conflict_warnings, rename_map
 
@@ -2761,15 +2890,16 @@ def _configure_switch_port_profile_override(
     base_url: str,
     token: str,
     site_id: str,
-    device_id: str,
     payload: Mapping[str, Any],
+    *,
+    default_device_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     request_body, warnings, rename_map = _prepare_switch_port_profile_payload(
         base_url,
         token,
         site_id,
-        device_id,
         payload,
+        default_device_id=default_device_id,
     )
 
     if not request_body:
@@ -2780,7 +2910,7 @@ def _configure_switch_port_profile_override(
             result["renamed_networks"] = rename_map
         return result
 
-    url = f"{base_url}/sites/{site_id}/devices/{device_id}"
+    url = f"{base_url}/sites/{site_id}/setting"
     headers = _mist_headers(token)
 
     resp_post = requests.put(url, headers=headers, json=request_body, timeout=60)
@@ -2817,6 +2947,72 @@ def _put_device_payload(
     return {"status": resp.status_code, "response": data}
 
 
+def _merge_site_switch_payload(
+    target: Dict[str, Any],
+    incoming: Mapping[str, Any],
+    *,
+    device_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    if not isinstance(incoming, Mapping):
+        return target
+
+    target_networks = target.get("networks") if isinstance(target.get("networks"), Mapping) else {}
+    incoming_networks = _normalize_network_map(incoming.get("networks"), sanitize=True)
+    if not incoming_networks:
+        incoming_networks = _normalize_network_map(incoming.get("vlans"), sanitize=True)
+    for name, data in incoming_networks.items():
+        entry = dict(data)
+        entry.setdefault("name", name)
+        target_networks[name] = entry
+    if target_networks:
+        target["networks"] = target_networks
+
+    target_usages = target.get("port_usages") if isinstance(target.get("port_usages"), Mapping) else {}
+    incoming_usages = incoming.get("port_usages") if isinstance(incoming.get("port_usages"), Mapping) else {}
+    for name, cfg in incoming_usages.items():
+        if not isinstance(cfg, Mapping):
+            continue
+        target_usages[str(name)] = dict(cfg)
+    if target_usages:
+        target["port_usages"] = target_usages
+
+    incoming_profiles = _normalize_port_profile_list(incoming.get("port_profiles"))
+    if incoming_profiles:
+        existing_profiles = _normalize_port_profile_list(target.get("port_profiles"))
+        profile_map: Dict[str, Dict[str, Any]] = {}
+        for profile in existing_profiles:
+            name = str(profile.get("name") or "").strip()
+            if name:
+                profile_map[name] = dict(profile)
+        for profile in incoming_profiles:
+            name = str(profile.get("name") or "").strip()
+            if not name:
+                continue
+            profile_map[name] = dict(profile)
+        target["port_profiles"] = list(profile_map.values())
+
+    target_overrides = target.get("port_overrides")
+    if not isinstance(target_overrides, list):
+        target_overrides = []
+    incoming_overrides: Any = incoming.get("port_overrides")
+    if isinstance(incoming_overrides, Mapping):
+        incoming_overrides = incoming_overrides.values()
+    if isinstance(incoming_overrides, Sequence) and not isinstance(
+        incoming_overrides, (str, bytes, bytearray)
+    ):
+        for override in incoming_overrides:
+            if not isinstance(override, Mapping):
+                continue
+            updated = dict(override)
+            if device_id and not updated.get("device_id"):
+                updated["device_id"] = device_id
+            target_overrides.append(updated)
+    if target_overrides:
+        target["port_overrides"] = target_overrides
+
+    return target
+
+
 def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
     source = row.get("_temp_config_source")
     if not isinstance(source, Mapping):
@@ -2826,7 +3022,8 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
     if not isinstance(interfaces, list):
         return None
 
-    port_usages: Dict[tuple, Dict[str, Any]] = {}
+    port_profiles: Dict[Tuple, Dict[str, Any]] = {}
+    port_usage_payloads: Dict[str, Dict[str, Any]] = {}
     port_config: Dict[str, Dict[str, Any]] = {}
     port_overrides: List[Dict[str, Any]] = []
 
@@ -2887,45 +3084,62 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
                 allowed_network_list.append(network_name)
         allowed_networks = tuple(allowed_network_list)
 
-        usage_fingerprint = (mode, data_vlan, voice_vlan, native_vlan, allowed_vlan_ids)
+        raw_members = intf.get("members") if isinstance(intf.get("members"), list) else []
+        members = tuple(str(m).strip() for m in raw_members if str(m).strip())
+        port_type = (
+            "port-channel"
+            if (members or str(intf.get("type") or "").lower() in {"port-channel", "portchannel", "lag"})
+            else "physical"
+        )
 
-        profile = port_usages.get(usage_fingerprint)
-        if profile is None:
-            usage_name = _generate_temp_usage_name(
-                mode=mode,
-                data_vlan=data_vlan,
-                voice_vlan=voice_vlan,
-                native_vlan=native_vlan,
-                allowed_vlans=allowed_vlan_ids,
+        normalized = NormalizedPort(
+            name=str(intf.get("name") or juniper_if),
+            target_port=juniper_if,
+            type=port_type,
+            mode=mode,
+            access_vlan=data_vlan,
+            voice_vlan=voice_vlan,
+            native_vlan=native_vlan,
+            allowed_vlans=allowed_vlan_ids,
+            poe=not bool(intf.get("poe_disabled")),
+            stp_edge=bool(intf.get("stp_edge") or mode == "access"),
+            stp_bpdu_guard=bool(intf.get("stp_bpdu_guard") or intf.get("bpdu_guard")),
+            members=members,
+        )
+
+        sig = _build_port_profile_signature(normalized)
+        profile_name = _generate_profile_name_from_signature(sig)
+        if sig not in port_profiles:
+            port_profiles[sig] = _build_port_profile_payload(profile_name, sig)
+
+        if profile_name not in port_usage_payloads:
+            port_usage_payloads[profile_name] = _compact_dict(
+                {
+                    "mode": mode or None,
+                    "disabled": False,
+                    "port_network": data_network if mode == "access" else native_network,
+                    "voip_network": voice_network,
+                    "stp_edge": bool(intf.get("stp_edge") or mode == "access"),
+                    "use_vstp": mode == "trunk",
+                    "stp_p2p": False,
+                    "stp_no_root_port": False,
+                    "stp_disable": False,
+                    "stp_required": False,
+                    "all_networks": bool(mode == "trunk" and not allowed_networks),
+                    "networks": list(allowed_networks) if allowed_networks else None,
+                    "speed": "auto",
+                    "duplex": "auto",
+                    "mac_limit": 0,
+                    "persist_mac": False,
+                    "poe_disabled": False,
+                    "enable_qos": False,
+                    "storm_control": {},
+                    "mtu": None,
+                    "allow_dhcpd": False,
+                    "disable_autoneg": False,
+                }
             )
-            profile = {
-                "name": usage_name,
-                "mode": mode or None,
-                "disabled": False,
-                "port_network": data_network if mode == "access" else native_network,
-                "voip_network": voice_network,
-                "stp_edge": mode == "access",
-                "use_vstp": mode == "trunk",
-                "stp_p2p": False,
-                "stp_no_root_port": False,
-                "stp_disable": False,
-                "stp_required": False,
-                "all_networks": bool(mode == "trunk" and not allowed_networks),
-                "networks": list(allowed_networks) if allowed_networks else None,
-                "speed": "auto",
-                "duplex": "auto",
-                "mac_limit": 0,
-                "persist_mac": False,
-                "poe_disabled": False,
-                "enable_qos": False,
-                "storm_control": {},
-                "mtu": None,
-                "allow_dhcpd": False,
-                "disable_autoneg": False,
-            }
-            port_usages[usage_fingerprint] = _compact_dict(profile)
 
-        profile_name = profile["name"]
         description = str(intf.get("description") or "").strip()
         shutdown = bool(intf.get("shutdown"))
 
@@ -2954,6 +3168,7 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
                     "description": description,
                     "disabled": shutdown,
                     "source_interface": str(intf.get("name") or "").strip() or None,
+                    "members": list(members) if members else None,
                 }
             )
         )
@@ -2962,16 +3177,14 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
         return None
 
     usage_payload: Dict[str, Dict[str, Any]] = {}
-    for profile in port_usages.values():
-        name = str(profile.get("name") or "").strip()
-        if not name:
-            continue
+    for name, profile in port_usage_payloads.items():
         cleaned = _compact_dict(dict(profile))
-        cleaned.pop("name", None)
-        usage_payload[name] = cleaned
+        if cleaned:
+            usage_payload[name] = cleaned
 
     payload: Dict[str, Any] = {
         "port_usages": usage_payload,
+        "port_profiles": list(port_profiles.values()),
         "port_config": port_config,
         "port_overrides": port_overrides,
     }
@@ -3059,8 +3272,8 @@ def _apply_temporary_config_for_rows(
                     base_url,
                     token,
                     site_id,
-                    device_id,
                     base_payload,
+                    default_device_id=device_id,
                 )
                 if rename_map:
                     _apply_network_rename_to_payload(base_payload, rename_map)
@@ -3124,9 +3337,8 @@ def _finalize_assignments_for_rows(
     ok_rows = [
         r for r in results if r.get("ok") and r.get("site_id") and r.get("device_id")
     ]
-    total = len(ok_rows)
 
-    if total == 0:
+    if not ok_rows:
         return {
             "ok": True,
             "skipped": True,
@@ -3137,7 +3349,6 @@ def _finalize_assignments_for_rows(
         }
 
     payload_records: List[Dict[str, Any]] = []
-
     def _prepare_finalize_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
         payload = _build_temp_config_payload(row)
         if not isinstance(payload, Mapping):
@@ -3158,26 +3369,52 @@ def _finalize_assignments_for_rows(
 
         return sanitized or None
 
+    records_by_site: Dict[str, Dict[str, Any]] = {}
+    for row in ok_rows:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        payload_obj = _prepare_finalize_payload(row)
+
+        record = records_by_site.setdefault(
+            site_id,
+            {"site_id": site_id, "device_ids": [], "payload": {}, "_errors": []},
+        )
+        if device_id:
+            record.setdefault("device_ids", []).append(device_id)
+
+        errors: List[Tuple[str, Optional[int]]] = record.setdefault("_errors", [])
+        if not site_id:
+            errors.append(("Missing site identifier while finalizing.", None))
+        if not device_id:
+            errors.append(("Missing device identifier while finalizing.", None))
+
+        if not payload_obj:
+            errors.append(("No staged temporary configuration is available to finalize.", None))
+            continue
+
+        _merge_site_switch_payload(record.setdefault("payload", {}), payload_obj, device_id=device_id)
+
+    records: List[Dict[str, Any]] = []
+    for site_id, record in records_by_site.items():
+        record["device_ids"] = sorted({d for d in record.get("device_ids", []) if d})
+        records.append(record)
+        payload_records.append(record)
+
+    total_sites = len(records)
+
     if dry_run:
-        for row in ok_rows:
-            site_id = str(row.get("site_id") or "").strip()
-            device_id = str(row.get("device_id") or "").strip()
-            if not site_id or not device_id:
-                continue
-            payload_obj = _prepare_finalize_payload(row)
-            record: Dict[str, Any] = {
-                "site_id": site_id,
-                "device_id": device_id,
-                "payload": payload_obj or {},
-            }
+        for record in records:
+            payload_obj = record.get("payload")
             warnings: List[str] = []
-            if payload_obj:
+            errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
+            site_id = str(record.get("site_id") or "").strip()
+
+            if payload_obj and not errors:
                 try:
                     _, conflict_warnings, rename_map = _prepare_switch_port_profile_payload(
                         base_url,
                         token,
                         site_id,
-                        device_id,
                         payload_obj,
                     )
                     if rename_map:
@@ -3191,83 +3428,58 @@ def _finalize_assignments_for_rows(
                     )
             if warnings:
                 record["warnings"] = warnings
-            payload_records.append(record)
+            record.pop("_errors", None)
 
         return {
             "ok": True,
             "skipped": True,
-            "message": "Skipped finalizing assignments for {total} device(s) during a preview-only run.".format(
-                total=total
+            "message": "Skipped finalizing assignments for {total} site(s) during a preview-only run.".format(
+                total=total_sites
             ),
             "successes": 0,
             "failures": [],
-            "total": total,
+            "total": total_sites,
+            "scope": "site",
             "payloads": payload_records,
         }
 
     successes = 0
     failures: List[Dict[str, Any]] = []
-    records: List[Dict[str, Any]] = []
-
-    for row in ok_rows:
-        site_id = str(row.get("site_id") or "").strip()
-        device_id = str(row.get("device_id") or "").strip()
-        payload_obj = _prepare_finalize_payload(row)
-
-        record: Dict[str, Any] = {
-            "site_id": site_id,
-            "device_id": device_id,
-            "payload": payload_obj or {},
-        }
-        payload_records.append(record)
-        records.append(record)
-
-        errors: List[Tuple[str, Optional[int]]] = []
-        record["_errors"] = errors  # type: ignore[assignment]
-
-        if not site_id or not device_id:
-            errors.append(("Missing site or device identifier while finalizing.", None))
-
-        if not payload_obj:
-            errors.append(("No staged temporary configuration is available to finalize.", None))
 
     for record in records:
         payload = record.get("payload")
         errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
+        site_id = str(record.get("site_id") or "")
 
         if not payload or errors:
             continue
 
-        site_id = str(record.get("site_id") or "")
-        device_id = str(record.get("device_id") or "")
-
         try:
-            device_result = _configure_switch_port_profile_override(
+            site_result = _configure_switch_port_profile_override(
                 base_url,
                 token,
                 site_id,
-                device_id,
                 payload,
             )
-            record["device_result"] = device_result
-            rename_map = device_result.get("renamed_networks") if isinstance(device_result, Mapping) else None
+            record["site_result"] = site_result
+            rename_map = site_result.get("renamed_networks") if isinstance(site_result, Mapping) else None
             if rename_map and isinstance(payload, Mapping):
                 _apply_network_rename_to_payload(payload, rename_map)
                 record["payload"] = payload
-            warning_list = device_result.get("warnings") if isinstance(device_result, Mapping) else None
+            warning_list = site_result.get("warnings") if isinstance(site_result, Mapping) else None
             if warning_list:
                 record.setdefault("warnings", []).extend(
                     [w for w in warning_list if isinstance(w, str) and w.strip()]
                 )
-            if not device_result.get("ok"):
+            if not site_result.get("ok"):
                 errors.append(
                     (
-                        str(device_result.get("message") or "Device update failed."),
-                        _int_or_none(device_result.get("status")),
+                        str(site_result.get("message") or "Site setting update failed."),
+                        _int_or_none(site_result.get("status")),
                     )
                 )
         except MistAPIError as exc:
-            record["device_result"] = {
+            record["site_result"] = {
                 "ok": False,
                 "status": exc.status_code,
                 "message": str(exc),
@@ -3278,14 +3490,13 @@ def _finalize_assignments_for_rows(
     for record in records:
         errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
         site_id = record.get("site_id")
-        device_id = record.get("device_id")
 
         if errors:
             message, status = errors[0]
             failures.append(
                 {
                     "site_id": site_id,
-                    "device_id": device_id,
+                    "device_ids": record.get("device_ids"),
                     "message": message,
                     "status": status,
                 }
@@ -3295,18 +3506,19 @@ def _finalize_assignments_for_rows(
 
         record.pop("_errors", None)
 
-    ok = successes == total
+    ok = successes == total_sites
     return {
         "ok": ok,
         "skipped": False,
         "message": (
-            "Finalized temporary assignments for {count} device(s)."
+            "Finalized temporary assignments for {count} site(s)."
             if ok
-            else "Finalized temporary assignments for {successes}/{total} device(s). Manual follow-up required."
-        ).format(count=successes, successes=successes, total=total),
+            else "Finalized temporary assignments for {successes}/{total} site(s). Manual follow-up required."
+        ).format(count=successes, successes=successes, total=total_sites),
         "successes": successes,
         "failures": failures,
-        "total": total,
+        "total": total_sites,
+        "scope": "site",
         "payloads": payload_records,
     }
 
