@@ -2883,7 +2883,10 @@ def _prepare_switch_port_profile_payload(
             updated_override = dict(override)
             if default_device_id and not updated_override.get("device_id"):
                 updated_override["device_id"] = default_device_id
-            overrides_payload.append(updated_override)
+            port_id = str(updated_override.get("port_id") or "").strip()
+            if not port_id:
+                continue
+            overrides_payload[port_id] = updated_override
         if overrides_payload:
             switch_payload["port_overrides"] = overrides_payload
 
