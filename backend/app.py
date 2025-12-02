@@ -2977,29 +2977,97 @@ def _merge_site_switch_payload(
     if target_networks:
         target["networks"] = target_networks
 
+    def _port_profile_signature_from_payload(profile: Mapping[str, Any]) -> Optional[Tuple]:
+        if not isinstance(profile, Mapping):
+            return None
+        mode_raw = profile.get("port_mode") or profile.get("mode")
+        mode = str(mode_raw or "").lower()
+        if mode not in {"access", "trunk"}:
+            return None
+        access_vlan = _int_or_none(profile.get("vlan") or profile.get("access_vlan"))
+        voice_vlan = _int_or_none(profile.get("voice_vlan"))
+        native_vlan = _int_or_none(profile.get("native_vlan"))
+        allowed_vlans_raw = profile.get("allowed_vlans")
+
+        def _expand_vlan_values(values: Any) -> List[int]:
+            items: List[int] = []
+            if isinstance(values, str):
+                for part in [p.strip() for p in values.split(",") if p.strip()]:
+                    if "-" in part:
+                        start, _, end = part.partition("-")
+                        start_int = _int_or_none(start)
+                        end_int = _int_or_none(end)
+                        if start_int is not None and end_int is not None and start_int <= end_int:
+                            items.extend(range(start_int, end_int + 1))
+                            continue
+                    v = _int_or_none(part)
+                    if v is not None:
+                        items.append(v)
+            else:
+                items.extend(_normalize_vlan_values(values))
+            return items
+
+        allowed_vlans = _expand_vlan_values(allowed_vlans_raw)
+        allowed_norm = _normalize_vlan_range(tuple(allowed_vlans)) if allowed_vlans else ""
+        poe = bool(profile.get("poe"))
+        stp_edge = bool(profile.get("stp_edge"))
+        bpdu_guard = bool(profile.get("bpdu_guard"))
+        is_lag = bool(profile.get("is_lag"))
+        return (mode, access_vlan, voice_vlan, native_vlan, allowed_norm, poe, stp_edge, bpdu_guard, is_lag)
+
+    incoming_profiles = _normalize_port_profile_list(incoming.get("port_profiles"))
+    existing_profiles = _normalize_port_profile_list(target.get("port_profiles"))
+
+    canonical_profiles: List[Dict[str, Any]] = []
+    sig_to_name: Dict[Tuple, str] = {}
+    name_to_index: Dict[str, int] = {}
+
+    def _register_profile(profile: Mapping[str, Any]) -> Optional[str]:
+        if not isinstance(profile, Mapping):
+            return None
+        name = str(profile.get("name") or "").strip()
+        if not name:
+            return None
+        signature = _port_profile_signature_from_payload(profile)
+
+        if signature and signature in sig_to_name:
+            return sig_to_name[signature]
+
+        payload = dict(profile)
+        payload["name"] = name
+        if name in name_to_index:
+            canonical_profiles[name_to_index[name]] = payload
+        else:
+            name_to_index[name] = len(canonical_profiles)
+            canonical_profiles.append(payload)
+        if signature and signature not in sig_to_name:
+            sig_to_name[signature] = name
+        return name
+
+    for profile in existing_profiles:
+        _register_profile(profile)
+
+    incoming_profile_name_map: Dict[str, str] = {}
+    for profile in incoming_profiles:
+        registered_name = _register_profile(profile)
+        name = str(profile.get("name") or "").strip()
+        if registered_name and name:
+            incoming_profile_name_map[name] = registered_name
+
+    if canonical_profiles:
+        target["port_profiles"] = canonical_profiles
+
     target_usages = target.get("port_usages") if isinstance(target.get("port_usages"), Mapping) else {}
     incoming_usages = incoming.get("port_usages") if isinstance(incoming.get("port_usages"), Mapping) else {}
     for name, cfg in incoming_usages.items():
         if not isinstance(cfg, Mapping):
             continue
-        target_usages[str(name)] = dict(cfg)
+        canonical_name = incoming_profile_name_map.get(str(name), str(name))
+        updated_cfg = dict(cfg)
+        updated_cfg["name"] = canonical_name
+        target_usages[canonical_name] = updated_cfg
     if target_usages:
         target["port_usages"] = target_usages
-
-    incoming_profiles = _normalize_port_profile_list(incoming.get("port_profiles"))
-    if incoming_profiles:
-        existing_profiles = _normalize_port_profile_list(target.get("port_profiles"))
-        profile_map: Dict[str, Dict[str, Any]] = {}
-        for profile in existing_profiles:
-            name = str(profile.get("name") or "").strip()
-            if name:
-                profile_map[name] = dict(profile)
-        for profile in incoming_profiles:
-            name = str(profile.get("name") or "").strip()
-            if not name:
-                continue
-            profile_map[name] = dict(profile)
-        target["port_profiles"] = list(profile_map.values())
 
     target_overrides = target.get("port_overrides")
     if not isinstance(target_overrides, list):
@@ -3014,6 +3082,9 @@ def _merge_site_switch_payload(
             if not isinstance(override, Mapping):
                 continue
             updated = dict(override)
+            usage_value = updated.get("usage")
+            if isinstance(usage_value, str):
+                updated["usage"] = incoming_profile_name_map.get(usage_value, usage_value)
             if device_id and not updated.get("device_id"):
                 updated["device_id"] = device_id
             target_overrides.append(updated)
