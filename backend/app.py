@@ -2957,6 +2957,21 @@ def _put_device_payload(
     return {"status": resp.status_code, "response": data}
 
 
+def _put_site_settings_payload(
+    base_url: str,
+    token: str,
+    site_id: str,
+    payload: Mapping[str, Any],
+) -> Dict[str, Any]:
+    url = f"{base_url}/sites/{site_id}/setting"
+    headers = _mist_headers(token)
+    resp = requests.put(url, headers=headers, json=payload, timeout=60)
+    data = _safe_json_response(resp)
+    if not (200 <= resp.status_code < 300):
+        raise MistAPIError(resp.status_code, _extract_mist_error(resp), response=data)
+    return {"status": resp.status_code, "response": data}
+
+
 def _merge_site_switch_payload(
     target: Dict[str, Any],
     incoming: Mapping[str, Any],
@@ -3297,6 +3312,18 @@ def _build_device_reset_payload() -> Dict[str, Any]:
     }
 
 
+def _build_site_cleanup_payload() -> Dict[str, Any]:
+    return {
+        "networks": {},
+        "switch": {
+            "port_usages": {},
+            "port_usage": {},
+            "port_config": {},
+            "port_overrides": {},
+        },
+    }
+
+
 def _apply_temporary_config_for_rows(
     base_url: str,
     token: str,
@@ -3615,20 +3642,25 @@ def _remove_temporary_config_for_rows(
     total = len(ok_rows)
     payload_records: List[Dict[str, Any]] = []
 
-    if total == 0:
-        return {
-            "ok": True,
-            "skipped": True,
-            "message": "No successful rows available to clean up temporary configuration.",
-            "successes": 0,
-            "failures": [],
-            "total": 0,
-            "payloads": [],
-        }
+    def _collect_site_cleanup_targets(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        sites: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            site_id = str(row.get("site_id") or "").strip()
+            device_id = str(row.get("device_id") or "").strip()
+            if not site_id:
+                continue
+            record = sites.setdefault(site_id, {"site_id": site_id, "device_ids": set(), "rows": []})
+            if device_id:
+                record["device_ids"].add(device_id)
+            record["rows"].append(row)
+        for record in sites.values():
+            record["device_ids"] = sorted(record.get("device_ids") or [])
+        return sites
 
-    reset_template = _build_device_reset_payload()
+    sites = _collect_site_cleanup_targets(ok_rows)
 
     if dry_run:
+        cleanup_payload = _build_site_cleanup_payload()
         for row in ok_rows:
             site_id = str(row.get("site_id") or "").strip()
             device_id = str(row.get("device_id") or "").strip()
@@ -3638,7 +3670,7 @@ def _remove_temporary_config_for_rows(
                     "site_id": site_id,
                     "device_id": device_id,
                     "payload": {
-                        "wipe_request": copy.deepcopy(reset_template),
+                        "cleanup_request": copy.deepcopy(cleanup_payload),
                         "push_request": final_payload,
                     },
                 }
@@ -3647,26 +3679,59 @@ def _remove_temporary_config_for_rows(
         return {
             "ok": True,
             "skipped": True,
-            "message": "Skipped cleaning up temporary config during a preview-only run.",
+            "message": "Skipped cleaning up temporary site configuration during a preview-only run.",
             "successes": 0,
             "failures": [],
             "total": total,
             "payloads": payload_records,
+            "scope": "site",
         }
 
+    cleanup_payload = _build_site_cleanup_payload()
     successes = 0
     failures: List[Dict[str, Any]] = []
+
+    for record in sites.values():
+        site_id = record.get("site_id") or ""
+        if not site_id:
+            continue
+        try:
+            cleanup_result = _put_site_settings_payload(
+                base_url,
+                token,
+                site_id,
+                cleanup_payload,
+            )
+            record["cleanup_result"] = cleanup_result
+        except MistAPIError as exc:
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_ids": record.get("device_ids"),
+                    "status": exc.status_code,
+                    "message": f"Unable to clear temporary site configuration: {exc}",
+                }
+            )
+            record.setdefault("_errors", []).append((str(exc), exc.status_code))
+        except Exception as exc:  # pragma: no cover - network failures reported to UI
+            failures.append(
+                {
+                    "site_id": site_id,
+                    "device_ids": record.get("device_ids"),
+                    "status": None,
+                    "message": f"Unable to clear temporary site configuration: {exc}",
+                }
+            )
+            record.setdefault("_errors", []).append((str(exc), None))
 
     for row in ok_rows:
         site_id = str(row.get("site_id") or "").strip()
         device_id = str(row.get("device_id") or "").strip()
-        wipe_payload = _build_device_reset_payload()
         final_payload = _get_site_deployment_payload(row)
         record: Dict[str, Any] = {
             "site_id": site_id,
             "device_id": device_id,
             "payload": {
-                "wipe_request": copy.deepcopy(wipe_payload),
                 "push_request": copy.deepcopy(final_payload) if isinstance(final_payload, Mapping) else {},
             },
         }
@@ -3681,32 +3746,6 @@ def _remove_temporary_config_for_rows(
                     "message": "No converted config payload available for the cleanup step.",
                 }
             )
-            continue
-
-        try:
-            wipe_result = _put_device_payload(base_url, token, site_id, device_id, wipe_payload)
-            record["wipe_result"] = wipe_result
-        except MistAPIError as exc:
-            failures.append(
-                {
-                    "site_id": site_id,
-                    "device_id": device_id,
-                    "status": exc.status_code,
-                    "message": f"Unable to clear temporary config: {exc}",
-                }
-            )
-            record["wipe_error"] = str(exc)
-            continue
-        except Exception as exc:  # pragma: no cover - network failures reported to UI
-            failures.append(
-                {
-                    "site_id": site_id,
-                    "device_id": device_id,
-                    "status": None,
-                    "message": f"Unable to clear temporary config: {exc}",
-                }
-            )
-            record["wipe_error"] = str(exc)
             continue
 
         try:
@@ -3748,20 +3787,19 @@ def _remove_temporary_config_for_rows(
                 "message": str(exc),
             }
 
-    ok = successes == total
+    ok = successes == total and all(not rec.get("_errors") for rec in sites.values())
 
     return {
         "ok": ok,
         "skipped": False,
-        "message": (
-            "Cleared temporary config and pushed converted assignments for {count} device(s)."
-            if ok
-            else "Cleared temporary config and pushed converted assignments for {successes}/{total} device(s). Manual follow-up required."
-        ).format(count=successes, successes=successes, total=total),
+        "message": "Cleaned up temporary site configuration and pushed converted assignments for {count} device(s).".format(
+            count=successes
+        ),
         "successes": successes,
         "failures": failures,
-        "total": total,
+        "total": total or len(sites),
         "payloads": payload_records,
+        "scope": "site",
     }
 
 

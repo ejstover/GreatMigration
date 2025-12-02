@@ -259,12 +259,14 @@ def test_remove_temp_config_returns_preview_when_dry_run(app_module):
     payloads = result.get("payloads") or []
     assert len(payloads) == 1
     preview = payloads[0]["payload"]
-    assert preview["wipe_request"] == {
+    assert preview["cleanup_request"] == {
         "networks": {},
-        "port_usages": {},
-        "port_usage": {},
-        "port_config": {},
-        "port_overrides": {},
+        "switch": {
+            "port_usages": {},
+            "port_usage": {},
+            "port_config": {},
+            "port_overrides": {},
+        },
     }
     assert preview["push_request"]["port_config"]["ge-0/0/1"]["usage"] == "end_user"
 
@@ -306,12 +308,15 @@ def test_remove_temp_config_wipes_and_pushes(monkeypatch, app_module):
     assert result["successes"] == 1
     assert result["failures"] == []
     assert len(calls) == 2
+    assert calls[0]["url"] == "https://example.com/api/v1/sites/site-1/setting"
     assert calls[0]["json"] == {
         "networks": {},
-        "port_usages": {},
-        "port_usage": {},
-        "port_config": {},
-        "port_overrides": {},
+        "switch": {
+            "port_usages": {},
+            "port_usage": {},
+            "port_config": {},
+            "port_overrides": {},
+        },
     }
     assert calls[1]["json"] == final_payload
 
