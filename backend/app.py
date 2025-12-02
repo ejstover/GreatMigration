@@ -2667,29 +2667,6 @@ def _prepare_switch_port_profile_payload(
     existing_profiles = _normalize_port_profile_list(switch_section.get(existing_profile_field))
     existing_overrides = _normalize_port_override_list(switch_section.get("port_overrides"))
 
-    existing_usage_map: Dict[str, Dict[str, Any]] = {}
-    if isinstance(switch_section.get("port_usages"), Mapping):
-        existing_usage_map = {
-            str(name): dict(cfg)
-            for name, cfg in switch_section["port_usages"].items()
-            if isinstance(cfg, Mapping) and str(name).strip()
-        }
-    elif isinstance(switch_section.get("port_usages"), Sequence) and not isinstance(
-        switch_section.get("port_usages"), (str, bytes, bytearray)
-    ):
-        for item in switch_section["port_usages"]:
-            if not isinstance(item, Mapping):
-                continue
-            name = str(item.get("name") or "").strip()
-            if name:
-                existing_usage_map[name] = dict(item)
-
-    existing_profile_map: Dict[str, Dict[str, Any]] = {}
-    for profile in existing_profiles:
-        name = str(profile.get("name") or "").strip()
-        if name:
-            existing_profile_map[name] = dict(profile)
-
     existing_networks = _normalize_network_map(current_setting.get("networks"), sanitize=False)
     if not existing_networks:
         existing_networks = _normalize_network_map(current_setting.get("vlans"), sanitize=False)
@@ -2875,39 +2852,19 @@ def _prepare_switch_port_profile_payload(
 
     switch_payload: Dict[str, Any] = {}
     if port_usages_seq:
-        usage_payload: Dict[str, Dict[str, Any]] = {}
-        for profile in port_usages_seq:
-            if not isinstance(profile, Mapping):
-                continue
-            name = str(profile.get("name") or "").strip()
-            if not name:
-                continue
-            merged_profile = dict(existing_usage_map.get(name, {}))
-            merged_profile.update({k: v for k, v in profile.items() if k != "name"})
-            cleaned = _compact_dict(merged_profile)
-            if cleaned:
-                usage_payload[name] = cleaned
-        if existing_usage_map:
-            for name, cfg in existing_usage_map.items():
-                usage_payload.setdefault(name, _compact_dict(dict(cfg)))
-        if usage_payload:
-            switch_payload["port_usages"] = usage_payload
+        switch_payload["port_usages"] = {
+            str(profile.get("name") or "").strip(): _compact_dict(
+                {k: v for k, v in profile.items() if k != "name"}
+            )
+            for profile in port_usages_seq
+            if isinstance(profile, Mapping) and str(profile.get("name") or "").strip()
+        }
     elif port_profiles_seq:
-        profile_map: Dict[str, Dict[str, Any]] = {}
-        for profile in port_profiles_seq:
-            if not isinstance(profile, Mapping):
-                continue
-            name = str(profile.get("name") or "").strip()
-            if not name:
-                continue
-            merged = dict(existing_profile_map.get(name, {}))
-            merged.update(dict(profile))
-            profile_map[name] = _compact_dict(merged)
-        if existing_profile_map:
-            for name, data in existing_profile_map.items():
-                profile_map.setdefault(name, _compact_dict(dict(data)))
-        if profile_map:
-            switch_payload[existing_profile_field] = list(profile_map.values())
+        switch_payload[existing_profile_field] = [
+            _compact_dict(dict(value))
+            for value in port_profiles_seq
+            if isinstance(value, Mapping)
+        ]
 
     if isinstance(port_overrides_new, Sequence) and not isinstance(
         port_overrides_new, (str, bytes, bytearray)
@@ -2926,11 +2883,9 @@ def _prepare_switch_port_profile_payload(
             updated_override = dict(override)
             if default_device_id and not updated_override.get("device_id"):
                 updated_override["device_id"] = default_device_id
-            port_id = str(updated_override.get("port_id") or "").strip()
-            key = port_id or hashlib.sha1(json.dumps(updated_override, sort_keys=True).encode("utf-8")).hexdigest()
-            overrides_payload[key] = updated_override
+            overrides_payload.append(updated_override)
         if overrides_payload:
-            switch_payload["port_overrides"] = list(overrides_payload.values())
+            switch_payload["port_overrides"] = overrides_payload
 
     if switch_payload:
         request_body["switch"] = switch_payload
