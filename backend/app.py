@@ -2869,7 +2869,14 @@ def _prepare_switch_port_profile_payload(
     if isinstance(port_overrides_new, Sequence) and not isinstance(
         port_overrides_new, (str, bytes, bytearray)
     ):
-        overrides_payload: List[Dict[str, Any]] = []
+        overrides_payload: Dict[str, Dict[str, Any]] = {}
+        for override in existing_overrides:
+            if not isinstance(override, Mapping):
+                continue
+            port_id = str(override.get("port_id") or "").strip()
+            if not port_id:
+                continue
+            overrides_payload[port_id] = dict(override)
         for override in port_overrides_new:
             if not isinstance(override, Mapping):
                 continue
