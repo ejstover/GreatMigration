@@ -1046,6 +1046,7 @@
         const total = typeof info?.total === 'number' ? info.total : undefined;
         const successes = typeof info?.successes === 'number' ? info.successes : undefined;
         const payloads = Array.isArray(info?.payloads) ? info.payloads : [];
+        const scope = (typeof info?.scope === 'string' && info.scope.toLowerCase() === 'site') ? 'site' : 'device';
 
         const card = document.createElement('div');
         const hasFailures = failures.length > 0;
@@ -1058,7 +1059,7 @@
 
         const meta = [];
         if (typeof successes === 'number' && typeof total === 'number'){
-          meta.push(`${successes}/${total} device${total === 1 ? '' : 's'} processed`);
+          meta.push(`${successes}/${total} ${scope}${total === 1 ? '' : 's'} processed`);
         }
 
         const header = document.createElement('div');
@@ -1078,7 +1079,13 @@
           list.className = 'space-y-1 text-xs';
           failures.forEach(f => {
             const site = f?.site_id ? `Site ${escapeHtml(String(f.site_id))}` : '';
-            const device = f?.device_id ? `Device ${escapeHtml(String(f.device_id))}` : '';
+            let device = '';
+            if (f?.device_id){
+              device = `Device ${escapeHtml(String(f.device_id))}`;
+            } else if (Array.isArray(f?.device_ids) && f.device_ids.length){
+              const ids = f.device_ids.map(d => escapeHtml(String(d))).join(', ');
+              device = `Device(s) ${ids}`;
+            }
             const statusText = typeof f?.status === 'number' ? ` (HTTP ${f.status})` : '';
             const context = [site, device].filter(Boolean).join(' • ');
             const detail = f?.message ? escapeHtml(String(f.message)) : 'Unknown error';
@@ -1102,7 +1109,13 @@
 
           payloads.forEach(item => {
             const site = item?.site_id ? `Site ${escapeHtml(String(item.site_id))}` : '';
-            const device = item?.device_id ? `Device ${escapeHtml(String(item.device_id))}` : '';
+            let device = '';
+            if (item?.device_id){
+              device = `Device ${escapeHtml(String(item.device_id))}`;
+            } else if (Array.isArray(item?.device_ids) && item.device_ids.length){
+              const ids = item.device_ids.map(d => escapeHtml(String(d))).join(', ');
+              device = `Device(s) ${ids}`;
+            }
             const headerParts = [site, device].filter(Boolean).join(' • ');
             const payloadPre = document.createElement('pre');
             payloadPre.className = 'text-xs p-2 bg-white dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80';
