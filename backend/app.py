@@ -2607,10 +2607,17 @@ def _merge_new_vlan_networks(
             continue
         merged[name] = dict(data)
 
+    existing_names = {
+        str(key).strip().lower() for key in existing_networks.keys() if isinstance(key, str)
+    }
+
     added = False
     for name in sorted(networks_new):
         values = networks_new[name]
         if not isinstance(values, Mapping) or not name:
+            continue
+
+        if name.lower() in existing_names:
             continue
         vid = _int_or_none(values.get("vlan_id") or values.get("id"))
         if vid is None or vid in existing_vlan_ids:
