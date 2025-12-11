@@ -2542,24 +2542,28 @@ def _normalize_port_profile_list(value: Any) -> List[Dict[str, Any]]:
 
 
 def _normalize_port_override_list(value: Any) -> List[Dict[str, Any]]:
-    overrides: Dict[str, Dict[str, Any]] = {}
+    overrides: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    def _register_override(port_id: str, override: Mapping[str, Any]) -> None:
+        if not port_id:
+            return
+        device_id = str(override.get("device_id") or "").strip()
+        overrides[(device_id, port_id)] = dict(override)
+
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for item in value:
             if not isinstance(item, Mapping):
                 continue
             port_id = str(item.get("port_id") or "").strip()
-            if not port_id:
-                continue
-            overrides[port_id] = dict(item)
+            _register_override(port_id, item)
     elif isinstance(value, Mapping):
         # Some APIs return overrides keyed by port ID
         for port_id, item in value.items():
             if not isinstance(item, Mapping):
                 continue
             port_key = str(port_id or "").strip()
-            if not port_key:
-                continue
-            overrides[port_key] = dict(item)
+            _register_override(port_key, item)
+
     return list(overrides.values())
 
 
@@ -2939,26 +2943,34 @@ def _prepare_switch_port_profile_payload(
     if isinstance(port_overrides_new, Sequence) and not isinstance(
         port_overrides_new, (str, bytes, bytearray)
     ):
-        overrides_payload: Dict[str, Dict[str, Any]] = {}
+        overrides_payload: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+        def _override_key(override: Mapping[str, Any]) -> Optional[Tuple[str, str]]:
+            port_id = str(override.get("port_id") or "").strip()
+            if not port_id:
+                return None
+            device_id = str(override.get("device_id") or "").strip()
+            return (device_id, port_id)
+
         for override in existing_overrides:
             if not isinstance(override, Mapping):
                 continue
-            port_id = str(override.get("port_id") or "").strip()
-            if not port_id:
-                continue
-            overrides_payload[port_id] = dict(override)
+            key = _override_key(override)
+            if key:
+                overrides_payload[key] = dict(override)
+
         for override in port_overrides_new:
             if not isinstance(override, Mapping):
                 continue
             updated_override = dict(override)
             if default_device_id and not updated_override.get("device_id"):
                 updated_override["device_id"] = default_device_id
-            port_id = str(updated_override.get("port_id") or "").strip()
-            if not port_id:
-                continue
-            overrides_payload[port_id] = updated_override
+            key = _override_key(updated_override)
+            if key:
+                overrides_payload[key] = updated_override
+
         if overrides_payload:
-            switch_payload["port_overrides"] = overrides_payload
+            switch_payload["port_overrides"] = list(overrides_payload.values())
 
     if switch_payload:
         request_body["switch"] = switch_payload

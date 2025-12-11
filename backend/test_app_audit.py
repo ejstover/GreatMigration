@@ -239,6 +239,52 @@ def test_build_temp_config_payload_groups_port_profiles(app_module):
     assert len(voice_overrides) == 10
 
 
+def test_prepare_payload_preserves_device_overrides(monkeypatch, app_module):
+    monkeypatch.setattr(app_module, "_collect_candidate_org_ids", lambda *args, **kwargs: set())
+    monkeypatch.setattr(app_module, "_load_site_template_networks", lambda *args, **kwargs: {})
+    monkeypatch.setattr(app_module, "_collect_existing_vlan_details", lambda *args, **kwargs: (set(), []))
+    monkeypatch.setattr(
+        app_module,
+        "_resolve_network_conflicts",
+        lambda networks, profiles, usages, conflicts: (networks, profiles, usages, {}, []),
+    )
+    monkeypatch.setattr(
+        app_module, "_merge_new_vlan_networks", lambda existing, new, vlan_ids: {}
+    )
+
+    class FakeResp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {}
+
+    monkeypatch.setattr(app_module.requests, "get", lambda *args, **kwargs: FakeResp())
+
+    payload = {
+        "port_overrides": [
+            {"port_id": "ge-0/0/1", "usage": "temp1", "device_id": "dev-1"},
+            {"port_id": "ge-0/0/1", "usage": "temp2", "device_id": "dev-2"},
+        ]
+    }
+
+    request_body, warnings, rename_map = app_module._prepare_switch_port_profile_payload(
+        "https://example.com/api/v1", "token", "site-1", payload
+    )
+
+    overrides = request_body.get("switch", {}).get("port_overrides")
+    assert isinstance(overrides, list)
+    assert len(overrides) == 2
+    assert warnings == []
+    assert rename_map == {}
+
+    override_map = {(o.get("device_id"), o.get("port_id")): o.get("usage") for o in overrides}
+    assert override_map == {
+        ("dev-1", "ge-0/0/1"): "temp1",
+        ("dev-2", "ge-0/0/1"): "temp2",
+    }
+
+
 def test_remove_temp_config_returns_preview_when_dry_run(app_module):
     row = {
         "ok": True,
