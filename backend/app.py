@@ -195,6 +195,44 @@ def _render_page(template_name: str, page_key: str) -> HTMLResponse:
     return HTMLResponse(html)
 
 
+def _parse_show_vlan_text(raw: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw, str):
+        return []
+
+    entries: List[Dict[str, Any]] = []
+    for line in raw.splitlines():
+        m = re.match(r"\s*(\d+)\s+([^\s]+)", line)
+        if not m:
+            continue
+        try:
+            vid = int(m.group(1))
+        except Exception:
+            continue
+        name = m.group(2).strip() or str(vid)
+        entries.append({"id": vid, "name": name})
+
+    return entries
+
+
+def _extract_show_vlan_entries(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    if not isinstance(payload, Mapping):
+        return []
+
+    for key in ("show_vlan", "show_vlan_output", "show_vlan_text"):
+        parsed = _parse_show_vlan_text(payload.get(key))
+        if parsed:
+            return parsed
+
+    command_outputs = payload.get("command_outputs")
+    if isinstance(command_outputs, Mapping):
+        for key in ("show vlan", "show vlan brief"):
+            parsed = _parse_show_vlan_text(command_outputs.get(key))
+            if parsed:
+                return parsed
+
+    return []
+
+
 app = FastAPI(title=APP_TITLE)
 
 app.add_middleware(
@@ -1731,6 +1769,31 @@ def _build_payload_for_row(
         payload_in = {"interfaces": payload_in}
 
     temp_source = copy.deepcopy(payload_in)
+
+    vlan_entries = _extract_show_vlan_entries(payload_in)
+    if vlan_entries:
+        existing_vlans = temp_source.get("vlans") if isinstance(temp_source, Mapping) else None
+        merged_vlans: Dict[int, Dict[str, Any]] = {}
+        if isinstance(existing_vlans, list):
+            for entry in existing_vlans:
+                if not isinstance(entry, Mapping):
+                    continue
+                vid = _int_or_none(entry.get("id") or entry.get("vlan_id"))
+                if vid is None:
+                    continue
+                merged_vlans[vid] = dict(entry)
+        for entry in vlan_entries:
+            vid = _int_or_none(entry.get("id") or entry.get("vlan_id"))
+            if vid is None:
+                continue
+            name = str(entry.get("name") or "").strip() or str(vid)
+            merged = dict(entry)
+            merged.setdefault("id", vid)
+            merged.setdefault("vlan_id", vid)
+            merged.setdefault("name", name)
+            merged_vlans[vid] = merged
+        if merged_vlans:
+            temp_source["vlans"] = list(merged_vlans.values())
 
     # Build port_config
     port_config = ensure_port_config(payload_in, model)
@@ -3887,7 +3950,7 @@ async def api_push_batch(
     lcm_actions_selected = bool(apply_temp_config or finalize_assignments or remove_temp_config)
 
     preview_only = not (
-        push_site_deployment or apply_temp_config or finalize_assignments or remove_temp_config
+        push_site_deployment or finalize_assignments or remove_temp_config
     )
 
     _ensure_push_allowed(request, dry_run=preview_only)

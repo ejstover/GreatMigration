@@ -245,6 +245,10 @@ def _collect_one_device(
                 "filename": "show_interfaces.txt",
                 "timeout": max(read_timeout, 120),
             },
+            "show vlan": {
+                "filename": "show_vlan.txt",
+                "timeout": max(read_timeout, 60),
+            },
             "show running-config": {
                 "filename": "show_running_config.txt",
                 "timeout": max(read_timeout, 120),
