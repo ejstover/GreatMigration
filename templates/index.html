@@ -763,13 +763,19 @@
         card.className = 'rounded-xl border bg-white dark:bg-slate-800 dark:border-slate-700 p-4';
         const siteAutomationActive = siteAutomationCheckboxes.some(cb => cb && cb.checked);
         const lcmActive = lcmAutomationCheckboxes.some(cb => cb && cb.checked);
-        const showConversionPreview = siteAutomationActive || (!siteAutomationActive && !lcmActive);
-        const previewSection = showConversionPreview
-          ? `<details class="mt-2">
-              <summary class="cursor-pointer text-sm text-slate-600 dark:text-slate-300">Preview JSON</summary>
+        const showConversionPreview = siteAutomationActive;
+        let previewSection = '';
+
+        if (showConversionPreview){
+          previewSection = `<details class="mt-2">
+              <summary class="cursor-pointer text-sm text-slate-600 dark:text-slate-300">Preview converted Cisco JSON</summary>
               <pre class="text-xs mt-2 p-2 bg-slate-50 dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80">${escapeHtml(JSON.stringify(it.json, null, 2))}</pre>
-            </details>`
-          : `<p class="mt-2 text-xs text-slate-600 dark:text-slate-300">Run a test with Lifecycle automation enabled to review the Mist request that stages VLANs, port profiles, and switchport assignments for the existing network.</p>`;
+            </details>`;
+        } else if (lcmActive){
+          previewSection = `<p class="mt-2 text-xs text-slate-600 dark:text-slate-300">Run Lifecycle automation to review the attached Mist request that stages VLANs, port profiles, and switchport assignments for the existing network.</p>`;
+        } else {
+          previewSection = `<p class="mt-2 text-xs text-slate-600 dark:text-slate-300">Select a Site Deployment automation step to preview the converted Cisco configuration JSON, or choose a Lifecycle automation step to review the attached Mist request.</p>`;
+        }
         card.innerHTML = `
           <div class="flex items-center justify-between">
             <div class="text-sm font-medium">${escapeHtml(it.source_file)}</div>
