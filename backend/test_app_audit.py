@@ -217,29 +217,17 @@ def test_build_temp_config_payload_groups_port_profiles(app_module):
     usages = payload.get("port_usages")
     assert isinstance(usages, dict)
     assert len(usages) == 2
-    assert set(usages.keys()) == {"old_access_vlan17", "old_access_vlan100_voice120"}
-
-    port_config = payload.get("port_config")
-    assert isinstance(port_config, dict)
-    first_usage = port_config["ge-0/0/1"]["usage"]
-    voice_usage = port_config["ge-0/0/17"]["usage"]
-
-    for idx in range(1, 17):
-        assert port_config[f"ge-0/0/{idx}"]["usage"] == first_usage
-
-    for idx in range(17, 27):
-        assert port_config[f"ge-0/0/{idx}"]["usage"] == voice_usage
-
-    overrides = payload.get("port_overrides")
-    assert isinstance(overrides, list)
-    assert len(overrides) == 26
-    access_overrides = [o for o in overrides if o.get("usage") == first_usage]
-    voice_overrides = [o for o in overrides if o.get("usage") == voice_usage]
-    assert len(access_overrides) == 16
-    assert len(voice_overrides) == 10
+    assert all(isinstance(name, str) and name for name in usages)
+    networks = {net.get("name"): net for net in payload.get("networks", []) if isinstance(net, dict)}
+    for usage_payload in usages.values():
+        port_network = usage_payload.get("port_network")
+        assert isinstance(port_network, str)
+        assert port_network in networks
+    assert "port_config" not in payload
+    assert "port_overrides" not in payload
 
 
-def test_prepare_payload_preserves_device_overrides(monkeypatch, app_module):
+def test_prepare_payload_excludes_port_overrides(monkeypatch, app_module):
     monkeypatch.setattr(app_module, "_collect_candidate_org_ids", lambda *args, **kwargs: set())
     monkeypatch.setattr(app_module, "_load_site_template_networks", lambda *args, **kwargs: {})
     monkeypatch.setattr(app_module, "_collect_existing_vlan_details", lambda *args, **kwargs: (set(), []))
@@ -262,6 +250,10 @@ def test_prepare_payload_preserves_device_overrides(monkeypatch, app_module):
     monkeypatch.setattr(app_module.requests, "get", lambda *args, **kwargs: FakeResp())
 
     payload = {
+        "port_usages": [
+            {"name": "temp1", "port_network": "data_vlan", "mode": "access"},
+            {"name": "temp2", "port_network": "data_vlan", "mode": "access"},
+        ],
         "port_overrides": [
             {"port_id": "ge-0/0/1", "usage": "temp1", "device_id": "dev-1"},
             {"port_id": "ge-0/0/1", "usage": "temp2", "device_id": "dev-2"},
@@ -272,17 +264,55 @@ def test_prepare_payload_preserves_device_overrides(monkeypatch, app_module):
         "https://example.com/api/v1", "token", "site-1", payload
     )
 
-    overrides = request_body.get("switch", {}).get("port_overrides")
-    assert isinstance(overrides, list)
-    assert len(overrides) == 2
+    switch_body = request_body.get("switch", {})
+    assert "port_overrides" not in switch_body
+    assert "port_usages" in switch_body
     assert warnings == []
     assert rename_map == {}
 
-    override_map = {(o.get("device_id"), o.get("port_id")): o.get("usage") for o in overrides}
-    assert override_map == {
-        ("dev-1", "ge-0/0/1"): "temp1",
-        ("dev-2", "ge-0/0/1"): "temp2",
+
+def test_apply_temp_config_payload_strips_port_assignments(monkeypatch, app_module):
+    captured_payloads: list[Dict[str, Any]] = []
+
+    def fake_prepare(base_url: str, token: str, site_id: str, payload: Dict[str, Any], **kwargs):
+        captured_payloads.append(payload)
+        return payload, [], {}
+
+    monkeypatch.setattr(app_module, "_prepare_switch_port_profile_payload", fake_prepare)
+
+    row = {
+        "ok": True,
+        "site_id": "site-1",
+        "device_id": "device-1",
+        "_temp_config_source": {
+            "vlans": [{"id": 10, "name": "Data"}],
+            "interfaces": [
+                {
+                    "mode": "access",
+                    "data_vlan": 10,
+                    "juniper_if": "ge-0/0/1",
+                    "name": "Gig1",
+                }
+            ],
+        },
     }
+
+    result = app_module._apply_temporary_config_for_rows(
+        "https://example.com/api/v1",
+        "token",
+        [row],
+        dry_run=True,
+    )
+
+    assert result["successes"] == 1
+    preview_payload = result["payloads"][0]["payload"]
+
+    assert captured_payloads
+    assert "port_config" not in captured_payloads[0]
+    assert "port_overrides" not in captured_payloads[0]
+    assert "port_usages" in captured_payloads[0]
+    assert "port_config" not in preview_payload
+    assert "port_overrides" not in preview_payload
 
 
 def test_remove_temp_config_returns_preview_when_dry_run(app_module):
