@@ -315,13 +315,19 @@ def test_apply_temp_config_payload_strips_port_assignments(monkeypatch, app_modu
     assert "port_overrides" not in preview_payload
 
 
-def test_remove_temp_config_returns_preview_when_dry_run(app_module):
+def test_remove_temp_config_returns_preview_when_dry_run(monkeypatch, app_module):
     row = {
         "ok": True,
         "site_id": "site-1",
         "device_id": "device-1",
         "_site_deployment_payload": {"port_config": {"ge-0/0/1": {"usage": "end_user"}}},
     }
+
+    monkeypatch.setattr(
+        app_module,
+        "_derive_port_config_from_config_cmd",
+        lambda *args, **kwargs: {"ge-0/0/1": {"usage": "derived_user"}},
+    )
 
     result = app_module._remove_temporary_config_for_rows(
         "https://example.com/api/v1",
@@ -339,12 +345,11 @@ def test_remove_temp_config_returns_preview_when_dry_run(app_module):
         "networks": {},
         "switch": {
             "port_usages": {},
-            "port_usage": {},
             "port_config": {},
-            "port_overrides": {},
+            "port_overrides": [],
         },
     }
-    assert preview["push_request"]["port_config"]["ge-0/0/1"]["usage"] == "end_user"
+    assert preview["push_request"]["port_config"]["ge-0/0/1"]["usage"] == "derived_user"
 
 
 def test_remove_temp_config_wipes_and_pushes(monkeypatch, app_module):
@@ -364,6 +369,11 @@ def test_remove_temp_config_wipes_and_pushes(monkeypatch, app_module):
         return Resp()
 
     monkeypatch.setattr(app_module.requests, "put", fake_put)
+    monkeypatch.setattr(
+        app_module,
+        "_derive_port_config_from_config_cmd",
+        lambda *args, **kwargs: {"ge-0/0/5": {"usage": "derived_user"}},
+    )
 
     final_payload = {"port_config": {"ge-0/0/5": {"usage": "access"}}}
     row = {
@@ -393,7 +403,33 @@ def test_remove_temp_config_wipes_and_pushes(monkeypatch, app_module):
             "port_overrides": [],
         },
     }
-    assert calls[1]["json"] == final_payload
+    assert calls[1]["json"] == {"port_config": {"ge-0/0/5": {"usage": "derived_user"}}}
+
+
+def test_parse_config_cmd_interfaces_extracts_profiles(app_module):
+    cli = [
+        "set vlans DATA vlan-id 3",
+        "set vlans VOICE vlan-id 2",
+        "set vlans MGMT vlan-id 1",
+        "set interfaces interface-range MGMT member ge-0/0/1",
+        "set interfaces interface-range USERS member ge-0/0/6",
+        "set interfaces interface-range USERS member ge-0/0/7",
+        "set interfaces interface-range MGMT apply-groups LEGACY_MGMT",
+        "set interfaces interface-range USERS apply-groups LEGACY_ENDUSER",
+        "set groups LEGACY_MGMT interfaces <*> unit 0 family ethernet-switching port-mode access",
+        "set groups LEGACY_MGMT interfaces <*> unit 0 family ethernet-switching vlan members MGMT",
+        "set groups LEGACY_ENDUSER interfaces <*> unit 0 family ethernet-switching port-mode access",
+        "set groups LEGACY_ENDUSER interfaces <*> unit 0 family ethernet-switching vlan members DATA",
+        "set groups LEGACY_ENDUSER interfaces <*> unit 0 family ethernet-switching vlan voice VOICE",
+    ]
+
+    interfaces = app_module._parse_config_cmd_interfaces(cli)
+    by_name = {item["juniper_if"]: item for item in interfaces}
+
+    assert by_name["ge-0/0/1"]["mode"] == "access"
+    assert by_name["ge-0/0/1"]["data_vlan"] == 1
+    assert by_name["ge-0/0/6"]["voice_vlan"] == 2
+    assert by_name["ge-0/0/6"]["data_vlan"] == 3
 
 
 def test_load_site_history_parses_breakdown(tmp_path):
