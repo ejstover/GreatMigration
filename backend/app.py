@@ -3615,7 +3615,7 @@ def _parse_config_cmd_interfaces(cli_lines: Sequence[str]) -> List[Dict[str, Any
                 if not remainder:
                     continue
                 if remainder[0] == "member" and len(remainder) >= 2:
-                    members = _parse_list_tokens(remainder[1:2])
+                    members = _parse_list_tokens(remainder[1:])
                     if members:
                         range_members.setdefault(range_name, set()).update(members)
                     continue
@@ -4043,6 +4043,8 @@ def _remove_temporary_config_for_rows(
         key = (site_id, device_id)
         if not site_id or not device_id:
             continue
+        if not dry_run and _get_site_deployment_payload(row):
+            continue
         try:
             port_config = _derive_port_config_from_config_cmd(base_url, token, site_id, device_id)
             if port_config:
@@ -4119,6 +4121,7 @@ def _remove_temporary_config_for_rows(
             device_id = str(row.get("device_id") or "").strip()
             key = (site_id, device_id)
             final_payload = derived_payloads.get(key) or _get_site_deployment_payload(row) or {}
+            cleanup_payload = _cleanup_payload_for_site(site_id)
             preview_payload: Dict[str, Any] = {
                 "cleanup_request": copy.deepcopy(cleanup_payload),
                 "push_request": copy.deepcopy(final_payload) if isinstance(final_payload, Mapping) else {},
@@ -4130,10 +4133,7 @@ def _remove_temporary_config_for_rows(
                 {
                     "site_id": site_id,
                     "device_id": device_id,
-                    "payload": {
-                        "cleanup_request": _cleanup_payload_for_site(site_id),
-                        "push_request": final_payload,
-                    },
+                    "payload": preview_payload,
                 }
             )
 
