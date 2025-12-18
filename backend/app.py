@@ -2782,10 +2782,18 @@ def _prepare_switch_port_profile_payload(
     switch_section = current_setting.get("switch") if isinstance(current_setting.get("switch"), Mapping) else {}
 
     existing_profile_field = "port_profiles"
-    if isinstance(switch_section, Mapping) and "port_usages" in switch_section:
+    if "port_usages" in current_setting:
         existing_profile_field = "port_usages"
-    existing_profiles = _normalize_port_profile_list(switch_section.get(existing_profile_field))
-    existing_overrides = _normalize_port_override_list(switch_section.get("port_overrides"))
+    elif isinstance(switch_section, Mapping) and "port_usages" in switch_section:
+        existing_profile_field = "port_usages"
+
+    existing_profiles = _normalize_port_profile_list(current_setting.get(existing_profile_field))
+    if not existing_profiles and isinstance(switch_section, Mapping):
+        existing_profiles = _normalize_port_profile_list(switch_section.get(existing_profile_field))
+
+    existing_overrides = _normalize_port_override_list(current_setting.get("port_overrides"))
+    if not existing_overrides and isinstance(switch_section, Mapping):
+        existing_overrides = _normalize_port_override_list(switch_section.get("port_overrides"))
 
     existing_networks = _normalize_network_map(current_setting.get("networks"), sanitize=False)
     if not existing_networks:
@@ -2901,9 +2909,8 @@ def _prepare_switch_port_profile_payload(
     if networks_payload:
         request_body["networks"] = networks_payload
 
-    switch_payload: Dict[str, Any] = {}
     if port_usages_seq:
-        switch_payload["port_usages"] = {
+        request_body["port_usages"] = {
             str(profile.get("name") or "").strip(): _compact_dict(
                 {k: v for k, v in profile.items() if k != "name"}
             )
@@ -2911,14 +2918,11 @@ def _prepare_switch_port_profile_payload(
             if isinstance(profile, Mapping) and str(profile.get("name") or "").strip()
         }
     elif port_profiles_seq:
-        switch_payload[existing_profile_field] = [
+        request_body[existing_profile_field] = [
             _compact_dict(dict(value))
             for value in port_profiles_seq
             if isinstance(value, Mapping)
         ]
-
-    if switch_payload:
-        request_body["switch"] = switch_payload
 
     return request_body, conflict_warnings, rename_map
 
@@ -3355,11 +3359,9 @@ def _build_site_cleanup_payload_for_setting(
     if not preserve_legacy_vlans or not legacy_vlan_ids:
         return {
             "networks": {},
-            "switch": {
-                "port_usages": {},
-                "port_config": {},
-                "port_overrides": [],
-            },
+            "port_usages": {},
+            "port_config": {},
+            "port_overrides": [],
         }
 
     existing_networks = _normalize_network_map(existing_setting.get("networks"), sanitize=False)
@@ -3383,7 +3385,9 @@ def _build_site_cleanup_payload_for_setting(
         cleaned["vlan_id"] = vlan_id
         preserved_networks[name] = cleaned
 
-    existing_port_usages = switch_section.get("port_usages") if isinstance(switch_section, Mapping) else {}
+    existing_port_usages = existing_setting.get("port_usages") if isinstance(existing_setting, Mapping) else {}
+    if not isinstance(existing_port_usages, Mapping) and isinstance(switch_section, Mapping):
+        existing_port_usages = switch_section.get("port_usages")
     preserved_port_usages: Dict[str, Dict[str, Any]] = {}
     if isinstance(existing_port_usages, Mapping):
         for name, cfg in existing_port_usages.items():
@@ -3393,7 +3397,9 @@ def _build_site_cleanup_payload_for_setting(
                 preserved_port_usages[str(name)] = _compact_dict(dict(cfg))
 
     preserved_port_profiles: List[Dict[str, Any]] = []
-    existing_port_profiles = _normalize_port_profile_list(switch_section.get("port_profiles")) if isinstance(switch_section, Mapping) else []
+    existing_port_profiles = _normalize_port_profile_list(existing_setting.get("port_profiles"))
+    if not existing_port_profiles and isinstance(switch_section, Mapping):
+        existing_port_profiles = _normalize_port_profile_list(switch_section.get("port_profiles"))
     for profile in existing_port_profiles:
         if _port_profile_targets_legacy(profile, legacy_vlan_ids):
             preserved_port_profiles.append(_compact_dict(dict(profile)))
@@ -3405,7 +3411,10 @@ def _build_site_cleanup_payload_for_setting(
         if isinstance(p, Mapping) and str(p.get("name") or "").strip()
     }
     override_usage_names: Set[str] = set(preserved_port_usages.keys()) | preserved_profile_names
-    for override in _normalize_port_override_list(switch_section.get("port_overrides")):
+    override_candidates = _normalize_port_override_list(existing_setting.get("port_overrides"))
+    if not override_candidates and isinstance(switch_section, Mapping):
+        override_candidates = _normalize_port_override_list(switch_section.get("port_overrides"))
+    for override in override_candidates:
         if not isinstance(override, Mapping):
             continue
         usage_value = str(override.get("usage") or "").strip()
@@ -3415,21 +3424,19 @@ def _build_site_cleanup_payload_for_setting(
         if _port_usage_references_networks(override, preserved_network_names):
             preserved_overrides.append(_compact_dict(dict(override)))
 
-    switch_payload: Dict[str, Any] = {
+    cleanup_payload: Dict[str, Any] = {
+        "networks": preserved_networks,
         "port_config": {},
         "port_overrides": preserved_overrides,
     }
     if preserved_port_usages:
-        switch_payload["port_usages"] = preserved_port_usages
+        cleanup_payload["port_usages"] = preserved_port_usages
     elif preserved_port_profiles:
-        switch_payload["port_profiles"] = preserved_port_profiles
+        cleanup_payload["port_profiles"] = preserved_port_profiles
     else:
-        switch_payload["port_usages"] = {}
+        cleanup_payload["port_usages"] = {}
 
-    return {
-        "networks": preserved_networks,
-        "switch": switch_payload,
-    }
+    return cleanup_payload
 
 
 @dataclass
@@ -4119,6 +4126,7 @@ def _remove_temporary_config_for_rows(
             device_id = str(row.get("device_id") or "").strip()
             key = (site_id, device_id)
             final_payload = derived_payloads.get(key) or _get_site_deployment_payload(row) or {}
+            cleanup_payload = _cleanup_payload_for_site(site_id)
             preview_payload: Dict[str, Any] = {
                 "cleanup_request": copy.deepcopy(cleanup_payload),
                 "push_request": copy.deepcopy(final_payload) if isinstance(final_payload, Mapping) else {},
@@ -4131,7 +4139,7 @@ def _remove_temporary_config_for_rows(
                     "site_id": site_id,
                     "device_id": device_id,
                     "payload": {
-                        "cleanup_request": _cleanup_payload_for_site(site_id),
+                        "cleanup_request": cleanup_payload,
                         "push_request": final_payload,
                     },
                 }
