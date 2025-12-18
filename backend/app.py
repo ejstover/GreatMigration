@@ -54,9 +54,57 @@ from audit_fixes import execute_audit_action
 from audit_actions import AP_RENAME_ACTION_ID
 from audit_history import load_site_history
 
+def _expand_vlan_id_set(raw: Any, *, base: Optional[Iterable[int]] = None) -> Set[int]:
+    vlan_ids: Set[int] = set(base or [])
+    if raw is None:
+        return vlan_ids
+
+    if isinstance(raw, str):
+        values: Iterable[Any] = [p.strip() for p in raw.split(",") if p.strip()]
+    elif isinstance(raw, (list, tuple, set)):
+        values = raw
+    else:
+        return vlan_ids
+
+    for item in values:
+        if isinstance(item, str):
+            m = re.match(r"^(\d+)\s*-\s*(\d+)$", item)
+            if m:
+                start, end = int(m.group(1)), int(m.group(2))
+                lo, hi = (start, end) if start <= end else (end, start)
+                vlan_ids.update(range(lo, hi + 1))
+                continue
+        try:
+            val = int(item)
+        except (TypeError, ValueError):
+            continue
+        if val >= 0:
+            vlan_ids.add(val)
+    return vlan_ids
+
+
+def _format_vlan_id_set(vlans: Iterable[int]) -> str:
+    items = sorted({int(v) for v in vlans if isinstance(v, (int, float))})
+    if not items:
+        return ""
+    ranges: List[str] = []
+    start = prev = items[0]
+    for v in items[1:]:
+        if v == prev + 1:
+            prev = v
+            continue
+        ranges.append(f"{start}" if start == prev else f"{start}-{prev}")
+        start = prev = v
+    ranges.append(f"{start}" if start == prev else f"{start}-{prev}")
+    return ",".join(ranges)
+
+
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
 DEFAULT_TZ = "America/New_York"
+DEFAULT_LEGACY_VLAN_IDS: Set[int] = set(range(500, 600))
+LEGACY_VLAN_IDS: Set[int] = _expand_vlan_id_set(os.getenv("LEGACY_VLANS"), base=DEFAULT_LEGACY_VLAN_IDS)
+LEGACY_VLAN_LABEL = _format_vlan_id_set(LEGACY_VLAN_IDS) or _format_vlan_id_set(DEFAULT_LEGACY_VLAN_IDS)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
@@ -184,6 +232,7 @@ def _render_page(template_name: str, page_key: str) -> HTMLResponse:
         "{{DOC_TITLE}}": doc_title,
         "{{BANNER_TITLE}}": banner_title,
         "{{BANNER_TAGLINE}}": tagline,
+        "{{LEGACY_VLAN_DEFAULTS}}": LEGACY_VLAN_LABEL,
     }
 
     for key in NAV_LINK_KEYS:
@@ -3253,13 +3302,132 @@ def _build_device_reset_payload() -> Dict[str, Any]:
 
 
 def _build_site_cleanup_payload() -> Dict[str, Any]:
+    return _build_site_cleanup_payload_for_setting({}, preserve_legacy_vlans=False, legacy_vlan_ids=set())
+
+
+def _port_usage_references_networks(config: Mapping[str, Any], network_names: Set[str]) -> bool:
+    if not network_names or not isinstance(config, Mapping):
+        return False
+    direct_keys = (
+        "port_network",
+        "voip_network",
+        "guest_network",
+        "server_reject_network",
+        "server_fail_network",
+        "native_network",
+    )
+    for key in direct_keys:
+        value = config.get(key)
+        if isinstance(value, str) and value in network_names:
+            return True
+    for key in ("networks", "dynamic_vlan_networks"):
+        value = config.get(key)
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                if isinstance(item, str) and item in network_names:
+                    return True
+    return False
+
+
+def _port_profile_targets_legacy(profile: Mapping[str, Any], legacy_vlan_ids: Set[int]) -> bool:
+    if not isinstance(profile, Mapping) or not legacy_vlan_ids:
+        return False
+
+    for key in ("vlan", "voice_vlan", "native_vlan"):
+        value = _int_or_none(profile.get(key))
+        if value is not None and value in legacy_vlan_ids:
+            return True
+
+    allowed = profile.get("allowed_vlans")
+    expanded_allowed = _expand_vlan_id_set(allowed)
+    return bool(expanded_allowed.intersection(legacy_vlan_ids))
+
+
+def _build_site_cleanup_payload_for_setting(
+    existing_setting: Mapping[str, Any],
+    *,
+    preserve_legacy_vlans: bool,
+    legacy_vlan_ids: Set[int],
+) -> Dict[str, Any]:
+    switch_section = existing_setting.get("switch") if isinstance(existing_setting.get("switch"), Mapping) else {}
+
+    if not preserve_legacy_vlans or not legacy_vlan_ids:
+        return {
+            "networks": {},
+            "switch": {
+                "port_usages": {},
+                "port_config": {},
+                "port_overrides": [],
+            },
+        }
+
+    existing_networks = _normalize_network_map(existing_setting.get("networks"), sanitize=False)
+    if not existing_networks:
+        existing_networks = _normalize_network_map(existing_setting.get("vlans"), sanitize=False)
+    if not existing_networks and isinstance(switch_section, Mapping):
+        existing_networks = _normalize_network_map(switch_section.get("networks"), sanitize=False)
+    if not existing_networks and isinstance(switch_section, Mapping):
+        existing_networks = _normalize_network_map(switch_section.get("vlans"), sanitize=False)
+
+    preserved_networks: Dict[str, Dict[str, Any]] = {}
+    preserved_network_names: Set[str] = set()
+    for name, data in existing_networks.items():
+        if not isinstance(data, Mapping):
+            continue
+        vlan_id = _int_or_none(data.get("vlan_id") or data.get("id") or data.get("vlan"))
+        if vlan_id is None or vlan_id not in legacy_vlan_ids:
+            continue
+        preserved_network_names.add(name)
+        cleaned = {k: v for k, v in data.items() if k not in {"name", "id"} and v not in (None, "", [], {})}
+        cleaned["vlan_id"] = vlan_id
+        preserved_networks[name] = cleaned
+
+    existing_port_usages = switch_section.get("port_usages") if isinstance(switch_section, Mapping) else {}
+    preserved_port_usages: Dict[str, Dict[str, Any]] = {}
+    if isinstance(existing_port_usages, Mapping):
+        for name, cfg in existing_port_usages.items():
+            if not isinstance(cfg, Mapping):
+                continue
+            if _port_usage_references_networks(cfg, preserved_network_names):
+                preserved_port_usages[str(name)] = _compact_dict(dict(cfg))
+
+    preserved_port_profiles: List[Dict[str, Any]] = []
+    existing_port_profiles = _normalize_port_profile_list(switch_section.get("port_profiles")) if isinstance(switch_section, Mapping) else []
+    for profile in existing_port_profiles:
+        if _port_profile_targets_legacy(profile, legacy_vlan_ids):
+            preserved_port_profiles.append(_compact_dict(dict(profile)))
+
+    preserved_overrides: List[Dict[str, Any]] = []
+    preserved_profile_names: Set[str] = {
+        str(p.get("name") or "").strip()
+        for p in preserved_port_profiles
+        if isinstance(p, Mapping) and str(p.get("name") or "").strip()
+    }
+    override_usage_names: Set[str] = set(preserved_port_usages.keys()) | preserved_profile_names
+    for override in _normalize_port_override_list(switch_section.get("port_overrides")):
+        if not isinstance(override, Mapping):
+            continue
+        usage_value = str(override.get("usage") or "").strip()
+        if usage_value and usage_value in override_usage_names:
+            preserved_overrides.append(_compact_dict(dict(override)))
+            continue
+        if _port_usage_references_networks(override, preserved_network_names):
+            preserved_overrides.append(_compact_dict(dict(override)))
+
+    switch_payload: Dict[str, Any] = {
+        "port_config": {},
+        "port_overrides": preserved_overrides,
+    }
+    if preserved_port_usages:
+        switch_payload["port_usages"] = preserved_port_usages
+    elif preserved_port_profiles:
+        switch_payload["port_profiles"] = preserved_port_profiles
+    else:
+        switch_payload["port_usages"] = {}
+
     return {
-        "networks": {},
-        "switch": {
-            "port_usages": {},
-            "port_config": {},
-            "port_overrides": [],
-        },
+        "networks": preserved_networks,
+        "switch": switch_payload,
     }
 
 
@@ -3574,10 +3742,15 @@ def _remove_temporary_config_for_rows(
     results: Sequence[Dict[str, Any]],
     *,
     dry_run: bool,
+    preserve_legacy_vlans: bool = True,
+    legacy_vlan_ids: Optional[Set[int]] = None,
 ) -> Dict[str, Any]:
     ok_rows = [r for r in results if r.get("ok") and r.get("site_id") and r.get("device_id")]
     total = len(ok_rows)
     payload_records: List[Dict[str, Any]] = []
+    failures: List[Dict[str, Any]] = []
+    effective_legacy_vlan_ids: Set[int] = set(legacy_vlan_ids or LEGACY_VLAN_IDS or [])
+    preserve_legacy_vlans = bool(preserve_legacy_vlans and effective_legacy_vlan_ids)
 
     def _collect_site_cleanup_targets(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
         sites: Dict[str, Dict[str, Any]] = {}
@@ -3596,8 +3769,49 @@ def _remove_temporary_config_for_rows(
 
     sites = _collect_site_cleanup_targets(ok_rows)
 
+    site_settings: Dict[str, Mapping[str, Any]] = {}
+    if preserve_legacy_vlans:
+        headers = _mist_headers(token)
+        for record in sites.values():
+            site_id = record.get("site_id") or ""
+            if not site_id:
+                continue
+            try:
+                resp = requests.get(f"{base_url}/sites/{site_id}/setting", headers=headers, timeout=60)
+                data = _safe_json_response(resp)
+                if not (200 <= resp.status_code < 300):
+                    raise MistAPIError(resp.status_code, _extract_mist_error(resp), response=data)
+                site_settings[site_id] = data or {}
+            except MistAPIError as exc:
+                failures.append(
+                    {
+                        "site_id": site_id,
+                        "device_ids": record.get("device_ids"),
+                        "status": exc.status_code,
+                        "message": f"Unable to load site settings for cleanup: {exc}",
+                    }
+                )
+                record.setdefault("_errors", []).append((str(exc), exc.status_code))
+            except Exception as exc:  # pragma: no cover - network failures reported to UI
+                failures.append(
+                    {
+                        "site_id": site_id,
+                        "device_ids": record.get("device_ids"),
+                        "status": None,
+                        "message": f"Unable to load site settings for cleanup: {exc}",
+                    }
+                )
+                record.setdefault("_errors", []).append((str(exc), None))
+
+    def _cleanup_payload_for_site(site_id: str) -> Dict[str, Any]:
+        settings = site_settings.get(site_id, {})
+        return _build_site_cleanup_payload_for_setting(
+            settings,
+            preserve_legacy_vlans=preserve_legacy_vlans,
+            legacy_vlan_ids=effective_legacy_vlan_ids,
+        )
+
     if dry_run:
-        cleanup_payload = _build_site_cleanup_payload()
         for row in ok_rows:
             site_id = str(row.get("site_id") or "").strip()
             device_id = str(row.get("device_id") or "").strip()
@@ -3607,37 +3821,37 @@ def _remove_temporary_config_for_rows(
                     "site_id": site_id,
                     "device_id": device_id,
                     "payload": {
-                        "cleanup_request": copy.deepcopy(cleanup_payload),
+                        "cleanup_request": _cleanup_payload_for_site(site_id),
                         "push_request": final_payload,
                     },
                 }
             )
 
         return {
-            "ok": True,
+            "ok": not failures,
             "skipped": True,
             "message": "Skipped cleaning up temporary site configuration during a preview-only run.",
             "successes": 0,
-            "failures": [],
+            "failures": failures,
             "total": total,
             "payloads": payload_records,
             "scope": "site",
         }
 
-    cleanup_payload = _build_site_cleanup_payload()
     successes = 0
-    failures: List[Dict[str, Any]] = []
 
     for record in sites.values():
         site_id = record.get("site_id") or ""
         if not site_id:
+            continue
+        if record.get("_errors"):
             continue
         try:
             cleanup_result = _put_site_settings_payload(
                 base_url,
                 token,
                 site_id,
-                cleanup_payload,
+                _cleanup_payload_for_site(site_id),
             )
             record["cleanup_result"] = cleanup_result
         except MistAPIError as exc:
@@ -3792,6 +4006,7 @@ async def api_push_batch(
     apply_temp_config: bool = Form(False),
     finalize_assignments: bool = Form(False),
     remove_temp_config: bool = Form(False),
+    preserve_legacy_vlans: bool = Form(True),
     stage_site_deployment: bool = Form(False),
     push_site_deployment: bool = Form(False),
 ) -> JSONResponse:
@@ -3811,6 +4026,7 @@ async def api_push_batch(
     apply_temp_config = bool(apply_temp_config)
     finalize_assignments = bool(finalize_assignments)
     remove_temp_config = bool(remove_temp_config)
+    preserve_legacy_vlans = bool(preserve_legacy_vlans)
     site_selection_count = int(stage_site_deployment) + int(push_site_deployment)
     lcm_selection_count = int(apply_temp_config) + int(finalize_assignments) + int(remove_temp_config)
     site_actions_selected = stage_site_deployment or push_site_deployment
@@ -4052,6 +4268,8 @@ async def api_push_batch(
             token=token,
             results=results,
             dry_run=preview_only,
+            preserve_legacy_vlans=preserve_legacy_vlans,
+            legacy_vlan_ids=LEGACY_VLAN_IDS,
         )
 
     for row in results:
