@@ -264,9 +264,9 @@ def test_prepare_payload_excludes_port_overrides(monkeypatch, app_module):
         "https://example.com/api/v1", "token", "site-1", payload
     )
 
-    switch_body = request_body.get("switch", {})
-    assert "port_overrides" not in switch_body
-    assert "port_usages" in switch_body
+    assert "switch" not in request_body
+    assert "port_overrides" not in request_body
+    assert "port_usages" in request_body
     assert warnings == []
     assert rename_map == {}
 
@@ -356,11 +356,9 @@ def test_remove_temp_config_returns_preview_when_dry_run(monkeypatch, app_module
     preview = payloads[0]["payload"]
     assert preview["cleanup_request"] == {
         "networks": {},
-        "switch": {
-            "port_usages": {},
-            "port_config": {},
-            "port_overrides": [],
-        },
+        "port_usages": {},
+        "port_config": {},
+        "port_overrides": [],
     }
     assert preview["push_request"]["port_config"]["ge-0/0/1"]["usage"] == "derived_user"
 
@@ -415,18 +413,17 @@ def test_remove_temp_config_wipes_and_pushes(monkeypatch, app_module):
     assert result["ok"] is True
     assert result["successes"] == 1
     assert result["failures"] == []
-    assert len(calls) == 3
-    assert calls[0]["url"] == "https://example.com/api/v1/sites/site-1/setting"
+    assert len(calls) == 4
+    assert calls[0]["url"] == "https://example.com/api/v1/sites/site-1/devices/device-1/config_cmd"
     assert calls[1]["url"] == "https://example.com/api/v1/sites/site-1/setting"
-    assert calls[1]["json"] == {
+    assert calls[2]["url"] == "https://example.com/api/v1/sites/site-1/setting"
+    assert calls[2]["json"] == {
         "networks": {},
-        "switch": {
-            "port_usages": {},
-            "port_config": {},
-            "port_overrides": [],
-        },
+        "port_usages": {},
+        "port_config": {},
+        "port_overrides": [],
     }
-    assert calls[2]["json"] == final_payload
+    assert calls[3]["json"] == final_payload
 
 
 def test_remove_temp_config_preserves_legacy_vlan(monkeypatch, app_module):
@@ -494,13 +491,13 @@ def test_remove_temp_config_preserves_legacy_vlan(monkeypatch, app_module):
     assert result["ok"] is True
     assert result["successes"] == 1
     assert result["failures"] == []
-    assert [call.get("method") for call in calls] == ["get", "put", "put"]
-    cleanup = calls[1]["json"]
+    assert [call.get("method") for call in calls] == ["get", "get", "put", "put"]
+    cleanup = calls[2]["json"]
     assert cleanup["networks"] == {"legacy_net": {"vlan_id": 501, "note": "keep"}}
-    assert cleanup["switch"].get("port_usages") == {
+    assert cleanup.get("port_usages") == {
         "legacy_profile": {"port_network": "legacy_net", "note": "keep"}
     }
-    assert cleanup["switch"].get("port_overrides") == [{"port_id": "1", "usage": "legacy_profile"}]
+    assert cleanup.get("port_overrides") == [{"port_id": "1", "usage": "legacy_profile"}]
 
 def test_load_site_history_parses_breakdown(tmp_path):
     from audit_history import load_site_history
