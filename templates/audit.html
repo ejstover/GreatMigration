@@ -517,13 +517,7 @@
         return link;
       }
 
-      function renderFindings(list, severity) {
-        if (!list.length) {
-          const ok = document.createElement('div');
-          ok.className = 'rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 dark:bg-emerald-900/40 dark:border-emerald-700 dark:text-emerald-200 px-4 py-3 text-sm';
-          ok.textContent = 'No issues detected for this check.';
-          return ok;
-        }
+      function renderFindingList(list) {
         const container = document.createElement('div');
         container.className = 'space-y-3';
         list.forEach(finding => {
@@ -588,6 +582,48 @@
           }
           container.appendChild(item);
         });
+        return container;
+      }
+
+      function renderCategorizedFindings(siteFindings, deviceFindings, fallbackFindings) {
+        const hasCategorizedData = (siteFindings && siteFindings.length) || (deviceFindings && deviceFindings.length);
+        const effectiveFallback = Array.isArray(fallbackFindings) ? fallbackFindings : [];
+
+        if (!hasCategorizedData) {
+          if (!effectiveFallback.length) {
+            const ok = document.createElement('div');
+            ok.className = 'rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 dark:bg-emerald-900/40 dark:border-emerald-700 dark:text-emerald-200 px-4 py-3 text-sm';
+            ok.textContent = 'No issues detected for this check.';
+            return ok;
+          }
+          return renderFindingList(effectiveFallback);
+        }
+
+        const container = document.createElement('div');
+        container.className = 'space-y-4';
+
+        if (siteFindings && siteFindings.length) {
+          const section = document.createElement('div');
+          section.className = 'space-y-2';
+          const heading = document.createElement('h4');
+          heading.className = 'text-sm font-semibold text-slate-700 dark:text-slate-200';
+          heading.textContent = 'Site-level findings';
+          section.appendChild(heading);
+          section.appendChild(renderFindingList(siteFindings));
+          container.appendChild(section);
+        }
+
+        if (deviceFindings && deviceFindings.length) {
+          const section = document.createElement('div');
+          section.className = 'space-y-2';
+          const heading = document.createElement('h4');
+          heading.className = 'text-sm font-semibold text-slate-700 dark:text-slate-200';
+          heading.textContent = 'Device-level findings';
+          section.appendChild(heading);
+          section.appendChild(renderFindingList(deviceFindings));
+          container.appendChild(section);
+        }
+
         return container;
       }
 
@@ -678,8 +714,11 @@
               heading.appendChild(tip);
             }
           }
-          const findings = Array.isArray(check.findings) ? check.findings : [];
-          const badgeSeverity = findings.length ? check.severity : 'success';
+          const siteFindings = Array.isArray(check.site_level_findings) ? check.site_level_findings : [];
+          const deviceFindings = Array.isArray(check.device_level_findings) ? check.device_level_findings : [];
+          const fallbackFindings = Array.isArray(check.findings) ? check.findings : [];
+          const totalFindingsForBadge = siteFindings.length + deviceFindings.length + (!siteFindings.length && !deviceFindings.length ? fallbackFindings.length : 0);
+          const badgeSeverity = totalFindingsForBadge ? check.severity : 'success';
           const badge = createSeverityBadge(badgeSeverity);
           const controls = document.createElement('div');
           controls.className = 'flex items-center gap-2';
@@ -749,7 +788,7 @@
             stats.innerHTML = `<span><strong>${passingCount}</strong> site${passingCount === 1 ? '' : 's'} passing</span><span><strong>${failingCount}</strong> site${failingCount === 1 ? '' : 's'} with findings</span>`;
             card.appendChild(stats);
 
-            card.appendChild(renderFindings(findings, check.severity));
+            card.appendChild(renderCategorizedFindings(siteFindings, deviceFindings, fallbackFindings));
             mainColumn.appendChild(card);
           });
         }

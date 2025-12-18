@@ -1722,6 +1722,40 @@ class FirmwareManagementCheck(ComplianceCheck):
         return findings
 
 
+class CloudManagementCheck(ComplianceCheck):
+    id = "cloud_management"
+    name = "Cloud Management"
+    description = "Ensure switches are managed by Juniper Mist cloud."
+    severity = "warning"
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        findings: List[Finding] = []
+        for device in context.devices:
+            if not isinstance(device, dict):
+                continue
+            if not _is_switch(device):
+                continue
+            if device.get("managed") is True:
+                continue
+
+            device_id = str(device.get("id")) if device.get("id") is not None else None
+            device_name = _normalize_site_name(device) or device_id or "device"
+            findings.append(
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    device_id=device_id,
+                    device_name=device_name,
+                    message=(
+                        f"Switch '{device_name}' configuration is currently locally managed "
+                        "and not managed by Juniper Mist cloud."
+                    ),
+                    details={"managed": device.get("managed")},
+                )
+            )
+        return findings
+
+
 class DeviceNamingConventionCheck(ComplianceCheck):
     id = "device_naming_convention"
     name = "Device naming convention"
@@ -2054,13 +2088,25 @@ class SiteAuditRunner:
                         break
             failing_site_ids = sorted({finding.site_id for finding in check_findings})
             actions = check.suggest_actions(contexts, check_findings) or []
+            findings_payload: List[Dict[str, Any]] = []
+            site_level_findings: List[Dict[str, Any]] = []
+            device_level_findings: List[Dict[str, Any]] = []
+            for finding in check_findings:
+                payload = finding.as_dict(check.severity)
+                findings_payload.append(payload)
+                if finding.device_id or finding.device_name:
+                    device_level_findings.append(payload)
+                else:
+                    site_level_findings.append(payload)
             results.append(
                 {
                     "id": check.id,
                     "name": check.name,
                     "description": check.description,
                     "severity": check.severity,
-                    "findings": [finding.as_dict(check.severity) for finding in check_findings],
+                    "findings": findings_payload,
+                    "site_level_findings": site_level_findings,
+                    "device_level_findings": device_level_findings,
                     "failing_sites": failing_site_ids,
                     "passing_sites": max(total_sites - len(failing_site_ids), 0),
                     "actions": actions,
@@ -2082,6 +2128,7 @@ DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
     SwitchTemplateConfigurationCheck(),
     ConfigurationOverridesCheck(),
     FirmwareManagementCheck(),
+    CloudManagementCheck(),
     DeviceNamingConventionCheck(),
     DeviceDocumentationCheck(),
 )
