@@ -2710,8 +2710,6 @@ def _prepare_switch_port_profile_payload(
         networks_new = _normalize_network_map(payload.get("vlans"), sanitize=True)
     port_profiles_new = payload.get("port_profiles")
     port_usages_new = payload.get("port_usages")
-    port_overrides_new = payload.get("port_overrides")
-    port_config_new = payload.get("port_config")
 
     port_profiles_seq = _normalize_port_profile_list(port_profiles_new)
     port_usages_seq = _normalize_port_profile_list(port_usages_new)
@@ -2720,8 +2718,6 @@ def _prepare_switch_port_profile_payload(
         not networks_new
         and not port_profiles_seq
         and not port_usages_seq
-        and not port_overrides_new
-        and not port_config_new
     ):
         return {}, [], {}
 
@@ -2779,23 +2775,6 @@ def _prepare_switch_port_profile_payload(
         port_usages_seq,
         existing_conflicts,
     )
-
-    if rename_map:
-        if isinstance(port_config_new, Mapping):
-            port_config_new = {key: dict(value) for key, value in port_config_new.items() if isinstance(value, Mapping)}
-            for cfg in port_config_new.values():
-                _rename_network_fields(cfg, rename_map)
-        if isinstance(port_overrides_new, Sequence) and not isinstance(
-            port_overrides_new, (str, bytes, bytearray)
-        ):
-            updated_overrides: List[Dict[str, Any]] = []
-            for override in port_overrides_new:
-                if not isinstance(override, Mapping):
-                    continue
-                new_override = dict(override)
-                _rename_network_fields(new_override, rename_map)
-                updated_overrides.append(new_override)
-            port_overrides_new = updated_overrides
 
     removed_network_names = original_network_keys - set(networks_new.keys())
     if rename_map:
@@ -2867,58 +2846,6 @@ def _prepare_switch_port_profile_payload(
                 )
             )
 
-    blocked_usage_names = set(skipped_usage_names)
-
-    def _should_skip_config(record: Mapping[str, Any]) -> bool:
-        if not isinstance(record, Mapping):
-            return False
-        usage = record.get("usage")
-        if isinstance(usage, str) and usage in blocked_usage_names:
-            return True
-        return _record_targets_removed_network(record)
-
-    skipped_port_ids: List[str] = []
-    if removed_network_names and isinstance(port_config_new, Mapping):
-        filtered_config: Dict[str, Dict[str, Any]] = {}
-        for port_id, cfg in port_config_new.items():
-            port_key = str(port_id)
-            if not isinstance(cfg, Mapping):
-                continue
-            if _should_skip_config(cfg):
-                skipped_port_ids.append(port_key)
-                continue
-            filtered_config[port_key] = dict(cfg)
-        if skipped_port_ids:
-            port_config_new = filtered_config
-            conflict_warnings.append(
-                "Skipped {count} switchport assignment(s) because their VLAN assignments already exist on Mist: {names}.".format(
-                    count=len(skipped_port_ids),
-                    names=", ".join(sorted(skipped_port_ids)),
-                )
-            )
-
-    if removed_network_names and isinstance(port_overrides_new, Sequence) and not isinstance(
-        port_overrides_new, (str, bytes, bytearray)
-    ):
-        filtered_overrides: List[Dict[str, Any]] = []
-        skipped_override_ports: List[str] = []
-        for override in port_overrides_new:
-            if not isinstance(override, Mapping):
-                continue
-            if _should_skip_config(override):
-                port_id = str(override.get("port_id") or "").strip()
-                if port_id:
-                    skipped_override_ports.append(port_id)
-                continue
-            filtered_overrides.append(dict(override))
-        if skipped_override_ports:
-            port_overrides_new = filtered_overrides
-            conflict_warnings.append(
-                "Skipped {count} port override(s) because their VLAN assignments already exist on Mist: {names}.".format(
-                    count=len(skipped_override_ports),
-                    names=", ".join(sorted(skipped_override_ports)),
-                )
-            )
     request_body: Dict[str, Any] = {}
     networks_payload = _merge_new_vlan_networks(existing_networks, networks_new, existing_vlan_ids)
     if networks_payload:
@@ -2939,38 +2866,6 @@ def _prepare_switch_port_profile_payload(
             for value in port_profiles_seq
             if isinstance(value, Mapping)
         ]
-
-    if isinstance(port_overrides_new, Sequence) and not isinstance(
-        port_overrides_new, (str, bytes, bytearray)
-    ):
-        overrides_payload: Dict[Tuple[str, str], Dict[str, Any]] = {}
-
-        def _override_key(override: Mapping[str, Any]) -> Optional[Tuple[str, str]]:
-            port_id = str(override.get("port_id") or "").strip()
-            if not port_id:
-                return None
-            device_id = str(override.get("device_id") or "").strip()
-            return (device_id, port_id)
-
-        for override in existing_overrides:
-            if not isinstance(override, Mapping):
-                continue
-            key = _override_key(override)
-            if key:
-                overrides_payload[key] = dict(override)
-
-        for override in port_overrides_new:
-            if not isinstance(override, Mapping):
-                continue
-            updated_override = dict(override)
-            if default_device_id and not updated_override.get("device_id"):
-                updated_override["device_id"] = default_device_id
-            key = _override_key(updated_override)
-            if key:
-                overrides_payload[key] = updated_override
-
-        if overrides_payload:
-            switch_payload["port_overrides"] = list(overrides_payload.values())
 
     if switch_payload:
         request_body["switch"] = switch_payload
@@ -3202,8 +3097,7 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
 
     port_profiles: Dict[Tuple, Dict[str, Any]] = {}
     port_usage_payloads: Dict[str, Dict[str, Any]] = {}
-    port_config: Dict[str, Dict[str, Any]] = {}
-    port_overrides: List[Dict[str, Any]] = []
+    assignments_found = False
 
     networks: List[Dict[str, Any]] = []
     seen_vlan_ids: set[int] = set()
@@ -3318,41 +3212,7 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
                 }
             )
 
-        description = str(intf.get("description") or "").strip()
-        shutdown = bool(intf.get("shutdown"))
-
-        port_config[juniper_if] = _compact_dict(
-            {
-                "usage": profile_name,
-                "mode": mode,
-                "port_network": data_network if mode == "access" else native_network,
-                "voip_network": voice_network,
-                "networks": list(allowed_networks) if allowed_networks else None,
-                "description": description,
-                "disabled": shutdown,
-                "source_interface": str(intf.get("name") or "").strip() or None,
-            }
-        )
-
-        port_overrides.append(
-            _compact_dict(
-                {
-                    "port_id": juniper_if,
-                    "usage": profile_name,
-                    "mode": mode,
-                    "port_network": data_network if mode == "access" else native_network,
-                    "voip_network": voice_network,
-                    "networks": list(allowed_networks) if allowed_networks else None,
-                    "description": description,
-                    "disabled": shutdown,
-                    "source_interface": str(intf.get("name") or "").strip() or None,
-                    "members": list(members) if members else None,
-                }
-            )
-        )
-
-    if not port_config:
-        return None
+        assignments_found = True
 
     usage_payload: Dict[str, Dict[str, Any]] = {}
     for name, profile in port_usage_payloads.items():
@@ -3360,11 +3220,12 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
         if cleaned:
             usage_payload[name] = cleaned
 
+    if not assignments_found or (not usage_payload and not port_profiles):
+        return None
+
     payload: Dict[str, Any] = {
         "port_usages": usage_payload,
         "port_profiles": list(port_profiles.values()),
-        "port_config": port_config,
-        "port_overrides": port_overrides,
     }
     if networks:
         payload["networks"] = networks
@@ -3548,8 +3409,6 @@ def _finalize_assignments_for_rows(
         for key in (
             "port_profiles",
             "port_usages",
-            "port_overrides",
-            "port_config",
             "networks",
             "vlans",
         ):
