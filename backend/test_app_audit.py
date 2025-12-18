@@ -359,9 +359,8 @@ def test_remove_temp_config_wipes_and_pushes(monkeypatch, app_module):
         "networks": {},
         "switch": {
             "port_usages": {},
-            "port_usage": {},
             "port_config": {},
-            "port_overrides": {},
+            "port_overrides": [],
         },
     }
     assert calls[1]["json"] == final_payload

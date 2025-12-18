@@ -3386,11 +3386,8 @@ def _get_site_deployment_payload(row: Mapping[str, Any]) -> Optional[Dict[str, A
 
 def _build_device_reset_payload() -> Dict[str, Any]:
     return {
-        "networks": {},
-        "port_usages": {},
-        "port_usage": {},
         "port_config": {},
-        "port_overrides": {},
+        "port_overrides": [],
     }
 
 
@@ -3399,9 +3396,8 @@ def _build_site_cleanup_payload() -> Dict[str, Any]:
         "networks": {},
         "switch": {
             "port_usages": {},
-            "port_usage": {},
             "port_config": {},
-            "port_overrides": {},
+            "port_overrides": [],
         },
     }
 
