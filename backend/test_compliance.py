@@ -9,6 +9,7 @@ from compliance import (
     ConfigurationOverridesCheck,
     FirmwareManagementCheck,
     CloudManagementCheck,
+    SpareSwitchPresenceCheck,
     DeviceNamingConventionCheck,
     DeviceDocumentationCheck,
     SiteAuditRunner,
@@ -472,6 +473,47 @@ def test_cloud_management_check_ignores_non_switch_devices():
 
     check = CloudManagementCheck()
     assert check.run(ctx) == []
+
+
+def test_spare_switch_presence_flags_missing_spare():
+    ctx = SiteContext(
+        site_id="site-spare-1",
+        site_name="Branch",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-1", "name": "SW-1", "type": "switch", "role": "distribution"},
+            {"id": "sw-2", "name": "SW-2", "type": "switch", "role": "ACCESS"},
+        ],
+    )
+
+    check = SpareSwitchPresenceCheck()
+    findings = check.run(ctx)
+
+    assert len(findings) == 1
+    assert findings[0].device_id is None
+    assert "role 'spare'" in findings[0].message
+    assert findings[0].details == {"total_switches": 2, "spare_switches": 0}
+
+
+def test_spare_switch_presence_allows_spare_role():
+    ctx = SiteContext(
+        site_id="site-spare-2",
+        site_name="Branch",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-1", "name": "SW-1", "type": "switch", "role": "spare"},
+            {"id": "ap-1", "name": "AP-1", "type": "ap", "role": "spare"},
+        ],
+    )
+
+    check = SpareSwitchPresenceCheck()
+    findings = check.run(ctx)
+
+    assert findings == []
 
 
 def test_configuration_overrides_check_includes_offline_devices():

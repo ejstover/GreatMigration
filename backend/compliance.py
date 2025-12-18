@@ -1756,6 +1756,41 @@ class CloudManagementCheck(ComplianceCheck):
         return findings
 
 
+class SpareSwitchPresenceCheck(ComplianceCheck):
+    id = "spare_switch_presence"
+    name = "Spare switch presence"
+    description = "Ensure each site has at least one spare switch available."
+    severity = "warning"
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        findings: List[Finding] = []
+
+        switches = [device for device in context.devices if isinstance(device, dict) and _is_switch(device)]
+        if not switches:
+            return findings
+
+        spare_count = 0
+        for device in switches:
+            role = device.get("role")
+            if isinstance(role, str) and role.strip().lower() == "spare":
+                spare_count += 1
+
+        if spare_count == 0:
+            findings.append(
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    message="Site does not have a switch with role 'spare'.",
+                    details={
+                        "total_switches": len(switches),
+                        "spare_switches": spare_count,
+                    },
+                )
+            )
+
+        return findings
+
+
 class DeviceNamingConventionCheck(ComplianceCheck):
     id = "device_naming_convention"
     name = "Device naming convention"
@@ -2129,6 +2164,7 @@ DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
     ConfigurationOverridesCheck(),
     FirmwareManagementCheck(),
     CloudManagementCheck(),
+    SpareSwitchPresenceCheck(),
     DeviceNamingConventionCheck(),
     DeviceDocumentationCheck(),
 )
