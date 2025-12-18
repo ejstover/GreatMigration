@@ -105,7 +105,9 @@ DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
 DEFAULT_TZ = "America/New_York"
 DEFAULT_LEGACY_VLAN_IDS: Set[int] = set(range(500, 600))
 LEGACY_VLAN_IDS: Set[int] = _expand_vlan_id_set(os.getenv("LEGACY_VLANS"), base=DEFAULT_LEGACY_VLAN_IDS)
+EXCLUDE_VLAN_IDS: Set[int] = _expand_vlan_id_set(os.getenv("EXCLUDE_VLANS"))
 LEGACY_VLAN_LABEL = _format_vlan_id_set(LEGACY_VLAN_IDS) or _format_vlan_id_set(DEFAULT_LEGACY_VLAN_IDS)
+LEGACY_PREFIX = "legacy_"
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
@@ -2179,6 +2181,12 @@ def _compact_dict(data: Mapping[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in data.items() if v not in (None, "", [], {}, set())}
 
 
+def _should_use_legacy_prefix(vlan_id: Optional[int]) -> bool:
+    if vlan_id is None:
+        return True
+    return vlan_id not in EXCLUDE_VLAN_IDS
+
+
 def _generate_temp_network_name(vlan_id: int, raw_name: Optional[str]) -> str:
     base = str(raw_name or "").strip()
     if base:
@@ -2188,9 +2196,10 @@ def _generate_temp_network_name(vlan_id: int, raw_name: Optional[str]) -> str:
         base = base.strip("-_")
     if not base:
         base = f"vlan{vlan_id}"
+    apply_prefix = _should_use_legacy_prefix(vlan_id)
     lowered = base.lower()
-    if not lowered.startswith("old_"):
-        base = f"old_{base}"
+    if apply_prefix and not lowered.startswith(LEGACY_PREFIX):
+        base = f"{LEGACY_PREFIX}{base}"
 
     name = base.lower()
 
@@ -2198,11 +2207,13 @@ def _generate_temp_network_name(vlan_id: int, raw_name: Optional[str]) -> str:
         digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]
         # Leave space for underscore + digest (7 characters)
         prefix = name[: max(32 - 7, 4)].rstrip("-_")
-        name = f"{prefix}_{digest}" if prefix else f"old_{digest}"
+        fallback_prefix = LEGACY_PREFIX.rstrip("_") if apply_prefix else "vlan"
+        name = f"{prefix}_{digest}" if prefix else f"{fallback_prefix}_{digest}"
 
     # Mist network names must start with a letter; ensure the prefix guarantees it
     if not name or not name[0].isalpha():
-        name = f"old_{name}"
+        fallback_prefix = LEGACY_PREFIX if apply_prefix else "vlan_"
+        name = f"{fallback_prefix}{name}"
         if len(name) > 32:
             name = name[:32]
 
@@ -2516,7 +2527,14 @@ def _build_port_profile_signature(port: NormalizedPort) -> Tuple:
     )
 
 
-def _generate_profile_name_from_signature(sig: Tuple) -> str:
+def _should_prefix_port_profile(vlan_values: Iterable[Optional[int]]) -> bool:
+    vlan_ids = [v for v in vlan_values if v is not None]
+    if not vlan_ids:
+        return True
+    return any(_should_use_legacy_prefix(v) for v in vlan_ids)
+
+
+def _generate_profile_name_from_signature(sig: Tuple, *, legacy_prefix: bool = True) -> str:
     (mode, access_vlan, voice_vlan, native_vlan, allowed_norm, poe, stp_edge, bpdu_guard, is_lag) = sig
     parts: List[str] = []
     if is_lag:
@@ -2542,6 +2560,8 @@ def _generate_profile_name_from_signature(sig: Tuple) -> str:
         parts.append("BPDUG")
 
     base = "AUTO_" + "_".join(parts)
+    if legacy_prefix and not base.lower().startswith(LEGACY_PREFIX):
+        base = f"{LEGACY_PREFIX}{base}"
     if len(base) > 63:
         digest = hashlib.sha1(base.encode("utf-8")).hexdigest()[:6]
         base = f"{base[:55]}_{digest}"
@@ -3234,7 +3254,12 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
         )
 
         sig = _build_port_profile_signature(normalized)
-        profile_name = _generate_profile_name_from_signature(sig)
+        vlan_values_for_prefix = set(allowed_vlan_ids)
+        vlan_values_for_prefix.update(v for v in (data_vlan, voice_vlan, native_vlan) if v is not None)
+        profile_name = _generate_profile_name_from_signature(
+            sig,
+            legacy_prefix=_should_prefix_port_profile(vlan_values_for_prefix),
+        )
         if sig not in port_profiles:
             port_profiles[sig] = _build_port_profile_payload(profile_name, sig)
 
