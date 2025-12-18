@@ -336,6 +336,12 @@ def test_remove_temp_config_returns_preview_when_dry_run(monkeypatch, app_module
         "_site_deployment_payload": {"port_config": {"ge-0/0/1": {"usage": "end_user"}}},
     }
 
+    monkeypatch.setattr(
+        app_module,
+        "_derive_port_config_from_config_cmd",
+        lambda *args, **kwargs: {"ge-0/0/1": {"usage": "derived_user"}},
+    )
+
     result = app_module._remove_temporary_config_for_rows(
         "https://example.com/api/v1",
         "token",
@@ -356,7 +362,7 @@ def test_remove_temp_config_returns_preview_when_dry_run(monkeypatch, app_module
             "port_overrides": [],
         },
     }
-    assert preview["push_request"]["port_config"]["ge-0/0/1"]["usage"] == "end_user"
+    assert preview["push_request"]["port_config"]["ge-0/0/1"]["usage"] == "derived_user"
 
 
 def test_remove_temp_config_wipes_and_pushes(monkeypatch, app_module):

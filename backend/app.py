@@ -41,6 +41,7 @@ from push_mist_port_config import (  # type: ignore
     remap_members,
     remap_ports,
     validate_port_config_against_model,
+    map_interfaces_to_port_config,
 )
 from translate_showtech import (
     parse_showtech,
@@ -3431,6 +3432,287 @@ def _build_site_cleanup_payload_for_setting(
     }
 
 
+@dataclass
+class _ConfigCmdInterface:
+    name: str
+    mode: Optional[str] = None
+    data_vlan: Optional[int] = None
+    voice_vlan: Optional[int] = None
+    native_vlan: Optional[int] = None
+    allowed_vlans: Set[int] = None  # type: ignore[assignment]
+    description: Optional[str] = None
+    apply_groups: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.allowed_vlans is None:
+            self.allowed_vlans = set()
+
+
+def _parse_vlan_value(token: Optional[str], vlan_map: Mapping[str, int]) -> Optional[int]:
+    if token is None:
+        return None
+    key = str(token).strip()
+    if not key:
+        return None
+    if key in vlan_map:
+        return vlan_map[key]
+    try:
+        return int(key)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_list_tokens(tokens: Sequence[str]) -> List[str]:
+    items: List[str] = []
+    for token in tokens:
+        cleaned = str(token or "").strip()
+        if not cleaned or cleaned in {"[", "]"}:
+            continue
+        items.append(cleaned.strip('"'))
+    return items
+
+
+def _apply_vlan_members(target: _ConfigCmdInterface, members: Sequence[str], vlan_map: Mapping[str, int]) -> None:
+    vlan_ids = [_parse_vlan_value(item, vlan_map) for item in members]
+    vlan_ids = [vid for vid in vlan_ids if vid is not None]
+    if not vlan_ids:
+        return
+
+    if target.mode == "access" and len(vlan_ids) == 1:
+        target.data_vlan = vlan_ids[0]
+    else:
+        if target.mode == "access" and vlan_ids and target.data_vlan is None:
+            target.data_vlan = vlan_ids[0]
+        target.allowed_vlans.update(vlan_ids)
+
+
+def _merge_interface_settings(base: _ConfigCmdInterface, update: _ConfigCmdInterface) -> _ConfigCmdInterface:
+    if update.mode:
+        base.mode = update.mode
+    if update.data_vlan is not None:
+        base.data_vlan = update.data_vlan
+    if update.voice_vlan is not None:
+        base.voice_vlan = update.voice_vlan
+    if update.native_vlan is not None:
+        base.native_vlan = update.native_vlan
+    if update.allowed_vlans:
+        if base.allowed_vlans:
+            base.allowed_vlans.update(update.allowed_vlans)
+        else:
+            base.allowed_vlans = set(update.allowed_vlans)
+    if update.description:
+        base.description = update.description
+    if update.apply_groups:
+        combined = list(base.apply_groups)
+        for name in update.apply_groups:
+            if name not in combined:
+                combined.append(name)
+        base.apply_groups = tuple(combined)
+    return base
+
+
+def _parse_config_cmd_interfaces(cli_lines: Sequence[str]) -> List[Dict[str, Any]]:
+    vlan_map: Dict[str, int] = {}
+    range_members: Dict[str, Set[str]] = {}
+    range_settings: Dict[str, _ConfigCmdInterface] = {}
+    interface_settings: Dict[str, _ConfigCmdInterface] = {}
+    group_settings: Dict[str, _ConfigCmdInterface] = {}
+
+    if not isinstance(cli_lines, Sequence) or isinstance(cli_lines, (str, bytes, bytearray)):
+        return []
+
+    interface_range_re = re.compile(r"^(?P<prefix>[a-zA-Z]+-\d+/\d+/)(?P<port>\d+)$")
+
+    def _expand_member_range(start: str, end: str) -> List[str]:
+        m_start = interface_range_re.match(start)
+        m_end = interface_range_re.match(end)
+        if not m_start or not m_end:
+            return [start, end]
+        if m_start.group("prefix") != m_end.group("prefix"):
+            return [start, end]
+        try:
+            s_port = int(m_start.group("port"))
+            e_port = int(m_end.group("port"))
+        except ValueError:
+            return [start, end]
+        step = 1 if s_port <= e_port else -1
+        return [f"{m_start.group('prefix')}{i}" for i in range(s_port, e_port + step, step)]
+
+    def _ensure_settings(container: Dict[str, _ConfigCmdInterface], name: str) -> _ConfigCmdInterface:
+        if name not in container:
+            container[name] = _ConfigCmdInterface(name=name)
+        return container[name]
+
+    def _populate_settings(target: _ConfigCmdInterface, tokens: Sequence[str]) -> None:
+        if not tokens:
+            return
+        if tokens[0] == "description":
+            target.description = " ".join(tokens[1:]).strip('"')
+            return
+        if tokens[0] == "apply-groups":
+            groups = _parse_list_tokens(tokens[1:])
+            target.apply_groups = tuple(groups)
+            return
+
+        idx = 0
+        while idx < len(tokens):
+            token = tokens[idx]
+            if token == "unit" and idx + 1 < len(tokens):
+                idx += 2
+                continue
+            if token == "family" and idx + 1 < len(tokens):
+                family = tokens[idx + 1]
+                if family == "ethernet-switching":
+                    idx += 2
+                    while idx < len(tokens):
+                        part = tokens[idx]
+                        if part in {"port-mode", "interface-mode"} and idx + 1 < len(tokens):
+                            target.mode = tokens[idx + 1].lower()
+                            idx += 2
+                            continue
+                        if part == "vlan":
+                            if idx + 1 >= len(tokens):
+                                break
+                            subtype = tokens[idx + 1]
+                            if subtype == "members":
+                                members = _parse_list_tokens(tokens[idx + 2 :])
+                                _apply_vlan_members(target, members, vlan_map)
+                                idx = len(tokens)
+                                break
+                            if subtype == "voice" and idx + 2 < len(tokens):
+                                target.voice_vlan = _parse_vlan_value(tokens[idx + 2], vlan_map)
+                                idx += 3
+                                continue
+                        if part == "native-vlan-id" and idx + 1 < len(tokens):
+                            target.native_vlan = _parse_vlan_value(tokens[idx + 1], vlan_map)
+                            idx += 2
+                            continue
+                        idx += 1
+                    break
+            idx += 1
+
+    for raw_line in cli_lines:
+        if not isinstance(raw_line, str):
+            continue
+        line = raw_line.strip()
+        if not line or not line.startswith("set "):
+            continue
+        tokens = line.split()
+        if len(tokens) < 3:
+            continue
+        if tokens[1] == "vlans":
+            if len(tokens) >= 4 and tokens[3] == "vlan-id":
+                vlan_id = _parse_vlan_value(tokens[4] if len(tokens) > 4 else None, vlan_map)
+                vlan_name = tokens[2]
+                if vlan_id is not None:
+                    vlan_map[vlan_name] = vlan_id
+            continue
+
+        if tokens[1] == "interfaces":
+            if tokens[2] == "interface-range" and len(tokens) >= 4:
+                range_name = tokens[3]
+                remainder = tokens[4:]
+                if not remainder:
+                    continue
+                if remainder[0] == "member" and len(remainder) >= 2:
+                    members = _parse_list_tokens(remainder[1:2])
+                    if members:
+                        range_members.setdefault(range_name, set()).update(members)
+                    continue
+                if remainder[0] == "member-range" and len(remainder) >= 4 and remainder[2] == "to":
+                    expanded = _expand_member_range(remainder[1], remainder[3])
+                    range_members.setdefault(range_name, set()).update(expanded)
+                    continue
+                settings = _ensure_settings(range_settings, range_name)
+                _populate_settings(settings, remainder)
+            else:
+                ifname = tokens[2]
+                settings = _ensure_settings(interface_settings, ifname)
+                _populate_settings(settings, tokens[3:])
+            continue
+
+        if tokens[1] == "groups" and len(tokens) >= 4 and tokens[3] == "interfaces":
+            group_name = tokens[2]
+            settings = _ensure_settings(group_settings, group_name)
+            _populate_settings(settings, tokens[4:])
+            continue
+
+    interface_names: Set[str] = set(interface_settings.keys())
+    for members in range_members.values():
+        interface_names.update(members)
+
+    interfaces: List[Dict[str, Any]] = []
+    for ifname in sorted(interface_names):
+        merged = _ConfigCmdInterface(name=ifname)
+        for range_name, members in range_members.items():
+            if ifname not in members:
+                continue
+            range_setting = range_settings.get(range_name)
+            if range_setting:
+                for grp in range_setting.apply_groups:
+                    group_setting = group_settings.get(grp)
+                    if group_setting:
+                        _merge_interface_settings(merged, group_setting)
+                _merge_interface_settings(merged, range_setting)
+
+        iface_setting = interface_settings.get(ifname)
+        if iface_setting:
+            for grp in iface_setting.apply_groups:
+                group_setting = group_settings.get(grp)
+                if group_setting:
+                    _merge_interface_settings(merged, group_setting)
+            _merge_interface_settings(merged, iface_setting)
+
+        if (
+            not merged.mode
+            and not merged.allowed_vlans
+            and merged.data_vlan is None
+            and merged.voice_vlan is None
+            and merged.native_vlan is None
+            and not merged.description
+        ):
+            continue
+
+        interfaces.append(
+            {
+                "name": ifname,
+                "juniper_if": ifname,
+                "mode": merged.mode,
+                "data_vlan": merged.data_vlan,
+                "voice_vlan": merged.voice_vlan,
+                "native_vlan": merged.native_vlan,
+                "allowed_vlans": sorted(merged.allowed_vlans),
+                "description": merged.description,
+            }
+        )
+
+    return interfaces
+
+
+def _derive_port_config_from_config_cmd(
+    base_url: str,
+    token: str,
+    site_id: str,
+    device_id: str,
+) -> Dict[str, Any]:
+    url = f"{base_url}/sites/{site_id}/devices/{device_id}/config_cmd"
+    headers = _mist_headers(token)
+    resp = requests.get(url, headers=headers, timeout=60)
+    data = _safe_json_response(resp)
+    if not (200 <= resp.status_code < 300):
+        raise MistAPIError(resp.status_code, _extract_mist_error(resp), response=data)
+
+    cli = data.get("cli") if isinstance(data, Mapping) else None
+    if not isinstance(cli, Sequence) or isinstance(cli, (str, bytes, bytearray)):
+        raise MistAPIError(resp.status_code, "Config command output missing 'cli' entries.", response=data)
+
+    interfaces = _parse_config_cmd_interfaces(cli)
+    if not interfaces:
+        return {}
+
+    return map_interfaces_to_port_config(interfaces, model=None)
+
+
 def _apply_temporary_config_for_rows(
     base_url: str,
     token: str,
@@ -3752,6 +4034,26 @@ def _remove_temporary_config_for_rows(
     effective_legacy_vlan_ids: Set[int] = set(legacy_vlan_ids or LEGACY_VLAN_IDS or [])
     preserve_legacy_vlans = bool(preserve_legacy_vlans and effective_legacy_vlan_ids)
 
+    derived_payloads: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    derivation_warnings: Dict[Tuple[str, str], str] = {}
+
+    for row in ok_rows:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        key = (site_id, device_id)
+        if not site_id or not device_id:
+            continue
+        try:
+            port_config = _derive_port_config_from_config_cmd(base_url, token, site_id, device_id)
+            if port_config:
+                derived_payloads[key] = {"port_config": port_config}
+            else:
+                derivation_warnings[key] = "No switchport details discovered in config_cmd output."
+        except MistAPIError as exc:
+            derivation_warnings[key] = f"Unable to fetch config_cmd for device: {exc}"
+        except Exception as exc:  # pragma: no cover - network/parse failures reported to UI
+            derivation_warnings[key] = f"Unable to derive port configuration from config_cmd: {exc}"
+
     def _collect_site_cleanup_targets(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
         sites: Dict[str, Dict[str, Any]] = {}
         for row in rows:
@@ -3815,7 +4117,15 @@ def _remove_temporary_config_for_rows(
         for row in ok_rows:
             site_id = str(row.get("site_id") or "").strip()
             device_id = str(row.get("device_id") or "").strip()
-            final_payload = _get_site_deployment_payload(row) or {}
+            key = (site_id, device_id)
+            final_payload = derived_payloads.get(key) or _get_site_deployment_payload(row) or {}
+            preview_payload: Dict[str, Any] = {
+                "cleanup_request": copy.deepcopy(cleanup_payload),
+                "push_request": copy.deepcopy(final_payload) if isinstance(final_payload, Mapping) else {},
+            }
+            warn_text = derivation_warnings.get(key)
+            if warn_text:
+                preview_payload["derivation_warning"] = warn_text
             payload_records.append(
                 {
                     "site_id": site_id,
@@ -3878,7 +4188,10 @@ def _remove_temporary_config_for_rows(
     for row in ok_rows:
         site_id = str(row.get("site_id") or "").strip()
         device_id = str(row.get("device_id") or "").strip()
-        final_payload = _get_site_deployment_payload(row)
+        key = (site_id, device_id)
+        derived_payload = derived_payloads.get(key)
+        fallback_payload = _get_site_deployment_payload(row)
+        final_payload = derived_payload or fallback_payload
         record: Dict[str, Any] = {
             "site_id": site_id,
             "device_id": device_id,
@@ -3888,13 +4201,17 @@ def _remove_temporary_config_for_rows(
         }
         payload_records.append(record)
 
+        warn_text = derivation_warnings.get(key)
+        if warn_text:
+            record.setdefault("warnings", []).append(warn_text)
+
         if not final_payload:
             failures.append(
                 {
                     "site_id": site_id,
                     "device_id": device_id,
                     "status": None,
-                    "message": "No converted config payload available for the cleanup step.",
+                    "message": warn_text or "No converted config payload available for the cleanup step.",
                 }
             )
             continue
