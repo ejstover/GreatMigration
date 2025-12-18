@@ -8,6 +8,7 @@ from compliance import (
     SwitchTemplateConfigurationCheck,
     ConfigurationOverridesCheck,
     FirmwareManagementCheck,
+    CloudManagementCheck,
     DeviceNamingConventionCheck,
     DeviceDocumentationCheck,
     SiteAuditRunner,
@@ -417,6 +418,59 @@ def test_firmware_management_check_skips_when_unconfigured(monkeypatch):
     )
 
     check = FirmwareManagementCheck()
+    assert check.run(ctx) == []
+
+
+def test_cloud_management_check_flags_unmanaged_switch():
+    ctx = SiteContext(
+        site_id="site-cloud-1",
+        site_name="Branch",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-1", "name": "SW-1", "type": "switch", "managed": False},
+        ],
+    )
+
+    check = CloudManagementCheck()
+    findings = check.run(ctx)
+
+    assert len(findings) == 1
+    assert "locally managed" in findings[0].message
+    assert findings[0].device_id == "sw-1"
+    assert findings[0].details == {"managed": False}
+
+
+def test_cloud_management_check_ignores_managed_switch():
+    ctx = SiteContext(
+        site_id="site-cloud-2",
+        site_name="Branch",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-2", "name": "SW-2", "type": "switch", "managed": True},
+        ],
+    )
+
+    check = CloudManagementCheck()
+    assert check.run(ctx) == []
+
+
+def test_cloud_management_check_ignores_non_switch_devices():
+    ctx = SiteContext(
+        site_id="site-cloud-3",
+        site_name="Branch",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "ap-1", "name": "AP-1", "type": "ap", "managed": False},
+        ],
+    )
+
+    check = CloudManagementCheck()
     assert check.run(ctx) == []
 
 
@@ -1498,3 +1552,45 @@ def test_site_audit_runner_counts_quick_fix_findings():
 
     assert result["total_findings"] == 2
     assert result["total_quick_fix_issues"] == 2
+
+
+def test_site_audit_runner_categorizes_findings():
+    contexts = [
+        SiteContext(
+            site_id="site-7",
+            site_name="HQ",
+            site={},
+            setting={},
+            templates=[],
+            devices=[],
+        )
+    ]
+
+    class CategorizedCheck(ComplianceCheck):
+        id = "categorized"
+        name = "Categorized check"
+
+        def run(self, context: SiteContext):
+            return [
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    message="Site-level issue",
+                ),
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    device_id="dev-1",
+                    device_name="Switch 1",
+                    message="Device-level issue",
+                ),
+            ]
+
+    runner = SiteAuditRunner([CategorizedCheck()])
+    result = runner.run(contexts)
+    checks = result["checks"]
+    assert len(checks) == 1
+    check = checks[0]
+    assert len(check["findings"]) == 2
+    assert [f["message"] for f in check["site_level_findings"]] == ["Site-level issue"]
+    assert [f["device_id"] for f in check["device_level_findings"]] == ["dev-1"]
