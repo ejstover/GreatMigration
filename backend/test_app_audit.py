@@ -315,7 +315,20 @@ def test_apply_temp_config_payload_strips_port_assignments(monkeypatch, app_modu
     assert "port_overrides" not in preview_payload
 
 
-def test_remove_temp_config_returns_preview_when_dry_run(app_module):
+def test_remove_temp_config_returns_preview_when_dry_run(monkeypatch, app_module):
+    def fake_get(url: str, headers=None, timeout: int = 60):
+        class Resp:
+            status_code = 200
+
+            def json(self):
+                return {"switch": {}}
+
+            text = ""
+
+        return Resp()
+
+    monkeypatch.setattr(app_module.requests, "get", fake_get)
+
     row = {
         "ok": True,
         "site_id": "site-1",
@@ -339,9 +352,8 @@ def test_remove_temp_config_returns_preview_when_dry_run(app_module):
         "networks": {},
         "switch": {
             "port_usages": {},
-            "port_usage": {},
             "port_config": {},
-            "port_overrides": {},
+            "port_overrides": [],
         },
     }
     assert preview["push_request"]["port_config"]["ge-0/0/1"]["usage"] == "end_user"
@@ -349,6 +361,19 @@ def test_remove_temp_config_returns_preview_when_dry_run(app_module):
 
 def test_remove_temp_config_wipes_and_pushes(monkeypatch, app_module):
     calls: list[Dict[str, Any]] = []
+
+    def fake_get(url: str, headers: Dict[str, str], timeout: int = 60):
+        calls.append({"url": url, "json": None})
+
+        class Resp:
+            status_code = 200
+
+            def json(self):
+                return {"switch": {}}
+
+            text = ""
+
+        return Resp()
 
     def fake_put(url: str, headers: Dict[str, str], json: Dict[str, Any], timeout: int = 60):
         calls.append({"url": url, "json": json})
@@ -363,6 +388,86 @@ def test_remove_temp_config_wipes_and_pushes(monkeypatch, app_module):
 
         return Resp()
 
+    monkeypatch.setattr(app_module.requests, "put", fake_put)
+    monkeypatch.setattr(app_module.requests, "get", fake_get)
+
+    final_payload = {"port_config": {"ge-0/0/5": {"usage": "access"}}}
+    row = {
+        "ok": True,
+        "site_id": "site-1",
+        "device_id": "device-1",
+        "_site_deployment_payload": final_payload,
+    }
+
+    result = app_module._remove_temporary_config_for_rows(
+        "https://example.com/api/v1",
+        "token",
+        [row],
+        dry_run=False,
+    )
+
+    assert result["ok"] is True
+    assert result["successes"] == 1
+    assert result["failures"] == []
+    assert len(calls) == 3
+    assert calls[0]["url"] == "https://example.com/api/v1/sites/site-1/setting"
+    assert calls[1]["url"] == "https://example.com/api/v1/sites/site-1/setting"
+    assert calls[1]["json"] == {
+        "networks": {},
+        "switch": {
+            "port_usages": {},
+            "port_config": {},
+            "port_overrides": [],
+        },
+    }
+    assert calls[2]["json"] == final_payload
+
+
+def test_remove_temp_config_preserves_legacy_vlan(monkeypatch, app_module):
+    calls: list[Dict[str, Any]] = []
+
+    def fake_get(url: str, headers: Dict[str, str], timeout: int = 60):
+        calls.append({"method": "get", "url": url})
+
+        class Resp:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "networks": {
+                        "legacy_net": {"vlan_id": 501, "note": "keep"},
+                        "temp_net": {"vlan_id": 200, "note": "drop"},
+                    },
+                    "switch": {
+                        "port_usages": {
+                            "legacy_profile": {"port_network": "legacy_net", "note": "keep"},
+                            "temp_profile": {"port_network": "temp_net"},
+                        },
+                        "port_overrides": [
+                            {"port_id": "1", "usage": "legacy_profile"},
+                            {"port_id": "2", "usage": "temp_profile"},
+                        ],
+                    },
+                }
+
+            text = ""
+
+        return Resp()
+
+    def fake_put(url: str, headers: Dict[str, str], json: Dict[str, Any], timeout: int = 60):
+        calls.append({"method": "put", "url": url, "json": json})
+
+        class Resp:
+            status_code = 200
+
+            def json(self):
+                return {"ok": True}
+
+            text = ""
+
+        return Resp()
+
+    monkeypatch.setattr(app_module.requests, "get", fake_get)
     monkeypatch.setattr(app_module.requests, "put", fake_put)
 
     final_payload = {"port_config": {"ge-0/0/5": {"usage": "access"}}}
@@ -383,18 +488,13 @@ def test_remove_temp_config_wipes_and_pushes(monkeypatch, app_module):
     assert result["ok"] is True
     assert result["successes"] == 1
     assert result["failures"] == []
-    assert len(calls) == 2
-    assert calls[0]["url"] == "https://example.com/api/v1/sites/site-1/setting"
-    assert calls[0]["json"] == {
-        "networks": {},
-        "switch": {
-            "port_usages": {},
-            "port_config": {},
-            "port_overrides": [],
-        },
+    assert [call.get("method") for call in calls] == ["get", "put", "put"]
+    cleanup = calls[1]["json"]
+    assert cleanup["networks"] == {"legacy_net": {"vlan_id": 501, "note": "keep"}}
+    assert cleanup["switch"].get("port_usages") == {
+        "legacy_profile": {"port_network": "legacy_net", "note": "keep"}
     }
-    assert calls[1]["json"] == final_payload
-
+    assert cleanup["switch"].get("port_overrides") == [{"port_id": "1", "usage": "legacy_profile"}]
 
 def test_load_site_history_parses_breakdown(tmp_path):
     from audit_history import load_site_history
