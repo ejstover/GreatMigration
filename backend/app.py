@@ -285,6 +285,28 @@ def _extract_show_vlan_entries(payload: Mapping[str, Any]) -> List[Dict[str, Any
     return []
 
 
+def _show_vlan_lookup_keys(filename: str) -> List[str]:
+    if not filename:
+        return []
+    base = filename.strip()
+    if not base:
+        return []
+    keys = {base, base.casefold()}
+    stem = Path(base).stem
+    if stem:
+        keys.add(stem)
+        keys.add(stem.casefold())
+        lower_stem = stem.casefold()
+        for suffix in (".running-config", ".cfg", ".conf", ".config", ".txt"):
+            if lower_stem.endswith(suffix):
+                trimmed = stem[: -len(suffix)].strip()
+                if trimmed:
+                    keys.add(trimmed)
+                    keys.add(trimmed.casefold())
+                break
+    return list(keys)
+
+
 app = FastAPI(title=APP_TITLE)
 
 app.add_middleware(
