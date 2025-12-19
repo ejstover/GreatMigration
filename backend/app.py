@@ -3887,7 +3887,7 @@ def _apply_temporary_config_for_rows(
                     preview_body["port_config"] = copy.deepcopy(temp_port_config)
                 record["device_payload"] = {"port_config": temp_port_config} if temp_port_config else device_payload
                 record["payload"] = preview_body if preview_body else {}
-                record["site_payload"] = preview_body if preview_body else {}
+                record["site_payload"] = dict(prepared_body or {})
                 if conflict_warnings:
                     warnings.extend(conflict_warnings)
             except MistAPIError as exc:
@@ -3900,22 +3900,20 @@ def _apply_temporary_config_for_rows(
                         "status": exc.status_code,
                     }
                 )
-                record["payload"] = base_payload
-                record["site_payload"] = base_payload
+                record["payload"] = dict(base_payload)
+                record["site_payload"] = dict(base_payload)
                 if temp_port_config:
                     record["payload"]["port_config"] = copy.deepcopy(temp_port_config)
-                    record["site_payload"]["port_config"] = copy.deepcopy(temp_port_config)
                     record["device_payload"] = {"port_config": temp_port_config}
                 if warnings:
                     record["warnings"] = warnings
                 payload_records.append(record)
                 continue
         else:
-            record["payload"] = base_payload
-            record["site_payload"] = base_payload
+            record["payload"] = dict(base_payload)
+            record["site_payload"] = dict(base_payload)
             if temp_port_config:
                 record["payload"]["port_config"] = copy.deepcopy(temp_port_config)
-                record["site_payload"]["port_config"] = copy.deepcopy(temp_port_config)
                 record["device_payload"] = {"port_config": temp_port_config}
 
         if warnings:
