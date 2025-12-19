@@ -4600,7 +4600,7 @@ async def api_push_batch(
                     "total": len(results),
                 }
 
-    if not site_actions_selected:
+    if not site_actions_selected and not apply_temp_config:
         for row in results:
             if isinstance(row, dict):
                 row.pop("payload", None)
