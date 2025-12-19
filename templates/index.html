@@ -1128,16 +1128,32 @@
               device = `Device(s) ${ids}`;
             }
             const headerParts = [site, device].filter(Boolean).join(' • ');
-            const payloadPre = document.createElement('pre');
-            payloadPre.className = 'text-xs p-2 bg-white dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80';
-            payloadPre.textContent = JSON.stringify(item?.payload ?? {}, null, 2);
 
             const block = document.createElement('div');
             block.className = 'rounded-lg border dark:border-slate-700 bg-white/70 dark:bg-slate-900/50 p-2';
             block.innerHTML = headerParts
               ? `<div class="text-xs font-medium mb-1 text-slate-600 dark:text-slate-300">${headerParts}</div>`
               : '';
-            block.appendChild(payloadPre);
+
+            const addPayloadSection = (label, payload) => {
+              const labelEl = document.createElement('div');
+              labelEl.className = 'text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1';
+              labelEl.textContent = label;
+              const payloadPre = document.createElement('pre');
+              payloadPre.className = 'text-xs p-2 bg-white dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80';
+              payloadPre.textContent = JSON.stringify(payload ?? {}, null, 2);
+              block.appendChild(labelEl);
+              block.appendChild(payloadPre);
+            };
+
+            if (key === 'apply_temporary_config'){
+              const sitePayload = item?.site_payload ?? item?.payload ?? {};
+              const devicePayload = item?.device_payload ?? {};
+              addPayloadSection('Site-level config (networks + port profiles)', sitePayload);
+              addPayloadSection('Device port configuration', devicePayload);
+            } else {
+              addPayloadSection('Request payload', item?.payload ?? {});
+            }
             payloadWrap.appendChild(block);
           });
 
