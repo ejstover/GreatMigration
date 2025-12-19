@@ -967,6 +967,8 @@ def api_get_replacements():
     else:
         accessories = []
 
+    accessories.sort(key=_alphanum_sort_key)
+
     data["rules"] = rules
     data["accessories"] = accessories
     return {"ok": True, "doc": data}
@@ -1003,6 +1005,7 @@ def api_save_replacements(request: Request, doc: Dict[str, Any] = Body(...)):
                 seen.add(key)
                 cleaned_accessories.append(name)
 
+        cleaned_accessories.sort(key=_alphanum_sort_key)
         cleaned_doc = {"rules": cleaned_rules, "accessories": cleaned_accessories}
 
         REPLACEMENTS_PATH.write_text(json.dumps(cleaned_doc, indent=2), encoding="utf-8")
@@ -1085,6 +1088,19 @@ def _safe_project_filename_fragment(value: str, max_length: int = 64) -> str:
     return cleaned
 
 
+def _alphanum_sort_key(value: str) -> tuple[tuple[int, object], ...]:
+    parts = re.split(r"(\d+)", value.casefold())
+    key_parts: list[tuple[int, object]] = []
+    for part in parts:
+        if part == "":
+            continue
+        if part.isdigit():
+            key_parts.append((0, int(part)))
+        else:
+            key_parts.append((1, part))
+    return tuple(key_parts)
+
+
 def _coerce_positive_decimal(value: Any) -> Optional[Decimal]:
     if isinstance(value, Decimal):
         num = value
@@ -1164,7 +1180,7 @@ def _build_bom_summary(
                 qty = Decimal(1)
             totals[name] += qty
 
-    summary = sorted(totals.items(), key=lambda kv: kv[0].lower())
+    summary = sorted(totals.items(), key=lambda kv: _alphanum_sort_key(kv[0]))
     return summary
 
 
@@ -1246,6 +1262,8 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
         elif isinstance(quantity, str):
             quantity_text = quantity.strip()
         accessories_output.append((name, quantity_text))
+
+    accessories_output.sort(key=lambda item: _alphanum_sort_key(item[0]))
 
     if accessories_output:
         pdf.ln(3)
