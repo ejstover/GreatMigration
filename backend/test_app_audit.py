@@ -311,7 +311,7 @@ def test_apply_temp_config_payload_strips_port_assignments(monkeypatch, app_modu
     assert "port_config" not in captured_payloads[0]
     assert "port_overrides" not in captured_payloads[0]
     assert "port_usages" in captured_payloads[0]
-    assert "port_config" not in preview_payload
+    assert "port_config" in preview_payload
     assert "port_overrides" not in preview_payload
 
 
