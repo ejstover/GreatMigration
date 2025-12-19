@@ -2387,6 +2387,20 @@ def _collect_existing_vlan_details(
     return set(deduped.keys()), conflicts
 
 
+def _sort_network_map_by_vlan_id(networks: Mapping[str, Any]) -> Dict[str, Any]:
+    def _sort_key(item: Tuple[str, Any]) -> Tuple[bool, int, str]:
+        name, data = item
+        vlan_id = None
+        if isinstance(data, Mapping):
+            vlan_id = _int_or_none(data.get("vlan_id") or data.get("id"))
+        return (vlan_id is None, vlan_id if vlan_id is not None else 0, str(name))
+
+    return {
+        key: dict(value) if isinstance(value, Mapping) else value
+        for key, value in sorted(networks.items(), key=_sort_key)
+    }
+
+
 def _resolve_network_conflicts(
     networks_new: Dict[str, Dict[str, Any]],
     port_profiles_seq: List[Dict[str, Any]],
@@ -2764,7 +2778,9 @@ def _merge_new_vlan_networks(
         merged[name] = payload
         added = True
 
-    return merged if added else {}
+    if not added:
+        return {}
+    return _sort_network_map_by_vlan_id(merged)
 
 
 def _prepare_switch_port_profile_payload(
@@ -3307,9 +3323,17 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
         "port_profiles": list(port_profiles.values()),
     }
     if networks:
-        payload["networks"] = networks
+        networks_sorted = sorted(
+            networks,
+            key=lambda item: (
+                _int_or_none(item.get("vlan_id") or item.get("id")) is None,
+                _int_or_none(item.get("vlan_id") or item.get("id")) or 0,
+                str(item.get("name") or ""),
+            ),
+        )
+        payload["networks"] = networks_sorted
         # Keep legacy key for compatibility with earlier previews/status handling
-        payload["vlans"] = networks
+        payload["vlans"] = networks_sorted
 
     return payload
 
@@ -3515,7 +3539,7 @@ def _build_site_cleanup_payload_for_setting(
             preserved_overrides.append(_compact_dict(dict(override)))
 
     cleanup_payload: Dict[str, Any] = {
-        "networks": preserved_networks,
+        "networks": _sort_network_map_by_vlan_id(preserved_networks),
         "port_config": {},
         "port_overrides": preserved_overrides,
     }
