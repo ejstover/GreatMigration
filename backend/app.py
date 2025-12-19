@@ -1782,11 +1782,20 @@ async def api_convert(
     uplink_module: int = Form(1),
     force_model: Optional[str] = Form(None),
     strict_overflow: bool = Form(False),
+    show_vlan_map: Optional[str] = Form(None),
 ) -> JSONResponse:
     """
     Converts one or more Cisco configs into the normalized JSON that the push script consumes.
     """
     results = []
+    vlan_lookup: Dict[str, str] = {}
+    if show_vlan_map:
+        try:
+            parsed_map = json.loads(show_vlan_map)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": f"Invalid show_vlan_map: {exc}"}, status_code=400)
+        if isinstance(parsed_map, dict):
+            vlan_lookup = {str(k): str(v) for k, v in parsed_map.items() if v}
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for uf in files:
@@ -1805,6 +1814,10 @@ async def api_convert(
                 data = json.loads(out_path.read_text(encoding="utf-8"))
             except Exception as e:
                 return JSONResponse({"ok": False, "error": f"Failed to load JSON for {uf.filename}: {e}"}, status_code=400)
+
+            show_vlan_text = vlan_lookup.get(uf.filename)
+            if show_vlan_text:
+                data["show_vlan_text"] = show_vlan_text
 
             results.append({"source_file": uf.filename, "output_file": out_path.name, "json": data})
 
