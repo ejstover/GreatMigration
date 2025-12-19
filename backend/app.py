@@ -3774,12 +3774,20 @@ def _apply_temporary_config_for_rows(
         device_id = str(row.get("device_id") or "").strip()
         payload = _build_temp_config_payload(row)
         base_payload: Dict[str, Any] = payload if isinstance(payload, Mapping) else {}
+        device_payload: Optional[Dict[str, Any]] = None
+        row_payload = row.get("payload")
+        if isinstance(row_payload, Mapping):
+            port_config = row_payload.get("port_config")
+            if isinstance(port_config, Mapping):
+                device_payload = {"port_config": port_config}
 
         record: Dict[str, Any] = {
             "site_id": site_id,
             "device_id": device_id,
             "payload": dict(base_payload),
         }
+        if device_payload is not None:
+            record["device_payload"] = device_payload
 
         warnings: List[str] = []
 
@@ -3809,6 +3817,7 @@ def _apply_temporary_config_for_rows(
                     record["renamed_networks"] = rename_map
                 preview_body = prepared_body
                 record["payload"] = preview_body if preview_body else {}
+                record["site_payload"] = preview_body if preview_body else {}
                 if conflict_warnings:
                     warnings.extend(conflict_warnings)
             except MistAPIError as exc:
@@ -3822,12 +3831,14 @@ def _apply_temporary_config_for_rows(
                     }
                 )
                 record["payload"] = base_payload
+                record["site_payload"] = base_payload
                 if warnings:
                     record["warnings"] = warnings
                 payload_records.append(record)
                 continue
         else:
             record["payload"] = base_payload
+            record["site_payload"] = base_payload
 
         if warnings:
             record["warnings"] = warnings
