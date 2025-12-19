@@ -101,6 +101,7 @@ class JobState:
                     "error_info": r.error_info,
                     "hardware": r.hardware,
                     "running_config": r.running_config,
+                    "show_vlan_text": r.command_outputs.get("show vlan") if r.command_outputs else None,
                     "temp_files": r.temp_files,
                 }
                 for r in self.results
@@ -427,4 +428,3 @@ def cleanup_old_jobs(max_age: float = 3600.0) -> None:
                 job.temp_dir.rmdir()
             except Exception:
                 pass
-
