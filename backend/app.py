@@ -3314,6 +3314,71 @@ def _build_temp_config_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any
     return payload
 
 
+def _build_temp_port_config(row: Mapping[str, Any]) -> Optional[Dict[str, Dict[str, Any]]]:
+    source = row.get("_temp_config_source")
+    if not isinstance(source, Mapping):
+        return None
+
+    interfaces = source.get("interfaces")
+    if not isinstance(interfaces, list):
+        return None
+
+    port_config: Dict[str, Dict[str, Any]] = {}
+
+    for intf in interfaces:
+        if not isinstance(intf, Mapping):
+            continue
+        mode = str(intf.get("mode") or "").lower()
+        if mode not in {"access", "trunk"}:
+            continue
+        juniper_if = str(intf.get("juniper_if") or "").strip()
+        if not juniper_if:
+            continue
+
+        data_vlan = _int_or_none(intf.get("data_vlan"))
+        voice_vlan = _int_or_none(intf.get("voice_vlan"))
+        native_vlan = _int_or_none(intf.get("native_vlan"))
+        allowed_vlan_ids = tuple(_normalize_vlan_values(intf.get("allowed_vlans")))
+
+        raw_members = intf.get("members") if isinstance(intf.get("members"), list) else []
+        members = tuple(str(m).strip() for m in raw_members if str(m).strip())
+        port_type = (
+            "port-channel"
+            if (members or str(intf.get("type") or "").lower() in {"port-channel", "portchannel", "lag"})
+            else "physical"
+        )
+
+        normalized = NormalizedPort(
+            name=str(intf.get("name") or juniper_if),
+            target_port=juniper_if,
+            type=port_type,
+            mode=mode,
+            access_vlan=data_vlan,
+            voice_vlan=voice_vlan,
+            native_vlan=native_vlan,
+            allowed_vlans=allowed_vlan_ids,
+            poe=not bool(intf.get("poe_disabled")),
+            stp_edge=bool(intf.get("stp_edge") or mode == "access"),
+            stp_bpdu_guard=bool(intf.get("stp_bpdu_guard") or intf.get("bpdu_guard")),
+            members=members,
+        )
+
+        sig = _build_port_profile_signature(normalized)
+        vlan_values_for_prefix = set(allowed_vlan_ids)
+        vlan_values_for_prefix.update(v for v in (data_vlan, voice_vlan, native_vlan) if v is not None)
+        profile_name = _generate_profile_name_from_signature(
+            sig,
+            legacy_prefix=_should_prefix_port_profile(vlan_values_for_prefix),
+        )
+        port_entry: Dict[str, Any] = {"usage": profile_name}
+        description = str(intf.get("description") or "").strip()
+        if description:
+            port_entry["description"] = description
+        port_config[juniper_if] = port_entry
+
+    return port_config or None
+
+
 def _get_site_deployment_payload(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
     payload = row.get("_site_deployment_payload")
     if isinstance(payload, Mapping):
@@ -3774,6 +3839,7 @@ def _apply_temporary_config_for_rows(
         device_id = str(row.get("device_id") or "").strip()
         payload = _build_temp_config_payload(row)
         base_payload: Dict[str, Any] = payload if isinstance(payload, Mapping) else {}
+        temp_port_config = _build_temp_port_config(row)
         device_payload: Optional[Dict[str, Any]] = None
         row_payload = row.get("payload")
         if isinstance(row_payload, Mapping):
@@ -3816,6 +3882,10 @@ def _apply_temporary_config_for_rows(
                     _apply_network_rename_to_payload(base_payload, rename_map)
                     record["renamed_networks"] = rename_map
                 preview_body = prepared_body
+                if temp_port_config:
+                    preview_body = dict(prepared_body or {})
+                    preview_body["port_config"] = copy.deepcopy(temp_port_config)
+                record["device_payload"] = {"port_config": temp_port_config} if temp_port_config else device_payload
                 record["payload"] = preview_body if preview_body else {}
                 record["site_payload"] = preview_body if preview_body else {}
                 if conflict_warnings:
@@ -3832,6 +3902,10 @@ def _apply_temporary_config_for_rows(
                 )
                 record["payload"] = base_payload
                 record["site_payload"] = base_payload
+                if temp_port_config:
+                    record["payload"]["port_config"] = copy.deepcopy(temp_port_config)
+                    record["site_payload"]["port_config"] = copy.deepcopy(temp_port_config)
+                    record["device_payload"] = {"port_config": temp_port_config}
                 if warnings:
                     record["warnings"] = warnings
                 payload_records.append(record)
@@ -3839,6 +3913,10 @@ def _apply_temporary_config_for_rows(
         else:
             record["payload"] = base_payload
             record["site_payload"] = base_payload
+            if temp_port_config:
+                record["payload"]["port_config"] = copy.deepcopy(temp_port_config)
+                record["site_payload"]["port_config"] = copy.deepcopy(temp_port_config)
+                record["device_payload"] = {"port_config": temp_port_config}
 
         if warnings:
             record["warnings"] = warnings
