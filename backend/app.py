@@ -1828,12 +1828,7 @@ async def api_convert(
         except Exception as exc:
             return JSONResponse({"ok": False, "error": f"Invalid show_vlan_map: {exc}"}, status_code=400)
         if isinstance(parsed_map, dict):
-            for key, value in parsed_map.items():
-                if not value:
-                    continue
-                text_value = str(value)
-                for candidate in _show_vlan_lookup_keys(str(key)):
-                    vlan_lookup.setdefault(candidate, text_value)
+            vlan_lookup = {str(k): str(v) for k, v in parsed_map.items() if v}
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for uf in files:
@@ -1854,11 +1849,6 @@ async def api_convert(
                 return JSONResponse({"ok": False, "error": f"Failed to load JSON for {uf.filename}: {e}"}, status_code=400)
 
             show_vlan_text = vlan_lookup.get(uf.filename)
-            if not show_vlan_text:
-                for candidate in _show_vlan_lookup_keys(uf.filename):
-                    show_vlan_text = vlan_lookup.get(candidate)
-                    if show_vlan_text:
-                        break
             if show_vlan_text:
                 data["show_vlan_text"] = show_vlan_text
 
