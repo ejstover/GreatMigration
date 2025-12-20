@@ -252,13 +252,24 @@ def _parse_show_vlan_text(raw: Any) -> List[Dict[str, Any]]:
         return []
 
     entries: List[Dict[str, Any]] = []
+    in_vlan_table = False
     for line in raw.splitlines():
+        if not in_vlan_table:
+            if line.strip().lower().startswith("vlan name"):
+                in_vlan_table = True
+            continue
+        if not line.strip():
+            continue
+        if line.strip().lower().startswith("vlan type"):
+            break
         m = re.match(r"\s*(\d+)\s+([^\s]+)", line)
         if not m:
             continue
         try:
             vid = int(m.group(1))
         except Exception:
+            continue
+        if vid in {1002, 1003, 1004, 1005}:
             continue
         name = m.group(2).strip() or str(vid)
         entries.append({"id": vid, "name": name})
