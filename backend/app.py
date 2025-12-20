@@ -252,13 +252,24 @@ def _parse_show_vlan_text(raw: Any) -> List[Dict[str, Any]]:
         return []
 
     entries: List[Dict[str, Any]] = []
+    in_vlan_table = False
     for line in raw.splitlines():
+        if not in_vlan_table:
+            if line.strip().lower().startswith("vlan name"):
+                in_vlan_table = True
+            continue
+        if not line.strip():
+            continue
+        if line.strip().lower().startswith("vlan type"):
+            break
         m = re.match(r"\s*(\d+)\s+([^\s]+)", line)
         if not m:
             continue
         try:
             vid = int(m.group(1))
         except Exception:
+            continue
+        if vid in {1002, 1003, 1004, 1005}:
             continue
         name = m.group(2).strip() or str(vid)
         entries.append({"id": vid, "name": name})
@@ -283,6 +294,28 @@ def _extract_show_vlan_entries(payload: Mapping[str, Any]) -> List[Dict[str, Any
                 return parsed
 
     return []
+
+
+def _show_vlan_lookup_keys(filename: str) -> List[str]:
+    if not filename:
+        return []
+    base = filename.strip()
+    if not base:
+        return []
+    keys = {base, base.casefold()}
+    stem = Path(base).stem
+    if stem:
+        keys.add(stem)
+        keys.add(stem.casefold())
+        lower_stem = stem.casefold()
+        for suffix in (".running-config", ".cfg", ".conf", ".config", ".txt"):
+            if lower_stem.endswith(suffix):
+                trimmed = stem[: -len(suffix)].strip()
+                if trimmed:
+                    keys.add(trimmed)
+                    keys.add(trimmed.casefold())
+                break
+    return list(keys)
 
 
 app = FastAPI(title=APP_TITLE)
@@ -1782,11 +1815,25 @@ async def api_convert(
     uplink_module: int = Form(1),
     force_model: Optional[str] = Form(None),
     strict_overflow: bool = Form(False),
+    show_vlan_map: Optional[str] = Form(None),
 ) -> JSONResponse:
     """
     Converts one or more Cisco configs into the normalized JSON that the push script consumes.
     """
     results = []
+    vlan_lookup: Dict[str, str] = {}
+    if show_vlan_map:
+        try:
+            parsed_map = json.loads(show_vlan_map)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": f"Invalid show_vlan_map: {exc}"}, status_code=400)
+        if isinstance(parsed_map, dict):
+            for key, value in parsed_map.items():
+                if not value:
+                    continue
+                text_value = str(value)
+                for candidate in _show_vlan_lookup_keys(str(key)):
+                    vlan_lookup.setdefault(candidate, text_value)
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for uf in files:
@@ -1805,6 +1852,15 @@ async def api_convert(
                 data = json.loads(out_path.read_text(encoding="utf-8"))
             except Exception as e:
                 return JSONResponse({"ok": False, "error": f"Failed to load JSON for {uf.filename}: {e}"}, status_code=400)
+
+            show_vlan_text = vlan_lookup.get(uf.filename)
+            if not show_vlan_text:
+                for candidate in _show_vlan_lookup_keys(uf.filename):
+                    show_vlan_text = vlan_lookup.get(candidate)
+                    if show_vlan_text:
+                        break
+            if show_vlan_text:
+                data["show_vlan_text"] = show_vlan_text
 
             results.append({"source_file": uf.filename, "output_file": out_path.name, "json": data})
 
