@@ -101,7 +101,10 @@ class JobState:
                     "error_info": r.error_info,
                     "hardware": r.hardware,
                     "running_config": r.running_config,
-                    "show_vlan_text": r.command_outputs.get("show vlan") if r.command_outputs else None,
+                    "show_vlan_text": (
+                        r.command_outputs.get("show vlan") if r.command_outputs else None
+                    )
+                    or (r.command_outputs.get("show vlan brief") if r.command_outputs else None),
                     "temp_files": r.temp_files,
                 }
                 for r in self.results
@@ -248,6 +251,10 @@ def _collect_one_device(
             },
             "show vlan": {
                 "filename": "show_vlan.txt",
+                "timeout": max(read_timeout, 60),
+            },
+            "show vlan brief": {
+                "filename": "show_vlan_brief.txt",
                 "timeout": max(read_timeout, 60),
             },
             "show running-config": {

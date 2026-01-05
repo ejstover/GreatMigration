@@ -1,6 +1,7 @@
 import pytest
 
 from ssh_collect import _describe_exception
+from ssh_collect import DeviceResult, JobState
 
 
 @pytest.mark.parametrize(
@@ -25,3 +26,18 @@ def test_describe_exception_fallback_message():
     # Should fall back to class name when message is empty
     assert info["detail"] == exc.__class__.__name__
     assert "SSH" in info["reason"]
+
+
+def test_job_to_dict_prefers_available_show_vlan_text():
+    job = JobState(id="job1", created=0.0)
+    # include only brief output to ensure fallback works
+    result = DeviceResult(
+        host="switch1",
+        label="switch1",
+        status="ok",
+        command_outputs={"show vlan brief": "VLAN Name\n1 default"},
+    )
+    job.results.append(result)
+
+    data = job.to_dict()
+    assert data["results"][0]["show_vlan_text"] == "VLAN Name\n1 default"
