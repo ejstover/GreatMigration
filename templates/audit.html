@@ -67,6 +67,7 @@
         </div>
         <div class="flex flex-wrap items-center gap-3">
           <button id="run_audit" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed">Run audit</button>
+          <button id="export_pdf" class="px-4 py-2 rounded bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed" disabled>Export PDF</button>
           <span id="audit_status" class="text-sm text-slate-600 dark:text-slate-300"></span>
         </div>
       </section>
@@ -93,6 +94,7 @@
       const userGreeting = document.getElementById('user_greeting');
       const logoutBtn = document.getElementById('logout_btn');
       let canUseFixes = false;
+      let currentUserName = 'Unknown user';
       fetch('/me').then(res => {
         if (!res.ok) throw new Error('not authed');
         return res.json();
@@ -101,6 +103,7 @@
         const name = user.name || 'there';
         const readOnly = Boolean(user.read_only);
         canUseFixes = Boolean(user.can_push);
+        currentUserName = user.name || 'Unknown user';
         const suffix = readOnly ? ' (read-only)' : '';
         userGreeting.textContent = `Hey ${name}!${suffix}`;
         userGreeting.classList.remove('hidden');
@@ -117,6 +120,7 @@
       const siteSearch = document.getElementById('site_search');
       const siteList = document.getElementById('site_list');
       const runAuditBtn = document.getElementById('run_audit');
+      const exportPdfBtn = document.getElementById('export_pdf');
       const auditStatus = document.getElementById('audit_status');
       const resultsContainer = document.getElementById('audit_results');
       const selectionSummary = document.getElementById('selection_summary');
@@ -125,6 +129,9 @@
 
       let allSites = [];
       const selectedSiteIds = new Set();
+      let lastAuditResult = null;
+      let lastRunScope = '';
+      let lastRunSites = [];
 
       function updateSelectionSummary() {
         if (entireOrg.checked) {
@@ -133,6 +140,32 @@
         } else {
           selectionSummary.textContent = `${selectedSiteIds.size} site${selectedSiteIds.size === 1 ? '' : 's'} selected`;
         }
+      }
+
+      function updateExportButtonState() {
+        if (!exportPdfBtn) return;
+        exportPdfBtn.disabled = !lastAuditResult;
+      }
+
+      function formatScopeLabelFromSites(sites, entireOrgUsed = false) {
+        if (!Array.isArray(sites) || !sites.length) {
+          return entireOrgUsed ? 'Entire organization' : 'Selected sites';
+        }
+        if (entireOrgUsed) {
+          return `Entire organization (${sites.length} site${sites.length === 1 ? '' : 's'})`;
+        }
+        const names = sites.map(site => site && (site.name || site.id)).filter(Boolean);
+        if (names.length <= 3) {
+          return names.join(', ');
+        }
+        return `${names.length} selected sites`;
+      }
+
+      function snapshotSelectedSites(entireOrgUsed) {
+        if (entireOrgUsed) {
+          return [...allSites];
+        }
+        return allSites.filter(site => selectedSiteIds.has(site.id));
       }
 
       function renderSiteList() {
@@ -929,6 +962,7 @@
           allSites.sort((a, b) => a.name.localeCompare(b.name));
           renderSiteList();
           updateSelectionSummary();
+          updateExportButtonState();
           showStatus('Ready to run audit', 'success');
         } catch (err) {
           console.error(err);
@@ -936,14 +970,80 @@
         }
       }
 
+      function parseFilenameFromDisposition(disposition) {
+        if (!disposition || typeof disposition !== 'string') return '';
+        const match = disposition.match(/filename="?([^\";]+)"?/i);
+        return match && match[1] ? match[1] : '';
+      }
+
+      async function exportAuditPdf() {
+        if (!lastAuditResult) {
+          showStatus('Run an audit before exporting the report.', 'error');
+          return;
+        }
+        const payload = {
+          report_title: 'Compliance Audit Report',
+          generated_by: currentUserName,
+          audit: lastAuditResult,
+          context: {
+            scope_label: lastRunScope || formatScopeLabelFromSites(lastRunSites, Boolean(lastAuditResult?.entire_org)),
+            site_ids: Array.isArray(lastRunSites) ? lastRunSites.map(site => site && site.id).filter(Boolean) : [],
+            site_names: Array.isArray(lastRunSites) ? lastRunSites.map(site => site && (site.name || site.id)).filter(Boolean) : [],
+          },
+        };
+        const originalLabel = exportPdfBtn ? exportPdfBtn.textContent : '';
+        if (exportPdfBtn) {
+          exportPdfBtn.disabled = true;
+          exportPdfBtn.textContent = 'Exporting…';
+        }
+        showStatus('Preparing compliance report…', 'info');
+        try {
+          const res = await fetch('/api/audit/pdf', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) {
+            const errText = await res.text().catch(() => 'Unable to generate report.');
+            throw new Error(errText || 'Unable to generate report.');
+          }
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          const disposition = res.headers.get('Content-Disposition') || res.headers.get('content-disposition');
+          const filename = parseFilenameFromDisposition(disposition) || 'compliance_audit_report.pdf';
+          link.href = url;
+          link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          URL.revokeObjectURL(url);
+          showStatus('Compliance report downloaded.', 'success');
+        } catch (err) {
+          console.error(err);
+          showStatus(`Unable to export report: ${err.message || err}`, 'error');
+        } finally {
+          if (exportPdfBtn) {
+            exportPdfBtn.disabled = false;
+            exportPdfBtn.textContent = originalLabel || 'Export PDF';
+          }
+        }
+      }
+
       runAuditBtn.addEventListener('click', async () => {
+        const entireOrgAtRun = entireOrg.checked;
+        const selectedSitesSnapshot = snapshotSelectedSites(entireOrgAtRun);
+        lastAuditResult = null;
+        lastRunScope = '';
+        lastRunSites = selectedSitesSnapshot;
+        updateExportButtonState();
         runAuditBtn.disabled = true;
         showStatus('Running audit…', 'info');
         resultsContainer.innerHTML = '';
         try {
           const body = {
             site_ids: Array.from(selectedSiteIds),
-            entire_org: entireOrg.checked
+            entire_org: entireOrgAtRun
           };
           const res = await fetch('/api/audit/run', {
             method: 'POST',
@@ -957,7 +1057,11 @@
             return;
           }
           showStatus('Audit complete', 'success');
+          lastAuditResult = { ...data, entire_org: entireOrgAtRun };
+          lastRunSites = Array.isArray(data.sites) ? data.sites : selectedSitesSnapshot;
+          lastRunScope = formatScopeLabelFromSites(lastRunSites, entireOrgAtRun);
           renderResults(data);
+          updateExportButtonState();
         } catch (err) {
           console.error(err);
           showStatus(`Audit failed: ${err.message || err}`, 'error');
@@ -966,6 +1070,12 @@
         }
       });
 
+      exportPdfBtn?.addEventListener('click', (event) => {
+        event.preventDefault();
+        exportAuditPdf();
+      });
+
+      updateExportButtonState();
       loadSites();
     </script>
   </body>

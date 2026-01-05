@@ -1067,8 +1067,21 @@ def _build_bom_summary(
     return summary
 
 
-@app.post("/api/showtech/pdf")
-def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
+def _pdf_safe_text(value: Any) -> str:
+    text = "" if value is None else str(value)
+    try:
+        text.encode("latin-1")
+        return text
+    except UnicodeEncodeError:
+        return text.encode("latin-1", "replace").decode("latin-1")
+
+
+def _pdf_multi_cell_full_width(pdf: FPDF, text: str, h: float = 6) -> None:
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(0, h, _pdf_safe_text(text))
+
+
+def _initialize_report_pdf(title: str) -> FPDF:
     pdf = FPDF()
     try:
         pdf.set_compression(False)
@@ -1084,18 +1097,41 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
         except RuntimeError:
             # Ignore image errors and continue rendering the report
             pass
-
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "Hardware Conversion Report", ln=True)
+    pdf.cell(0, 10, _pdf_safe_text(title), ln=True)
+    return pdf
 
-    project_name = str(data.get("project_name") or "").strip()
-    generated_by = data.get("generated_by") or "Unknown user"
+
+def _pdf_generated_context(generated_by_value: Any) -> tuple[str, str]:
+    generated_by = str(generated_by_value).strip() if generated_by_value is not None else ""
+    if not generated_by:
+        generated_by = "Unknown user"
     try:
         tz = ZoneInfo(os.environ.get("TZ", DEFAULT_TZ))
     except Exception:
         tz = None
     now = datetime.now(tz) if tz else datetime.now()
     generated_on = now.strftime("%Y-%m-%d %H:%M %Z") if tz else now.strftime("%Y-%m-%d %H:%M")
+    return generated_by, generated_on
+
+
+def _format_iso_datetime(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except Exception:
+        return None
+    if dt.tzinfo:
+        return dt.strftime("%Y-%m-%d %H:%M %Z")
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+@app.post("/api/showtech/pdf")
+def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
+    pdf = _initialize_report_pdf("Hardware Conversion Report")
+    project_name = str(data.get("project_name") or "").strip()
+    generated_by, generated_on = _pdf_generated_context(data.get("generated_by"))
 
     pdf.set_font("Helvetica", size=12)
     if project_name:
@@ -1164,6 +1200,181 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
         download_name = "hardware_conversion_report.pdf"
     headers = {"Content-Disposition": f"attachment; filename={download_name}"}
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
+def _build_audit_report_filename(
+    context: Optional[Mapping[str, Any]],
+    audit: Mapping[str, Any],
+) -> str:
+    base = "compliance_audit_report"
+    candidate = ""
+    if isinstance(context, Mapping):
+        for key in ("filename", "scope_label"):
+            value = context.get(key)
+            if isinstance(value, str) and value.strip():
+                candidate = value.strip()
+                break
+        if not candidate:
+            site_names = context.get("site_names")
+            if isinstance(site_names, Sequence) and not isinstance(site_names, (str, bytes)):
+                joined = "_".join(str(name).strip() for name in site_names if str(name).strip())
+                if joined:
+                    candidate = joined
+    if not candidate:
+        sites = audit.get("sites")
+        if isinstance(sites, Sequence) and len(sites) == 1:
+            site = sites[0] or {}
+            if isinstance(site, Mapping):
+                candidate = str(site.get("name") or site.get("id") or "").strip()
+
+    fragment = _safe_project_filename_fragment(candidate)
+    date_fragment = ""
+    started_at = audit.get("started_at")
+    if isinstance(started_at, str):
+        try:
+            dt = datetime.fromisoformat(started_at)
+            date_fragment = dt.strftime("%Y%m%d")
+        except Exception:
+            date_fragment = ""
+
+    parts = [base]
+    if fragment:
+        parts.append(fragment)
+    if date_fragment:
+        parts.append(date_fragment)
+    filename = "_".join(parts)
+    return f"{filename}.pdf"
+
+
+@app.post("/api/audit/pdf")
+def api_audit_pdf(data: Dict[str, Any] = Body(...)):
+    try:
+        audit = data.get("audit")
+        if not isinstance(audit, Mapping):
+            raise ValueError("audit results are required to export a report")
+        checks = audit.get("checks")
+        if not isinstance(checks, Sequence) or isinstance(checks, (str, bytes)):
+            raise ValueError("audit results must include checks")
+
+        report_title = str(data.get("report_title") or "Compliance Audit Report").strip() or "Compliance Audit Report"
+        pdf = _initialize_report_pdf(report_title)
+        generated_by, generated_on = _pdf_generated_context(data.get("generated_by"))
+        context = data.get("context") if isinstance(data.get("context"), Mapping) else {}
+        scope_label = str(context.get("scope_label") or "").strip()
+
+        pdf.set_font("Helvetica", size=12)
+        if scope_label:
+            pdf.cell(0, 8, f"Scope: {_pdf_safe_text(scope_label)}", ln=True)
+        pdf.cell(0, 8, f"Generated by: {_pdf_safe_text(generated_by)}", ln=True)
+        pdf.cell(0, 8, f"Generated on: {_pdf_safe_text(generated_on)}", ln=True)
+
+        started_display = _format_iso_datetime(str(audit.get("started_at") or "")) or "N/A"
+        finished_display = _format_iso_datetime(str(audit.get("finished_at") or "")) or "N/A"
+        duration_ms = audit.get("duration_ms")
+        duration_text = f"{duration_ms} ms" if isinstance(duration_ms, (int, float)) else "N/A"
+        pdf.cell(0, 8, f"Audit window: {_pdf_safe_text(started_display)} to {_pdf_safe_text(finished_display)}", ln=True)
+        pdf.cell(0, 8, f"Duration: {_pdf_safe_text(duration_text)}", ln=True)
+        pdf.ln(4)
+
+        totals = [
+            ("Sites audited", audit.get("total_sites", 0)),
+            ("Devices audited", audit.get("total_devices", 0)),
+            ("Issues identified", audit.get("total_findings", 0)),
+            ("1 Click Fix Now issues", audit.get("total_quick_fix_issues", 0)),
+        ]
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Summary", ln=True)
+        pdf.set_font("Helvetica", size=11)
+        for label, raw_value in totals:
+            value = raw_value if isinstance(raw_value, (int, float)) else raw_value or 0
+            pdf.cell(0, 7, _pdf_safe_text(f"{label}: {value}"), ln=True)
+        pdf.ln(4)
+
+        errors = audit.get("errors") or []
+        if isinstance(errors, Sequence) and not isinstance(errors, (str, bytes)) and errors:
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.cell(0, 8, "Errors", ln=True)
+            pdf.set_font("Helvetica", size=11)
+            for err in errors:
+                if not isinstance(err, Mapping):
+                    continue
+                site_id = err.get("site_id") or "unknown site"
+                message = err.get("error") or err.get("message") or "Unknown error"
+                _pdf_multi_cell_full_width(pdf, f"{site_id}: {message}")
+            pdf.ln(3)
+
+        sites = audit.get("sites")
+        if isinstance(sites, Sequence) and not isinstance(sites, (str, bytes)) and sites:
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.cell(0, 8, "Audited sites", ln=True)
+            pdf.set_font("Helvetica", size=11)
+            for site in sites:
+                if not isinstance(site, Mapping):
+                    continue
+                name = site.get("name") or site.get("id") or "Unknown site"
+                devices = site.get("devices")
+                issues = site.get("issues")
+                device_text = f"{devices} device(s)" if devices is not None else "Devices: —"
+                issue_text = f"{issues} issue(s)" if issues is not None else "Issues: —"
+                _pdf_multi_cell_full_width(pdf, f"{name} - {device_text}, {issue_text}")
+            pdf.ln(3)
+
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Checks", ln=True)
+        pdf.ln(1)
+        for check in checks:
+            if not isinstance(check, Mapping):
+                continue
+            findings = check.get("findings")
+            if not isinstance(findings, Sequence) or isinstance(findings, (str, bytes)):
+                findings = []
+            name = check.get("name") or check.get("id") or "Check"
+            severity = str(check.get("severity") or "warning").capitalize()
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.cell(0, 7, _pdf_safe_text(f"{name} ({severity})"), ln=True)
+            description = check.get("description")
+            if isinstance(description, str) and description.strip():
+                pdf.set_font("Helvetica", size=10)
+                _pdf_multi_cell_full_width(pdf, description.strip())
+            passing_sites = check.get("passing_sites")
+            failing_sites = len(findings)
+            pdf.set_font("Helvetica", size=10)
+            pdf.cell(
+                0,
+                6,
+                _pdf_safe_text(
+                    f"Passing sites: {passing_sites if passing_sites is not None else 'N/A'} | Failing sites: {failing_sites} | Findings: {len(findings)}"
+                ),
+                ln=True,
+            )
+            if findings:
+                pdf.set_font("Helvetica", size=10)
+                for finding in findings:
+                    if not isinstance(finding, Mapping):
+                        continue
+                    site_label = finding.get("site_name") or finding.get("site_id") or "Site"
+                    device_name = finding.get("device_name")
+                    message = finding.get("message") or ""
+                    header_parts = [_pdf_safe_text(site_label)]
+                    if device_name:
+                        header_parts.append(_pdf_safe_text(f"Device: {device_name}"))
+                    _pdf_multi_cell_full_width(pdf, " - ".join(header_parts))
+                    if message:
+                        _pdf_multi_cell_full_width(pdf, f"- {message}")
+                pdf.ln(2)
+            else:
+                pdf.set_font("Helvetica", size=10)
+                pdf.cell(0, 6, "No issues detected for this check.", ln=True)
+                pdf.ln(1)
+
+        pdf_bytes = bytes(pdf.output())
+        download_name = _build_audit_report_filename(context, audit)
+        headers = {"Content-Disposition": f"attachment; filename={download_name}"}
+        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
 @app.get("/api/device_types")
