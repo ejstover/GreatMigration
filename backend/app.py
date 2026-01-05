@@ -1341,14 +1341,6 @@ def api_audit_pdf(data: Dict[str, Any] = Body(...)):
             if isinstance(description, str) and description.strip():
                 pdf.set_font("Helvetica", size=10)
                 _pdf_multi_cell_full_width(pdf, description.strip())
-            failing_sites = len(findings)
-            pdf.set_font("Helvetica", size=10)
-            pdf.cell(
-                0,
-                6,
-                _pdf_safe_text(f"Failing sites: {failing_sites} | Findings: {len(findings)}"),
-                ln=True,
-            )
             if findings:
                 pdf.set_font("Helvetica", size=10)
                 for finding in findings:
@@ -1362,6 +1354,7 @@ def api_audit_pdf(data: Dict[str, Any] = Body(...)):
                         header_parts.append(_pdf_safe_text(f"Device: {device_name}"))
                     _pdf_multi_cell_full_width(pdf, " - ".join(header_parts))
                     if message:
+                        pdf.ln(1)
                         _pdf_multi_cell_full_width(pdf, f"- {message}")
                 pdf.ln(2)
             else:
