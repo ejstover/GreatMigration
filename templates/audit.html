@@ -778,8 +778,7 @@
             const stats = document.createElement('div');
             stats.className = 'flex flex-wrap gap-4 text-xs text-slate-500 dark:text-slate-400';
             const failingCount = Array.isArray(check.failing_sites) ? check.failing_sites.length : 0;
-            const passingCount = typeof check.passing_sites === 'number' ? check.passing_sites : Math.max((data.total_sites || 0) - failingCount, 0);
-            stats.innerHTML = `<span><strong>${passingCount}</strong> site${passingCount === 1 ? '' : 's'} passing</span><span><strong>${failingCount}</strong> site${failingCount === 1 ? '' : 's'} with findings</span>`;
+            stats.innerHTML = `<span><strong>${failingCount}</strong> site${failingCount === 1 ? '' : 's'} with findings</span>`;
             card.appendChild(stats);
 
             card.appendChild(renderFindings(findings, check.severity));

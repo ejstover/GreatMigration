@@ -1089,6 +1089,9 @@ def _initialize_report_pdf(title: str) -> FPDF:
         pass
     margin_in_mm = 25.4  # Approx. 1 inch margins for a Word-like layout
     pdf.set_margins(margin_in_mm, margin_in_mm, margin_in_mm)
+    pdf.set_left_margin(margin_in_mm)
+    pdf.set_right_margin(margin_in_mm)
+    pdf.r_margin = margin_in_mm
     pdf.set_auto_page_break(auto=True, margin=margin_in_mm)
     pdf.add_page()
     logo_path = static_path / "reportlogo.png"
@@ -1338,15 +1341,12 @@ def api_audit_pdf(data: Dict[str, Any] = Body(...)):
             if isinstance(description, str) and description.strip():
                 pdf.set_font("Helvetica", size=10)
                 _pdf_multi_cell_full_width(pdf, description.strip())
-            passing_sites = check.get("passing_sites")
             failing_sites = len(findings)
             pdf.set_font("Helvetica", size=10)
             pdf.cell(
                 0,
                 6,
-                _pdf_safe_text(
-                    f"Passing sites: {passing_sites if passing_sites is not None else 'N/A'} | Failing sites: {failing_sites} | Findings: {len(findings)}"
-                ),
+                _pdf_safe_text(f"Failing sites: {failing_sites} | Findings: {len(findings)}"),
                 ln=True,
             )
             if findings:
