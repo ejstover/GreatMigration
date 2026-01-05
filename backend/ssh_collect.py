@@ -49,6 +49,22 @@ def _raise_missing_netmiko() -> None:
 from translate_showtech import find_copper_10g_ports, load_mapping, parse_showtech
 
 
+def _looks_like_cli_error(output: str | None) -> bool:
+    if not output:
+        return False
+    text = output.strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    error_markers = (
+        "invalid input detected",
+        "incomplete command",
+        "ambiguous command",
+        "unknown command",
+    )
+    return text.startswith("%") or any(marker in lowered for marker in error_markers)
+
+
 @dataclass
 class DeviceInput:
     host: str
@@ -101,15 +117,25 @@ class JobState:
                     "error_info": r.error_info,
                     "hardware": r.hardware,
                     "running_config": r.running_config,
-                    "show_vlan_text": (
-                        r.command_outputs.get("show vlan") if r.command_outputs else None
-                    )
-                    or (r.command_outputs.get("show vlan brief") if r.command_outputs else None),
+                    "show_vlan_text": self._select_show_vlan_output(r.command_outputs),
                     "temp_files": r.temp_files,
                 }
                 for r in self.results
             ],
         }
+
+    @staticmethod
+    def _select_show_vlan_output(command_outputs: Dict[str, str] | None) -> Optional[str]:
+        if not command_outputs:
+            return None
+        show_vlan = command_outputs.get("show vlan")
+        show_vlan_brief = command_outputs.get("show vlan brief")
+
+        if show_vlan and _looks_like_cli_error(show_vlan) and show_vlan_brief:
+            return show_vlan_brief
+        if show_vlan:
+            return show_vlan
+        return show_vlan_brief
 
 
 _JOBS: Dict[str, JobState] = {}
