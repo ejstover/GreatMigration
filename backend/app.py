@@ -1087,7 +1087,9 @@ def _initialize_report_pdf(title: str) -> FPDF:
         pdf.set_compression(False)
     except AttributeError:
         pass
-    pdf.set_auto_page_break(auto=True, margin=15)
+    margin_in_mm = 25.4  # Approx. 1 inch margins for a Word-like layout
+    pdf.set_margins(margin_in_mm, margin_in_mm, margin_in_mm)
+    pdf.set_auto_page_break(auto=True, margin=margin_in_mm)
     pdf.add_page()
     logo_path = static_path / "reportlogo.png"
     if logo_path.exists():
