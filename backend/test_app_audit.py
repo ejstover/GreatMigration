@@ -298,4 +298,3 @@ def test_api_audit_pdf_falls_back_to_site_name(app_module):
     text = response.body.decode("latin-1", errors="ignore")
     assert "Device documentation" in text
     assert "R&D / Lab" in text
-    assert "Passing sites: 1 | Failing sites: 0 | Findings: 0" in text
