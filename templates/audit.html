@@ -123,6 +123,19 @@
       const selectAllBtn = document.getElementById('select_all');
       const clearSelectionBtn = document.getElementById('clear_selection');
 
+      const CHECK_LEVEL_LABELS = { org: 'Org', site: 'Site', device: 'Device' };
+      const CHECK_LEVEL_ORDER = ['org', 'site', 'device'];
+      const CHECK_LEVEL_MAP = {
+        required_site_variables: 'site',
+        switch_template_configuration: 'site',
+        configuration_overrides: 'device',
+        firmware_management: 'device',
+        cloud_management: 'device',
+        spare_switch_presence: 'device',
+        device_naming_convention: 'device',
+        device_documentation: 'device'
+      };
+
       let allSites = [];
       const selectedSiteIds = new Set();
 
@@ -675,7 +688,7 @@
         const layout = document.createElement('div');
         layout.className = 'lg:flex lg:items-start lg:gap-6';
         const mainColumn = document.createElement('div');
-        mainColumn.className = 'flex-1 space-y-4';
+        mainColumn.className = 'flex-1 space-y-6';
         const sideColumn = document.createElement('aside');
         sideColumn.className = 'mt-6 lg:mt-0 lg:w-80 space-y-4';
         layout.appendChild(mainColumn);
@@ -689,107 +702,141 @@
           empty.textContent = 'No checks were executed.';
           mainColumn.appendChild(empty);
         } else {
+          const checksByLevel = CHECK_LEVEL_ORDER.reduce((acc, level) => {
+            acc[level] = [];
+            return acc;
+          }, {});
+
           checks.forEach(check => {
-            const card = document.createElement('div');
-            card.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6 space-y-3';
-          const header = document.createElement('div');
-          header.className = 'flex flex-wrap items-center justify-between gap-3';
-          const title = document.createElement('div');
-          title.innerHTML = `<h3 class="text-lg font-semibold">${check.name || 'Check'}</h3><p class="text-sm text-slate-500 dark:text-slate-400">${check.description || ''}</p>`;
-          if (check.id === 'configuration_overrides') {
-            const heading = title.querySelector('h3');
-            if (heading) {
-              const tip = document.createElement('span');
-              tip.className = 'ml-2 inline-flex items-center text-xs text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 cursor-help';
-              tip.setAttribute('title', 'Local switch configuration overrides the assigned template. Additional fields are surfaced as exceptions.');
-              tip.innerHTML = `
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-10.5a.75.75 0 10-1.5 0v.75a.75.75 0 001.5 0V7.5zm0 3a.75.75 0 10-1.5 0v3a.75.75 0 001.5 0v-3z" clip-rule="evenodd" />
-                </svg>
-              `;
-              const sr = document.createElement('span');
-              sr.className = 'sr-only';
-              sr.textContent = 'Local configuration overrides template';
-              tip.appendChild(sr);
-              heading.appendChild(tip);
+            const level = CHECK_LEVEL_MAP[check.id] || 'org';
+            if (!checksByLevel[level]) {
+              checksByLevel[level] = [];
             }
-          }
-          const siteFindings = Array.isArray(check.site_level_findings) ? check.site_level_findings : [];
-          const deviceFindings = Array.isArray(check.device_level_findings) ? check.device_level_findings : [];
-          const fallbackFindings = Array.isArray(check.findings) ? check.findings : [];
-          const totalFindingsForBadge = siteFindings.length + deviceFindings.length + (!siteFindings.length && !deviceFindings.length ? fallbackFindings.length : 0);
-          const badgeSeverity = totalFindingsForBadge ? check.severity : 'success';
-          const badge = createSeverityBadge(badgeSeverity);
-          const controls = document.createElement('div');
-          controls.className = 'flex items-center gap-2';
-          controls.appendChild(badge);
+            checksByLevel[level].push(check);
+          });
 
-          let customControlsHandled = false;
-          if (check.id === 'firmware_management') {
-            customControlsHandled = true;
-            controls.appendChild(createGuideLink(
-              'https://www.juniper.net/documentation/us/en/software/mist/mist-wireless/topics/task/ap-firmware-upgrade-manual.html',
-              'AP firmware upgrade guide'
-            ));
-            controls.appendChild(createGuideLink(
-              'https://www.juniper.net/documentation/us/en/software/mist/mist-wired/topics/topic-map/switch-upgrade-map.html',
-              'Switch upgrade guide'
-            ));
-          }
+          CHECK_LEVEL_ORDER.forEach(level => {
+            const section = document.createElement('div');
+            section.className = 'space-y-3';
+            const heading = document.createElement('h3');
+            heading.className = 'text-xl font-semibold';
+            heading.textContent = CHECK_LEVEL_LABELS[level] || level;
+            section.appendChild(heading);
 
-          const actions = Array.isArray(check.actions) ? check.actions : [];
-          if (!customControlsHandled && canUseFixes && actions.length) {
-            actions.forEach(action => {
-              if (!action) {
-                return;
+            const levelChecks = Array.isArray(checksByLevel[level]) ? checksByLevel[level] : [];
+            if (!levelChecks.length) {
+              const emptyLevel = document.createElement('p');
+              emptyLevel.className = 'text-sm text-slate-500 dark:text-slate-400';
+              emptyLevel.textContent = level === 'org'
+                ? 'No organization-level checks are defined yet.'
+                : 'No checks in this category.';
+              section.appendChild(emptyLevel);
+            } else {
+              levelChecks.forEach(check => {
+                const card = document.createElement('div');
+                card.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6 space-y-3';
+              const header = document.createElement('div');
+              header.className = 'flex flex-wrap items-center justify-between gap-3';
+              const title = document.createElement('div');
+              title.innerHTML = `<h3 class="text-lg font-semibold">${check.name || 'Check'}</h3><p class="text-sm text-slate-500 dark:text-slate-400">${check.description || ''}</p>`;
+              if (check.id === 'configuration_overrides') {
+                const heading = title.querySelector('h3');
+                if (heading) {
+                  const tip = document.createElement('span');
+                  tip.className = 'ml-2 inline-flex items-center text-xs text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 cursor-help';
+                  tip.setAttribute('title', 'Local switch configuration overrides the assigned template. Additional fields are surfaced as exceptions.');
+                  tip.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                      <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-10.5a.75.75 0 10-1.5 0v.75a.75.75 0 001.5 0V7.5zm0 3a.75.75 0 10-1.5 0v3a.75.75 0 001.5 0v-3z" clip-rule="evenodd" />
+                    </svg>
+                  `;
+                  const sr = document.createElement('span');
+                  sr.className = 'sr-only';
+                  sr.textContent = 'Local configuration overrides template';
+                  tip.appendChild(sr);
+                  heading.appendChild(tip);
+                }
               }
-              if (Array.isArray(action.devices) && action.devices.length) {
-                return;
-              }
-              const siteIds = Array.isArray(action.site_ids) ? action.site_ids : [];
-              if (!siteIds.length) {
-                return;
-              }
-              const wrapper = document.createElement('div');
-              wrapper.className = 'flex items-center gap-2';
-              const button = document.createElement('button');
-              button.type = 'button';
-              button.className = 'text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
-              button.textContent = action.button_label || '1 Click Fix Now';
-              button.addEventListener('click', () => runOneClickFix(action, button));
-              const status = document.createElement('span');
-              status.className = 'text-xs font-medium hidden whitespace-normal';
-              status.setAttribute('data-role', 'action-status');
-              wrapper.appendChild(button);
-              wrapper.appendChild(status);
-              button._actionStatusElement = status;
-              const precheckState = evaluateActionPrechecks(action);
-              if (precheckState.messages.length) {
-                setInitialActionStatus(button, precheckState.messages.join(' '), precheckState.canRun ? 'info' : 'error');
-              } else {
-                setInitialActionStatus(button, '', 'info');
-              }
-              button._precheckCanRun = precheckState.canRun;
-              if (!precheckState.canRun) {
-                button.disabled = true;
-              }
-              controls.appendChild(wrapper);
-            });
-          }
+              const siteFindings = Array.isArray(check.site_level_findings) ? check.site_level_findings : [];
+              const deviceFindings = Array.isArray(check.device_level_findings) ? check.device_level_findings : [];
+              const fallbackFindings = Array.isArray(check.findings) ? check.findings : [];
+              const totalFindingsForBadge = siteFindings.length + deviceFindings.length + (!siteFindings.length && !deviceFindings.length ? fallbackFindings.length : 0);
+              const badgeSeverity = totalFindingsForBadge ? check.severity : 'success';
+              const badge = createSeverityBadge(badgeSeverity);
+              const controls = document.createElement('div');
+              controls.className = 'flex items-center gap-2';
+              controls.appendChild(badge);
 
-          header.appendChild(title);
-          header.appendChild(controls);
-            card.appendChild(header);
+              let customControlsHandled = false;
+              if (check.id === 'firmware_management') {
+                customControlsHandled = true;
+                controls.appendChild(createGuideLink(
+                  'https://www.juniper.net/documentation/us/en/software/mist/mist-wireless/topics/task/ap-firmware-upgrade-manual.html',
+                  'AP firmware upgrade guide'
+                ));
+                controls.appendChild(createGuideLink(
+                  'https://www.juniper.net/documentation/us/en/software/mist/mist-wired/topics/topic-map/switch-upgrade-map.html',
+                  'Switch upgrade guide'
+                ));
+              }
 
-            const stats = document.createElement('div');
-            stats.className = 'flex flex-wrap gap-4 text-xs text-slate-500 dark:text-slate-400';
-            const failingCount = Array.isArray(check.failing_sites) ? check.failing_sites.length : 0;
-            const passingCount = typeof check.passing_sites === 'number' ? check.passing_sites : Math.max((data.total_sites || 0) - failingCount, 0);
-            stats.innerHTML = `<span><strong>${passingCount}</strong> site${passingCount === 1 ? '' : 's'} passing</span><span><strong>${failingCount}</strong> site${failingCount === 1 ? '' : 's'} with findings</span>`;
-            card.appendChild(stats);
+              const actions = Array.isArray(check.actions) ? check.actions : [];
+              if (!customControlsHandled && canUseFixes && actions.length) {
+                actions.forEach(action => {
+                  if (!action) {
+                    return;
+                  }
+                  if (Array.isArray(action.devices) && action.devices.length) {
+                    return;
+                  }
+                  const siteIds = Array.isArray(action.site_ids) ? action.site_ids : [];
+                  if (!siteIds.length) {
+                    return;
+                  }
+                  const wrapper = document.createElement('div');
+                  wrapper.className = 'flex items-center gap-2';
+                  const button = document.createElement('button');
+                  button.type = 'button';
+                  button.className = 'text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
+                  button.textContent = action.button_label || '1 Click Fix Now';
+                  button.addEventListener('click', () => runOneClickFix(action, button));
+                  const status = document.createElement('span');
+                  status.className = 'text-xs font-medium hidden whitespace-normal';
+                  status.setAttribute('data-role', 'action-status');
+                  wrapper.appendChild(button);
+                  wrapper.appendChild(status);
+                  button._actionStatusElement = status;
+                  const precheckState = evaluateActionPrechecks(action);
+                  if (precheckState.messages.length) {
+                    setInitialActionStatus(button, precheckState.messages.join(' '), precheckState.canRun ? 'info' : 'error');
+                  } else {
+                    setInitialActionStatus(button, '', 'info');
+                  }
+                  button._precheckCanRun = precheckState.canRun;
+                  if (!precheckState.canRun) {
+                    button.disabled = true;
+                  }
+                  controls.appendChild(wrapper);
+                });
+              }
 
-            card.appendChild(renderCategorizedFindings(siteFindings, deviceFindings, fallbackFindings));
-            mainColumn.appendChild(card);
+              header.appendChild(title);
+              header.appendChild(controls);
+                card.appendChild(header);
+
+                const stats = document.createElement('div');
+                stats.className = 'flex flex-wrap gap-4 text-xs text-slate-500 dark:text-slate-400';
+                const failingCount = Array.isArray(check.failing_sites) ? check.failing_sites.length : 0;
+                const passingCount = typeof check.passing_sites === 'number' ? check.passing_sites : Math.max((data.total_sites || 0) - failingCount, 0);
+                stats.innerHTML = `<span><strong>${passingCount}</strong> site${passingCount === 1 ? '' : 's'} passing</span><span><strong>${failingCount}</strong> site${failingCount === 1 ? '' : 's'} with findings</span>`;
+                card.appendChild(stats);
+
+                card.appendChild(renderCategorizedFindings(siteFindings, deviceFindings, fallbackFindings));
+                section.appendChild(card);
+              });
+            }
+
+            mainColumn.appendChild(section);
           });
         }
 
