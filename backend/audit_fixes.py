@@ -8,7 +8,11 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 
 import requests
 
-from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
+from audit_actions import (
+    AP_RENAME_ACTION_ID,
+    CLEAR_DNS_OVERRIDE_ACTION_ID,
+    ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
+)
 from compliance import (
     DEFAULT_AP_NAME_PATTERN,
     DEFAULT_SWITCH_NAME_PATTERN,
@@ -906,6 +910,142 @@ def _clear_dns_overrides_for_site(
     return summary
 
 
+def _execute_cloud_management_action(
+    base_url: str,
+    token: str,
+    site_ids: Sequence[str],
+    *,
+    dry_run: bool,
+    device_map: Optional[Mapping[str, Sequence[str]]],
+) -> Dict[str, Any]:
+    headers = _mist_headers(token)
+    normalized_site_ids = [sid for sid in site_ids if isinstance(sid, str) and sid]
+
+    results: List[Dict[str, Any]] = []
+    totals = {"updated": 0, "skipped": 0, "failed": 0}
+
+    for site_id in normalized_site_ids:
+        site_name = _fetch_site_name(base_url, headers, site_id)
+        target_devices = device_map.get(site_id) if device_map else None
+        normalized_devices: List[str] = []
+        if target_devices:
+            seen: Set[str] = set()
+            for device_id in target_devices:
+                if device_id is None:
+                    continue
+                text = str(device_id).strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                normalized_devices.append(text)
+
+        summary: Dict[str, Any] = {
+            "site_id": site_id,
+            "site_name": site_name,
+            "updated": 0,
+            "skipped": 0,
+            "failed": 0,
+            "changes": [],
+            "errors": [],
+        }
+
+        if not normalized_devices:
+            summary["failed"] = 1
+            summary["errors"].append({"reason": "No target devices provided."})
+            results.append(summary)
+            totals["failed"] += 1
+            continue
+
+        for device_id in normalized_devices:
+            try:
+                device_doc = _fetch_device_document(base_url, headers, site_id, device_id)
+            except requests.HTTPError as exc:
+                summary["failed"] += 1
+                summary["errors"].append(
+                    {
+                        "device_id": device_id,
+                        "reason": f"Device lookup failed: {exc}",
+                    }
+                )
+                continue
+
+            device_name = _device_display_name(device_doc, device_id)
+            device_type = device_doc.get("type")
+            if device_type != "switch":
+                summary["skipped"] += 1
+                summary["changes"].append(
+                    {
+                        "device_id": device_id,
+                        "device_name": device_name,
+                        "reason": "Device is not a switch.",
+                        "status": "skipped",
+                    }
+                )
+                continue
+
+            disable_auto_config = device_doc.get("disable_auto_config")
+            if disable_auto_config is not True:
+                summary["skipped"] += 1
+                summary["changes"].append(
+                    {
+                        "device_id": device_id,
+                        "device_name": device_name,
+                        "previous_disable_auto_config": disable_auto_config,
+                        "reason": "Cloud management already enabled.",
+                        "status": "skipped",
+                    }
+                )
+                continue
+
+            payload = {"disable_auto_config": False}
+            change_entry = {
+                "device_id": device_id,
+                "device_name": device_name,
+                "previous_disable_auto_config": disable_auto_config,
+            }
+
+            if not dry_run:
+                try:
+                    _update_device_payload(base_url, headers, site_id, device_id, payload)
+                except requests.HTTPError as exc:
+                    summary["failed"] += 1
+                    summary["errors"].append(
+                        {
+                            "device_id": device_id,
+                            "reason": f"Failed to enable cloud management: {exc}",
+                        }
+                    )
+                    continue
+                change_entry["status"] = "success"
+                change_entry["message"] = "Cloud management enabled."
+                summary["updated"] += 1
+            else:
+                change_entry["status"] = "preview"
+                change_entry["message"] = "Would enable cloud management."
+                summary["updated"] += 1
+
+            summary["changes"].append(change_entry)
+
+        results.append(summary)
+        totals["updated"] += summary.get("updated", 0)
+        totals["skipped"] += summary.get("skipped", 0)
+        totals["failed"] += summary.get("failed", 0)
+
+    totals_with_sites = {**totals, "sites": len(results)}
+    totals_with_sites.setdefault(
+        "summary",
+        _format_summary_message("Enabled cloud management for", totals_with_sites.get("updated", 0)),
+    )
+
+    return {
+        "ok": True,
+        "action_id": ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
+        "dry_run": dry_run,
+        "results": results,
+        "totals": totals_with_sites,
+    }
+
+
 def _execute_ap_rename_action(
     base_url: str,
     token: str,
@@ -1058,6 +1198,14 @@ def execute_audit_action(
         )
     if action_id == CLEAR_DNS_OVERRIDE_ACTION_ID:
         return _execute_dns_override_action(
+            base_url,
+            token,
+            site_ids,
+            dry_run=dry_run,
+            device_map=device_map,
+        )
+    if action_id == ENABLE_CLOUD_MANAGEMENT_ACTION_ID:
+        return _execute_cloud_management_action(
             base_url,
             token,
             site_ids,

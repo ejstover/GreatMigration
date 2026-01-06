@@ -21,7 +21,7 @@ from compliance import (
     DNS_OVERRIDE_REQUIRED_VAR_GROUPS,
     DNS_OVERRIDE_REQUIRED_VARS,
 )
-from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
+from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID, ENABLE_CLOUD_MANAGEMENT_ACTION_ID
 
 
 def _format_dns_label_group(options):
@@ -443,9 +443,16 @@ def test_cloud_management_check_flags_unmanaged_switch():
     findings = check.run(ctx)
 
     assert len(findings) == 1
-    assert "locally managed" in findings[0].message
-    assert findings[0].device_id == "sw-1"
-    assert findings[0].details == {"disable_auto_config": True}
+    finding = findings[0]
+    assert "locally managed" in finding.message
+    assert finding.device_id == "sw-1"
+    assert finding.details == {"disable_auto_config": True}
+    assert finding.actions is not None
+    assert len(finding.actions) == 1
+    action = finding.actions[0]
+    assert action["id"] == ENABLE_CLOUD_MANAGEMENT_ACTION_ID
+    assert action["site_ids"] == ["site-cloud-1"]
+    assert action["devices"] == [{"site_id": "site-cloud-1", "device_id": "sw-1"}]
 
 
 def test_cloud_management_check_ignores_managed_switch():

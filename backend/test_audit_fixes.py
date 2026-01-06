@@ -1,7 +1,7 @@
 import pytest
 import requests
 
-from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
+from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID, ENABLE_CLOUD_MANAGEMENT_ACTION_ID
 from audit_fixes import execute_audit_action
 
 
@@ -22,6 +22,56 @@ class DummyResponse:
 def test_execute_action_rejects_unknown_action():
     with pytest.raises(ValueError):
         execute_audit_action("unknown", "https://example", "token", [])
+
+
+def test_execute_action_enables_cloud_management(monkeypatch):
+    calls = {"get": [], "put": []}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["get"].append(url)
+        if url.endswith("/sites/site-1"):
+            return DummyResponse({"name": "Site One"})
+        if url.endswith("/sites/site-1/devices/dev-1"):
+            return DummyResponse(
+                {
+                    "id": "dev-1",
+                    "name": "Switch 1",
+                    "type": "switch",
+                    "disable_auto_config": True,
+                }
+            )
+        raise AssertionError(f"Unexpected GET {url}")
+
+    def fake_put(url, headers=None, json=None, timeout=None):
+        calls["put"].append((url, json))
+        return DummyResponse({})
+
+    monkeypatch.setattr("audit_fixes.requests.get", fake_get)
+    monkeypatch.setattr("audit_fixes.requests.put", fake_put)
+
+    result = execute_audit_action(
+        ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
+        "https://api.mist.test/api/v1",
+        "token",
+        ["site-1"],
+        dry_run=False,
+        device_map={"site-1": ["dev-1"]},
+    )
+
+    assert result["ok"] is True
+    summary = result["results"][0]
+    assert summary["site_name"] == "Site One"
+    assert summary["updated"] == 1
+    assert summary["failed"] == 0
+    assert summary["skipped"] == 0
+    change = summary["changes"][0]
+    assert change["device_id"] == "dev-1"
+    assert change["device_name"] == "Switch 1"
+    assert change["status"] == "success"
+    assert change["message"] == "Cloud management enabled."
+    assert len(calls["put"]) == 1
+    assert calls["put"][0][0].endswith("/devices/dev-1")
+    assert calls["put"][0][1] == {"disable_auto_config": False}
 
 
 def test_execute_action_renames_aps_in_dry_run(monkeypatch):
