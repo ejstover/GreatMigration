@@ -10,7 +10,11 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
-from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
+from audit_actions import (
+    AP_RENAME_ACTION_ID,
+    CLEAR_DNS_OVERRIDE_ACTION_ID,
+    ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
+)
 
 
 @dataclass
@@ -1741,6 +1745,26 @@ class CloudManagementCheck(ComplianceCheck):
 
             device_id = str(device.get("id")) if device.get("id") is not None else None
             device_name = _normalize_site_name(device) or device_id or "device"
+            actions: Optional[List[Dict[str, Any]]] = None
+            if device_id:
+                actions = [
+                    {
+                        "id": ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
+                        "label": "Enable cloud management",
+                        "button_label": "1 Click Fix Now",
+                        "site_ids": [context.site_id],
+                        "devices": [
+                            {
+                                "site_id": context.site_id,
+                                "device_id": device_id,
+                            }
+                        ],
+                        "metadata": {
+                            "device_id": device_id,
+                            "device_name": device_name,
+                        },
+                    }
+                ]
             findings.append(
                 Finding(
                     site_id=context.site_id,
@@ -1752,6 +1776,7 @@ class CloudManagementCheck(ComplianceCheck):
                         "and not managed by Juniper Mist cloud."
                     ),
                     details={"disable_auto_config": disable_auto_config},
+                    actions=actions,
                 )
             )
         return findings
