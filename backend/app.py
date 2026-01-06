@@ -42,6 +42,7 @@ from push_mist_port_config import (  # type: ignore
     remap_ports,
     validate_port_config_against_model,
     map_interfaces_to_port_config,
+    PortConfigError,
 )
 from translate_showtech import (
     parse_showtech,
@@ -4516,6 +4517,8 @@ async def api_push(
         )
         status = 200 if row_result.get("ok") else 400
         return JSONResponse(row_result, status_code=status)
+    except PortConfigError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Server error: {e}"}, status_code=500)
 
@@ -4666,6 +4669,8 @@ async def api_push_batch(
                     used.update(names)
             results.append(row_result)
 
+        except PortConfigError as e:
+            results.append({"ok": False, "row_index": i, "error": str(e)})
         except Exception as e:
             results.append({"ok": False, "row_index": i, "error": f"Server error: {e}"})
 
