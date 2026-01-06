@@ -104,7 +104,7 @@ def _format_vlan_id_set(vlans: Iterable[int]) -> str:
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
 DEFAULT_TZ = "America/New_York"
-DEFAULT_LEGACY_VLAN_IDS: Set[int] = set(range(500, 600))
+DEFAULT_LEGACY_VLAN_IDS: Set[int] = {10} | set(range(500, 600))
 LEGACY_VLAN_IDS: Set[int] = _expand_vlan_id_set(os.getenv("LEGACY_VLANS"), base=DEFAULT_LEGACY_VLAN_IDS)
 EXCLUDE_VLAN_IDS: Set[int] = _expand_vlan_id_set(os.getenv("EXCLUDE_VLANS"))
 LEGACY_VLAN_LABEL = _format_vlan_id_set(LEGACY_VLAN_IDS) or _format_vlan_id_set(DEFAULT_LEGACY_VLAN_IDS)
