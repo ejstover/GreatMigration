@@ -10,6 +10,13 @@
   <style>
     .card { transition: box-shadow .2s ease, transform .2s ease; }
     .card:hover { transform: translateY(-1px); box-shadow: 0 10px 30px rgba(15,23,42,0.08); }
+    @media print {
+      body { background: white !important; color: #0f172a !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      #menu, #menu_btn, #logout_btn, .no-print { display: none !important; }
+      #main { margin: 0 !important; }
+      header, section, .card { box-shadow: none !important; }
+      a { color: inherit !important; }
+    }
   </style>
   </head>
   <body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100 overflow-x-hidden">
@@ -67,6 +74,7 @@
         </div>
         <div class="flex flex-wrap items-center gap-3">
           <button id="run_audit" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed">Run audit</button>
+          <button id="export_pdf" class="px-4 py-2 rounded border border-emerald-600 text-emerald-700 dark:text-emerald-200 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed no-print" disabled>Export PDF</button>
           <span id="audit_status" class="text-sm text-slate-600 dark:text-slate-300"></span>
         </div>
       </section>
@@ -117,6 +125,7 @@
       const siteSearch = document.getElementById('site_search');
       const siteList = document.getElementById('site_list');
       const runAuditBtn = document.getElementById('run_audit');
+      const exportPdfBtn = document.getElementById('export_pdf');
       const auditStatus = document.getElementById('audit_status');
       const resultsContainer = document.getElementById('audit_results');
       const selectionSummary = document.getElementById('selection_summary');
@@ -138,6 +147,7 @@
 
       let allSites = [];
       const selectedSiteIds = new Set();
+      let hasAuditResults = false;
 
       function updateSelectionSummary() {
         if (entireOrg.checked) {
@@ -204,6 +214,11 @@
         renderSiteList();
       });
 
+      exportPdfBtn?.addEventListener('click', (e) => {
+        e.preventDefault();
+        exportAuditReport();
+      });
+
       entireOrg.addEventListener('change', () => {
         renderSiteList();
         updateSelectionSummary();
@@ -233,6 +248,22 @@
           className += 'text-slate-600 dark:text-slate-300';
         }
         auditStatus.className = className;
+      }
+
+      function setExportEnabled(enabled) {
+        if (!exportPdfBtn) return;
+        exportPdfBtn.disabled = !enabled;
+        exportPdfBtn.setAttribute('aria-disabled', String(!enabled));
+      }
+      setExportEnabled(false);
+
+      function exportAuditReport() {
+        if (!hasAuditResults) {
+          showStatus('Run an audit to export the report.', 'error');
+          return;
+        }
+        exportPdfBtn?.blur();
+        window.requestAnimationFrame(() => window.print());
       }
 
       function ensureActionStatusElement(button) {
@@ -641,6 +672,8 @@
       }
 
       function renderResults(data) {
+        hasAuditResults = Boolean(data);
+        setExportEnabled(Boolean(data));
         resultsContainer.innerHTML = '';
         if (!data) return;
 
@@ -1024,6 +1057,8 @@
 
       runAuditBtn.addEventListener('click', async () => {
         runAuditBtn.disabled = true;
+        hasAuditResults = false;
+        setExportEnabled(false);
         showStatus('Running audit…', 'info');
         resultsContainer.innerHTML = '';
         try {
