@@ -15,6 +15,7 @@ pipelines.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 import uuid
@@ -148,6 +149,38 @@ def get_job(job_id: str) -> Optional[JobState]:
 def sanitize_label(value: str) -> str:
     safe = "".join(ch for ch in value if ch.isalnum() or ch in ("-", "_", "."))
     return safe or "device"
+
+
+def _extract_hostname(command_outputs: Dict[str, str] | None) -> Optional[str]:
+    if not command_outputs:
+        return None
+    running_cfg = command_outputs.get("show running-config", "")
+    for line in running_cfg.splitlines():
+        match = re.match(r"\s*hostname\s+([^\s]+)", line, flags=re.IGNORECASE)
+        if match:
+            hostname = match.group(1).strip()
+            if hostname:
+                return sanitize_label(hostname)
+    return None
+
+
+def _build_running_config_filename(host: str, label: str, command_outputs: Dict[str, str]) -> str:
+    parts: List[str] = []
+
+    hostname = _extract_hostname(command_outputs)
+    if hostname:
+        parts.append(hostname)
+
+    safe_host = sanitize_label(host.replace(" ", "_")) if host else ""
+    if safe_host and safe_host not in parts:
+        parts.append(safe_host)
+
+    safe_label = sanitize_label(label.replace(" ", "_")) if label else ""
+    if safe_label and safe_label not in parts:
+        parts.append(safe_label)
+
+    base = "-".join(p for p in parts if p) or "device"
+    return f"{base}.running-config.txt"
 
 
 def build_showtech_text(outputs: Dict[str, str]) -> str:
@@ -331,7 +364,7 @@ def _collect_one_device(
 
         running_cfg = result.command_outputs.get("show running-config", "")
         result.running_config = {
-            "filename": f"{safe_label or 'device'}.running-config.txt",
+            "filename": _build_running_config_filename(device.host, label, result.command_outputs),
             "text": running_cfg,
         }
 
