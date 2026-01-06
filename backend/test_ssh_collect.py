@@ -41,3 +41,20 @@ def test_job_to_dict_prefers_available_show_vlan_text():
 
     data = job.to_dict()
     assert data["results"][0]["show_vlan_text"] == "VLAN Name\n1 default"
+
+
+def test_job_to_dict_prefers_brief_when_full_command_is_cli_error():
+    job = JobState(id="job2", created=0.0)
+    result = DeviceResult(
+        host="switch2",
+        label="switch2",
+        status="ok",
+        command_outputs={
+            "show vlan": "% Invalid input detected at '^' marker.",
+            "show vlan brief": "VLAN Name\n1 default\n10 users",
+        },
+    )
+    job.results.append(result)
+
+    data = job.to_dict()
+    assert data["results"][0]["show_vlan_text"] == "VLAN Name\n1 default\n10 users"
