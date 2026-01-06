@@ -774,8 +774,9 @@
         const card = document.createElement('div');
         card.className = 'rounded-xl border bg-white dark:bg-slate-800 dark:border-slate-700 p-4';
         const siteAutomationActive = siteAutomationCheckboxes.some(cb => cb && cb.checked);
+        const lcmPreviewActive = (applyTempConfig && applyTempConfig.checked) || (finalizeAssignments && finalizeAssignments.checked);
         const lcmActive = lcmAutomationCheckboxes.some(cb => cb && cb.checked);
-        const showConversionPreview = siteAutomationActive;
+        const showConversionPreview = siteAutomationActive || lcmPreviewActive;
         let previewSection = '';
 
         if (showConversionPreview){
