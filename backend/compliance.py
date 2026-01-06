@@ -1735,7 +1735,8 @@ class CloudManagementCheck(ComplianceCheck):
                 continue
             if not _is_switch(device):
                 continue
-            if device.get("managed") is True:
+            disable_auto_config = device.get("disable_auto_config")
+            if disable_auto_config is not True:
                 continue
 
             device_id = str(device.get("id")) if device.get("id") is not None else None
@@ -1750,7 +1751,7 @@ class CloudManagementCheck(ComplianceCheck):
                         f"Switch '{device_name}' configuration is currently locally managed "
                         "and not managed by Juniper Mist cloud."
                     ),
-                    details={"managed": device.get("managed")},
+                    details={"disable_auto_config": disable_auto_config},
                 )
             )
         return findings

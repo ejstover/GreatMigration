@@ -430,7 +430,12 @@ def test_cloud_management_check_flags_unmanaged_switch():
         setting={},
         templates=[],
         devices=[
-            {"id": "sw-1", "name": "SW-1", "type": "switch", "managed": False},
+            {
+                "id": "sw-1",
+                "name": "SW-1",
+                "type": "switch",
+                "disable_auto_config": True,
+            },
         ],
     )
 
@@ -440,7 +445,7 @@ def test_cloud_management_check_flags_unmanaged_switch():
     assert len(findings) == 1
     assert "locally managed" in findings[0].message
     assert findings[0].device_id == "sw-1"
-    assert findings[0].details == {"managed": False}
+    assert findings[0].details == {"disable_auto_config": True}
 
 
 def test_cloud_management_check_ignores_managed_switch():
@@ -451,7 +456,12 @@ def test_cloud_management_check_ignores_managed_switch():
         setting={},
         templates=[],
         devices=[
-            {"id": "sw-2", "name": "SW-2", "type": "switch", "managed": True},
+            {
+                "id": "sw-2",
+                "name": "SW-2",
+                "type": "switch",
+                "disable_auto_config": False,
+            },
         ],
     )
 
@@ -467,7 +477,12 @@ def test_cloud_management_check_ignores_non_switch_devices():
         setting={},
         templates=[],
         devices=[
-            {"id": "ap-1", "name": "AP-1", "type": "ap", "managed": False},
+            {
+                "id": "ap-1",
+                "name": "AP-1",
+                "type": "ap",
+                "disable_auto_config": True,
+            },
         ],
     )
 
