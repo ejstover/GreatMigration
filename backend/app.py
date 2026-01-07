@@ -107,6 +107,23 @@ DEFAULT_TZ = "America/New_York"
 DEFAULT_LEGACY_VLAN_IDS: Set[int] = {10} | set(range(500, 600))
 LEGACY_VLAN_IDS: Set[int] = _expand_vlan_id_set(os.getenv("LEGACY_VLANS"), base=DEFAULT_LEGACY_VLAN_IDS)
 EXCLUDE_VLAN_IDS: Set[int] = _expand_vlan_id_set(os.getenv("EXCLUDE_VLANS"))
+DEFAULT_RESERVED_VLAN_NAME_MAP: Dict[int, str] = {1: "vlan1"}
+_reserved_vlan_env: Dict[int, str] = {}
+for item in os.getenv("RESERVED_VLANS", "").split(","):
+    token = item.strip()
+    if not token or ":" not in token:
+        continue
+    raw_id, raw_name = token.split(":", 1)
+    try:
+        vid = int(raw_id.strip())
+    except ValueError:
+        continue
+    name = raw_name.strip()
+    if not name:
+        continue
+    _reserved_vlan_env[vid] = name
+RESERVED_VLAN_NAME_MAP: Dict[int, str] = {**DEFAULT_RESERVED_VLAN_NAME_MAP, **_reserved_vlan_env}
+RESERVED_VLAN_IDS: Set[int] = set(RESERVED_VLAN_NAME_MAP.keys())
 LEGACY_VLAN_LABEL = _format_vlan_id_set(LEGACY_VLAN_IDS) or _format_vlan_id_set(DEFAULT_LEGACY_VLAN_IDS)
 LEGACY_PREFIX = "legacy_"
 
@@ -2457,7 +2474,11 @@ def _collect_existing_vlan_details(
     device_entries = _collect_network_entries(device_networks)
     deduped = _dedupe_with_template_priority(template_entries, device_entries)
     conflicts = _collect_existing_vlan_names(device_networks, template_networks)
-    return set(deduped.keys()), conflicts
+    existing_ids = set(deduped.keys())
+    for vid, name in RESERVED_VLAN_NAME_MAP.items():
+        existing_ids.add(vid)
+        conflicts.setdefault(vid, set()).add(name)
+    return existing_ids, conflicts
 
 
 def _sort_network_map_by_vlan_id(networks: Mapping[str, Any]) -> Dict[str, Any]:
