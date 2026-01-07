@@ -1,5 +1,6 @@
 """Local authentication routes."""
 import os
+import secrets
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Form
@@ -8,7 +9,9 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from logging_utils import get_user_logger
 
-SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")
+SESSION_SECRET = os.getenv("SESSION_SECRET")
+if not SESSION_SECRET:
+    SESSION_SECRET = secrets.token_urlsafe(32)
 # LOCAL_USERS format: "user1:pass1,user2:pass2"
 README_URL = "https://github.com/jacob-hopkins/GreatMigration#readme"
 HELP_URL = os.getenv("HELP_URL", README_URL)
@@ -139,4 +142,3 @@ def install_auth(app):
     """Enable session auth routes."""
     app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", https_only=False)
     app.include_router(router)
-

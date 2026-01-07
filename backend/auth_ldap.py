@@ -1,5 +1,6 @@
 # auth_ldap.py
 import os
+import secrets
 from typing import Optional, Dict, Any, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Form
@@ -10,7 +11,9 @@ from ldap3.utils.conv import escape_filter_chars
 
 from logging_utils import get_user_logger
 
-SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")
+SESSION_SECRET = os.getenv("SESSION_SECRET")
+if not SESSION_SECRET:
+    SESSION_SECRET = secrets.token_urlsafe(32)
 LDAP_SERVER_URL = os.getenv("LDAP_SERVER_URL", "ldaps://dc01.testdomain.local:636")
 LDAP_SEARCH_BASE = os.getenv("LDAP_SEARCH_BASE", "DC=testdomain,DC=local")
 
