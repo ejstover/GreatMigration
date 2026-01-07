@@ -223,10 +223,15 @@
                     <input id="preserve_legacy_vlans" type="checkbox" class="mt-0.5 h-4 w-4" checked />
                     <span>Preserve legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default) and their port profiles during cleanup.</span>
                   </span>
+                  <label class="mt-2 flex flex-col gap-1 text-xs text-slate-600 dark:text-slate-300">
+                    <span class="font-semibold text-slate-700 dark:text-slate-200">Additional VLANs to preserve (optional)</span>
+                    <input id="preserve_legacy_vlans_extra" type="text" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="e.g. 42,100-110" />
+                    <span>Enter ad-hoc VLAN IDs or ranges to keep alongside the defaults for this run.</span>
+                  </label>
                 </span>
               </span>
               <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
-              <span class="tip">Resets the temporary lifecycle payload on Mist while preserving legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default) and then applies the converted Juniper configuration so the switch runs the new standard VLANs.</span>
+              <span class="tip">Resets the temporary lifecycle payload on Mist while preserving legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default, plus any extra IDs you list) and then applies the converted Juniper configuration so the switch runs the new standard VLANs.</span>
             </label>
           </div>
           </div>
@@ -334,6 +339,7 @@
     const finalizeAssignments = document.getElementById('finalize_assignments');
     const removeTempConfig = document.getElementById('remove_temp_config');
     const preserveLegacyVlans = document.getElementById('preserve_legacy_vlans');
+    const preserveLegacyVlansExtra = document.getElementById('preserve_legacy_vlans_extra');
     const siteStage = document.getElementById('site_stage');
     const sitePush = document.getElementById('site_push');
 
@@ -368,6 +374,13 @@
       } else {
         pushBatchBtn.textContent = 'Apply selected automation';
       }
+    }
+
+    function syncLegacyVlanExtras(){
+      if (!preserveLegacyVlansExtra) return;
+      const enabled = Boolean(preserveLegacyVlans?.checked);
+      preserveLegacyVlansExtra.disabled = !enabled;
+      preserveLegacyVlansExtra.classList.toggle('opacity-60', !enabled);
     }
 
     function updateAutomationLocks(){
@@ -1210,6 +1223,8 @@
       form.append('finalize_assignments', finalizeAssignments?.checked ? 'true' : 'false');
       form.append('remove_temp_config', removeTempConfig?.checked ? 'true' : 'false');
       form.append('preserve_legacy_vlans', preserveLegacyVlans?.checked ? 'true' : 'false');
+      const extraLegacyVlans = (preserveLegacyVlansExtra?.value || '').trim();
+      if (extraLegacyVlans) form.append('preserve_legacy_vlans_extra', extraLegacyVlans);
       form.append('stage_site_deployment', siteStage?.checked ? 'true' : 'false');
       form.append('push_site_deployment', sitePush?.checked ? 'true' : 'false');
 
@@ -1335,12 +1350,14 @@
         updateAutomationLocks();
       });
     });
+    preserveLegacyVlans?.addEventListener('change', syncLegacyVlanExtras);
 
     // --- Init ---
     window.addEventListener('load', async () => {
       await fetchSites();
       syncPushBtnLabel();
       updateAutomationLocks();
+      syncLegacyVlanExtras();
     });
 
   </script>

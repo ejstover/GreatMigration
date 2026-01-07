@@ -4535,6 +4535,7 @@ async def api_push_batch(
     finalize_assignments: bool = Form(False),
     remove_temp_config: bool = Form(False),
     preserve_legacy_vlans: bool = Form(True),
+    preserve_legacy_vlans_extra: Optional[str] = Form(None),
     stage_site_deployment: bool = Form(False),
     push_site_deployment: bool = Form(False),
 ) -> JSONResponse:
@@ -4555,6 +4556,7 @@ async def api_push_batch(
     finalize_assignments = bool(finalize_assignments)
     remove_temp_config = bool(remove_temp_config)
     preserve_legacy_vlans = bool(preserve_legacy_vlans)
+    effective_legacy_vlan_ids = _expand_vlan_id_set(preserve_legacy_vlans_extra, base=LEGACY_VLAN_IDS)
     site_selection_count = int(stage_site_deployment) + int(push_site_deployment)
     lcm_selection_count = int(apply_temp_config) + int(finalize_assignments) + int(remove_temp_config)
     site_actions_selected = stage_site_deployment or push_site_deployment
@@ -4799,7 +4801,7 @@ async def api_push_batch(
             results=results,
             dry_run=preview_only,
             preserve_legacy_vlans=preserve_legacy_vlans,
-            legacy_vlan_ids=LEGACY_VLAN_IDS,
+            legacy_vlan_ids=effective_legacy_vlan_ids,
         )
 
     for row in results:
