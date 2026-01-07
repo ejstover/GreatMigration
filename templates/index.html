@@ -1172,6 +1172,17 @@
               const devicePayload = item?.device_payload ?? {};
               addPayloadSection('Site-level config (networks + port profiles)', sitePayload);
               addPayloadSection('Device port configuration', devicePayload);
+            } else if (key === 'finalize_assignments'){
+              const sitePayload = item?.payload ?? {};
+              addPayloadSection('Site-level payload', sitePayload);
+              const devicePayloads = item?.device_payloads ?? {};
+              const deviceEntries = Object.entries(devicePayloads);
+              if (deviceEntries.length){
+                deviceEntries.forEach(([deviceId, payload]) => {
+                  const label = `Device ${deviceId} payload`;
+                  addPayloadSection(label, payload ?? {});
+                });
+              }
             } else {
               addPayloadSection('Request payload', item?.payload ?? {});
             }
