@@ -17,14 +17,12 @@ from compliance import (
     DNS_OVERRIDE_PROD_TEMPLATE_IDS,
     DNS_OVERRIDE_REQUIRED_VAR_GROUPS,
     DNS_OVERRIDE_TEMPLATE_NAME,
-    ENV_SWITCH_NAME_PATTERN,
+    _load_ap_name_pattern,
+    _load_switch_name_pattern,
 )
 
-AP_NAME_PATTERN = re.compile(DEFAULT_AP_NAME_PATTERN)
-if ENV_SWITCH_NAME_PATTERN is not None:
-    SWITCH_LLDPNAME_PATTERN = ENV_SWITCH_NAME_PATTERN
-else:
-    SWITCH_LLDPNAME_PATTERN = re.compile(DEFAULT_SWITCH_NAME_PATTERN)
+AP_NAME_PATTERN = _load_ap_name_pattern() or re.compile(DEFAULT_AP_NAME_PATTERN)
+SWITCH_LLDPNAME_PATTERN = _load_switch_name_pattern() or re.compile(DEFAULT_SWITCH_NAME_PATTERN)
 
 
 SWITCH_LOCATION_EXTRACT_PATTERN = re.compile(

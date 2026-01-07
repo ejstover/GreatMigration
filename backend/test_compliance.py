@@ -1,5 +1,8 @@
+import json
+
 import pytest
 
+import compliance
 from compliance import (
     SiteContext,
     Finding,
@@ -20,6 +23,23 @@ from compliance import (
     DNS_OVERRIDE_REQUIRED_VARS,
 )
 from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
+
+
+def _write_compliance_rules(path, rules):
+    path.write_text(json.dumps({"rules": rules}, indent=2), encoding="utf-8")
+
+
+@pytest.fixture
+def compliance_rules_path(tmp_path, monkeypatch):
+    path = tmp_path / "compliance_rules.json"
+    _write_compliance_rules(path, [])
+    monkeypatch.setattr(compliance, "COMPLIANCE_RULES_PATH", path)
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _use_compliance_rules_path(compliance_rules_path):
+    return compliance_rules_path
 
 
 def _format_dns_label_group(options):
@@ -77,8 +97,17 @@ def test_required_site_variables_check_passes_when_present():
     assert findings == []
 
 
-def test_required_site_variables_check_respects_env(monkeypatch):
-    monkeypatch.setenv("MIST_SITE_VARIABLES", "foo , bar,baz , ")
+def test_required_site_variables_check_respects_env(compliance_rules_path):
+    _write_compliance_rules(
+        compliance_rules_path,
+        [
+            {
+                "name": "MIST_SITE_VARIABLES",
+                "value": "foo , bar,baz , ",
+                "comment": "",
+            }
+        ],
+    )
     ctx = SiteContext(
         site_id="site-1",
         site_name="HQ",
@@ -351,9 +380,14 @@ def test_configuration_overrides_check_detects_template_differences():
     assert access2_findings, "Access switch IP violations should be reported"
 
 
-def test_firmware_management_check_flags_unapproved_versions(monkeypatch):
-    monkeypatch.setenv("STD_SW_VER", "20.4R3-S4,22.1R1")
-    monkeypatch.setenv("STD_AP_VER", "16.0.2")
+def test_firmware_management_check_flags_unapproved_versions(compliance_rules_path):
+    _write_compliance_rules(
+        compliance_rules_path,
+        [
+            {"name": "STD_SW_VER", "value": "20.4R3-S4,22.1R1", "comment": ""},
+            {"name": "STD_AP_VER", "value": "16.0.2", "comment": ""},
+        ],
+    )
 
     ctx = SiteContext(
         site_id="site-fw",
@@ -380,9 +414,14 @@ def test_firmware_management_check_flags_unapproved_versions(monkeypatch):
         assert finding.details.get("allowed_versions")
 
 
-def test_firmware_management_check_allows_approved_versions(monkeypatch):
-    monkeypatch.setenv("STD_SW_VER", "20.4R3-S4")
-    monkeypatch.setenv("STD_AP_VER", "16.0.2")
+def test_firmware_management_check_allows_approved_versions(compliance_rules_path):
+    _write_compliance_rules(
+        compliance_rules_path,
+        [
+            {"name": "STD_SW_VER", "value": "20.4R3-S4", "comment": ""},
+            {"name": "STD_AP_VER", "value": "16.0.2", "comment": ""},
+        ],
+    )
 
     ctx = SiteContext(
         site_id="site-fw-pass",
@@ -400,9 +439,8 @@ def test_firmware_management_check_allows_approved_versions(monkeypatch):
     assert check.run(ctx) == []
 
 
-def test_firmware_management_check_skips_when_unconfigured(monkeypatch):
-    monkeypatch.delenv("STD_SW_VER", raising=False)
-    monkeypatch.delenv("STD_AP_VER", raising=False)
+def test_firmware_management_check_skips_when_unconfigured(compliance_rules_path):
+    _write_compliance_rules(compliance_rules_path, [])
 
     ctx = SiteContext(
         site_id="site-fw-empty",
@@ -1165,34 +1203,46 @@ def test_device_naming_convention_handles_uplink_neighbor_list():
         "'^SW-\\d+$'",
     ],
 )
-def test_env_pattern_loader_strips_wrappers(monkeypatch, env_value):
-    monkeypatch.setenv("SWITCH_NAME_REGEX_PATTERN", env_value)
-    from compliance import _load_pattern_from_env
+def test_env_pattern_loader_strips_wrappers(compliance_rules_path, env_value):
+    _write_compliance_rules(
+        compliance_rules_path,
+        [{"name": "SWITCH_NAME_REGEX_PATTERN", "value": env_value, "comment": ""}],
+    )
+    from compliance import _load_pattern_from_rules
 
-    pattern = _load_pattern_from_env("SWITCH_NAME_REGEX_PATTERN", None)
+    pattern = _load_pattern_from_rules("SWITCH_NAME_REGEX_PATTERN", None)
     assert pattern is not None
     assert pattern.pattern == r"^SW-\d+$"
     assert pattern.fullmatch("SW-1")
 
 
-def test_env_pattern_loader_handles_double_backslashes(monkeypatch):
-    monkeypatch.setenv(
-        "SWITCH_NAME_REGEX_PATTERN",
-        r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDFSPARE|MDF(AS|CS|WS)\\d+|IDF\\d+(AS|CS|WS)\\d+)$",
+def test_env_pattern_loader_handles_double_backslashes(compliance_rules_path):
+    _write_compliance_rules(
+        compliance_rules_path,
+        [
+            {
+                "name": "SWITCH_NAME_REGEX_PATTERN",
+                "value": r"^(NA|LA|EU|AP)[A-Z]{3}(?:MDFSPARE|MDF(AS|CS|WS)\\d+|IDF\\d+(AS|CS|WS)\\d+)$",
+                "comment": "",
+            }
+        ],
     )
-    from compliance import _load_pattern_from_env
+    from compliance import _load_pattern_from_rules
 
-    pattern = _load_pattern_from_env("SWITCH_NAME_REGEX_PATTERN", None)
+    pattern = _load_pattern_from_rules("SWITCH_NAME_REGEX_PATTERN", None)
     assert pattern is not None
     assert pattern.fullmatch("NACHIMDFCS1")
     assert pattern.fullmatch("NACHIIDF1AS3")
 
 
-def test_device_naming_convention_reports_sanitized_env_pattern(monkeypatch):
-    monkeypatch.setenv("SWITCH_NAME_REGEX_PATTERN", 'r"^SW-\\d+$"')
-    from compliance import _load_pattern_from_env, DeviceNamingConventionCheck, SiteContext
+def test_device_naming_convention_reports_sanitized_env_pattern(compliance_rules_path):
+    _write_compliance_rules(
+        compliance_rules_path,
+        [{"name": "SWITCH_NAME_REGEX_PATTERN", "value": 'r"^SW-\\d+$"', "comment": ""}],
+    )
+    from compliance import _load_pattern_from_rules, DeviceNamingConventionCheck, SiteContext
 
-    pattern = _load_pattern_from_env("SWITCH_NAME_REGEX_PATTERN", None)
+    pattern = _load_pattern_from_rules("SWITCH_NAME_REGEX_PATTERN", None)
     assert pattern is not None
 
     ctx = SiteContext(

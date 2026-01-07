@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{DOC_TITLE}}</title>
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'media' };</script>
+  </head>
+  <body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100 overflow-x-hidden">
+    <nav id="menu" class="fixed inset-y-0 left-0 w-64 bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100 transform -translate-x-full transition-transform duration-300 z-50 shadow-lg p-4 space-y-2">
+      <p id="user_greeting" class="hidden px-4 py-2 font-semibold"></p>
+      <a href="/hardware" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_HARDWARE}}</a>
+      <a href="/replacements" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_REPLACEMENTS}}</a>
+      <a href="/" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_CONFIG}}</a>
+      <a href="/rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_RULES}}</a>
+      <a href="/compliance_rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_COMPLIANCE_RULES}}</a>
+      <a href="/audit" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_AUDIT}}</a>
+      <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Help</a>
+      <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
+    </nav>
+    <div id="main" class="transition-all duration-300">
+    <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+      <div class="max-w-7xl mx-auto flex items-center gap-4 p-6">
+        <button id="menu_btn" class="p-2 rounded hover:bg-white/30" aria-label="Menu">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
+        </button>
+        <div class="flex items-center gap-4">
+          <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
+          <div>
+            <h1 class="text-3xl font-bold">{{BANNER_TITLE}}</h1>
+            <p class="text-slate-100 text-sm md:text-base">{{BANNER_TAGLINE}}</p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div class="max-w-5xl mx-auto p-6">
+    <div class="mb-4 flex items-center justify-between">
+      <h2 class="text-lg font-medium">Compliance Rules</h2>
+      <div class="flex items-center gap-2">
+        <button id="add_rule" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+        <button id="save_rules" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+        <button id="cancel_rules" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="min-w-full divide-y divide-slate-300 dark:divide-slate-700 text-sm">
+        <thead class="bg-slate-100 dark:bg-slate-800">
+          <tr>
+            <th class="p-2 text-left">Variable</th>
+            <th class="p-2 text-left">Value</th>
+            <th class="p-2 text-left">Comments</th>
+            <th class="p-2"></th>
+          </tr>
+        </thead>
+        <tbody id="rules_tbody" class="divide-y divide-slate-200 dark:divide-slate-700"></tbody>
+      </table>
+    </div>
+    <div class="mt-4 flex justify-end gap-2">
+      <button id="add_rule_bottom" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+      <button id="save_rules_bottom" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+      <button id="cancel_rules_bottom" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
+    </div>
+    <div id="save_status" class="text-sm mt-4"></div>
+    </div>
+    </div>
+
+    <script>
+      const menuBtn = document.getElementById('menu_btn');
+      const menu = document.getElementById('menu');
+      const main = document.getElementById('main');
+      menuBtn.addEventListener('click', () => {
+        menu.classList.toggle('-translate-x-full');
+        main.classList.toggle('ml-64');
+      });
+      document.addEventListener('click', e => {
+        if (!menu.contains(e.target) && !menuBtn.contains(e.target)) {
+          menu.classList.add('-translate-x-full');
+          main.classList.remove('ml-64');
+        }
+      });
+
+    const userGreeting = document.getElementById('user_greeting');
+    const logoutBtn = document.getElementById('logout_btn');
+    fetch('/me').then(res => {
+      if (!res.ok) throw new Error('not authed');
+      return res.json();
+    }).then(data => {
+      userGreeting.textContent = `Hey ${data.user.name}!`;
+      userGreeting.classList.remove('hidden');
+      logoutBtn?.classList.remove('hidden');
+      logoutBtn?.addEventListener('click', (e) => { e.preventDefault(); window.location.href = '/logout'; });
+    }).catch(() => { window.location.href = '/login'; });
+
+    const tbody = document.getElementById('rules_tbody');
+    const addRuleBtns = document.querySelectorAll('.add_rule');
+    const saveBtns = document.querySelectorAll('.save_rules');
+    const cancelBtns = document.querySelectorAll('.cancel_rules');
+    const saveStatus = document.getElementById('save_status');
+    let rulesDoc = {rules: []};
+
+    function renderRules(){
+      tbody.innerHTML='';
+      rulesDoc.rules.forEach((rule, idx)=>{
+        const tr=document.createElement('tr');
+        tr.dataset.idx=idx;
+        tr.innerHTML=`<td class="p-2"><input class="border rounded p-1 w-full name bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${rule.name||''}"/></td>
+          <td class="p-2"><input class="border rounded p-1 w-full value bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${rule.value||''}"/></td>
+          <td class="p-2"><input class="border rounded p-1 w-full comment bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${rule.comment||''}"/></td>
+          <td class="p-2"><button class="del text-red-500">✕</button></td>`;
+        tr.querySelector('.del').addEventListener('click',()=>{ rulesDoc.rules.splice(idx,1); renderRules(); });
+        tbody.appendChild(tr);
+      });
+    }
+
+    function syncRulesFromDOM(){
+      rulesDoc.rules = [...tbody.querySelectorAll('tr')].map(tr=>{
+        const name = tr.querySelector('.name').value.trim();
+        const value = tr.querySelector('.value').value.trim();
+        const comment = tr.querySelector('.comment').value.trim();
+        return {name, value, comment};
+      });
+    }
+
+    addRuleBtns.forEach(btn => btn.addEventListener('click',()=>{ syncRulesFromDOM(); rulesDoc.rules.push({name:'', value:'', comment:''}); renderRules(); tbody.lastElementChild?.scrollIntoView({behavior:'smooth'}); }));
+
+    saveBtns.forEach(btn => btn.addEventListener('click',()=>{
+      syncRulesFromDOM();
+      fetch('/api/compliance_rules',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(rulesDoc)})
+        .then(async r=>{ const txt=await r.text(); try { return JSON.parse(txt);} catch { throw new Error(txt);} })
+        .then(resp=>{
+          if(resp.ok){
+            window.location.href='/audit';
+          } else {
+            saveStatus.textContent='Error: ' + (resp.error || 'saving rules');
+          }
+        }).catch(err=>{ saveStatus.textContent='Error: ' + err.message; });
+    }));
+
+    cancelBtns.forEach(btn => btn.addEventListener('click',()=>{ window.location.href='/audit'; }));
+
+    fetch('/api/compliance_rules').then(async r=>{ const txt=await r.text(); try { return JSON.parse(txt);} catch { throw new Error(txt);} })
+      .then(d=>{ if(d.ok) { rulesDoc=d.doc; renderRules(); } else { saveStatus.textContent='Error: ' + (d.error || 'loading rules'); } })
+      .catch(err=>{ saveStatus.textContent='Error: ' + err.message; });
+  </script>
+</body>
+</html>
