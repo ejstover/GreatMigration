@@ -124,6 +124,8 @@ GreatMigration ships with a responsive FastAPI + HTMX interface backed by a Mist
 * The audit engine (`backend/compliance.py`) hydrates a `SiteContext` with data from Mist site, derived setting, template, and device
   APIs, then runs a library of `ComplianceCheck` subclasses to flag naming violations, missing variables, override drift, and
   documentation gaps.
+* Devices are filtered to those seen online recently (default: last seen within 14 days) before checks run, so stale/offline
+  devices do not clutter the audit results.
 * Findings are serialized through `audit_history` so the UI can show site/device counts and let you export CSV snapshots for change
   control.
 * 1 Click Fix actions map to helpers in `audit_fixes.py`/`audit_actions.py`; each button re-checks prerequisites, stages a dry run
