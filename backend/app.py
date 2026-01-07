@@ -4085,10 +4085,17 @@ def _finalize_assignments_for_rows(
         site_id = str(row.get("site_id") or "").strip()
         device_id = str(row.get("device_id") or "").strip()
         payload_obj = _prepare_finalize_payload(row)
+        temp_port_config = _build_temp_port_config(row)
 
         record = records_by_site.setdefault(
             site_id,
-            {"site_id": site_id, "device_ids": [], "payload": {}, "_errors": []},
+            {
+                "site_id": site_id,
+                "device_ids": [],
+                "payload": {},
+                "device_payloads": {},
+                "_errors": [],
+            },
         )
         if device_id:
             record.setdefault("device_ids", []).append(device_id)
@@ -4102,6 +4109,11 @@ def _finalize_assignments_for_rows(
         if not payload_obj:
             errors.append(("No staged temporary configuration is available to finalize.", None))
             continue
+
+        if device_id and temp_port_config:
+            record.setdefault("device_payloads", {})[device_id] = {"port_config": temp_port_config}
+        elif device_id:
+            errors.append(("No staged temporary port configuration is available to finalize.", None))
 
         _merge_site_switch_payload(record.setdefault("payload", {}), payload_obj, device_id=device_id)
 
@@ -4161,6 +4173,7 @@ def _finalize_assignments_for_rows(
         payload = record.get("payload")
         errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
         site_id = str(record.get("site_id") or "")
+        device_payloads = record.get("device_payloads")
 
         if not payload or errors:
             continue
@@ -4197,6 +4210,36 @@ def _finalize_assignments_for_rows(
                 "response": exc.response,
             }
             errors.append((str(exc), exc.status_code))
+
+        if errors or not isinstance(device_payloads, Mapping):
+            continue
+
+        for device_id, device_payload in device_payloads.items():
+            if not device_id or not isinstance(device_payload, Mapping):
+                continue
+            try:
+                device_result = _put_device_payload(base_url, token, site_id, device_id, device_payload)
+                record.setdefault("device_results", {})[device_id] = {
+                    "ok": True,
+                    "status": device_result.get("status"),
+                    "response": device_result.get("response"),
+                    "request": copy.deepcopy(device_payload),
+                }
+            except MistAPIError as exc:
+                errors.append((f"Unable to push temporary port config: {exc}", exc.status_code))
+                record.setdefault("device_results", {})[device_id] = {
+                    "ok": False,
+                    "status": exc.status_code,
+                    "message": str(exc),
+                    "response": exc.response,
+                }
+            except Exception as exc:  # pragma: no cover - network failures reported to UI
+                errors.append((f"Unable to push temporary port config: {exc}", None))
+                record.setdefault("device_results", {})[device_id] = {
+                    "ok": False,
+                    "status": None,
+                    "message": str(exc),
+                }
 
     for record in records:
         errors: List[Tuple[str, Optional[int]]] = record.get("_errors", [])
