@@ -12,16 +12,19 @@ from audit_actions import (
     AP_RENAME_ACTION_ID,
     CLEAR_DNS_OVERRIDE_ACTION_ID,
     ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
+    SET_SITE_VARIABLES_ACTION_ID,
 )
 from compliance import (
     DEFAULT_AP_NAME_PATTERN,
     DEFAULT_SWITCH_NAME_PATTERN,
+    DEFAULT_REQUIRED_SITE_VARIABLES,
     DNS_OVERRIDE_LAB_TEMPLATE_IDS,
     DNS_OVERRIDE_LAB_TEMPLATE_NAME,
     DNS_OVERRIDE_PROD_TEMPLATE_IDS,
     DNS_OVERRIDE_REQUIRED_VAR_GROUPS,
     DNS_OVERRIDE_TEMPLATE_NAME,
     ENV_SWITCH_NAME_PATTERN,
+    load_site_variable_config,
 )
 
 AP_NAME_PATTERN = re.compile(DEFAULT_AP_NAME_PATTERN)
@@ -207,6 +210,11 @@ def _collect_site_variables_from_docs(*docs: Any) -> Dict[str, Any]:
                     if isinstance(var_key, str):
                         variables[var_key] = var_value
     return variables
+
+
+def _load_site_variable_defaults() -> Dict[str, str]:
+    _, defaults = load_site_variable_config("MIST_SITE_VARIABLES", DEFAULT_REQUIRED_SITE_VARIABLES)
+    return defaults
 
 
 def _site_display_name(doc: Any, default: str) -> str:
@@ -910,6 +918,76 @@ def _clear_dns_overrides_for_site(
     return summary
 
 
+def _apply_site_variables_for_site(
+    base_url: str,
+    headers: Dict[str, str],
+    site_id: str,
+    *,
+    dry_run: bool,
+    defaults: Mapping[str, str],
+) -> Dict[str, Any]:
+    site_doc = _get_json(base_url, headers, f"/sites/{site_id}")
+    site_name = _site_display_name(site_doc, site_id)
+    summary: Dict[str, Any] = {
+        "site_id": site_id,
+        "site_name": site_name,
+        "updated": 0,
+        "skipped": 0,
+        "failed": 0,
+        "changes": [],
+        "errors": [],
+    }
+
+    if not defaults:
+        summary["skipped"] = 1
+        summary["errors"].append({"reason": "No site variable defaults configured."})
+        return summary
+
+    current_vars = _collect_site_variables_from_docs(site_doc)
+    updates: Dict[str, str] = {}
+    for key, value in defaults.items():
+        if not isinstance(key, str) or not key.strip():
+            continue
+        if not _value_is_set(value):
+            continue
+        if _value_is_set(current_vars.get(key)):
+            continue
+        updates[key.strip()] = str(value).strip()
+
+    if not updates:
+        summary["skipped"] = 1
+        summary["changes"].append(
+            {
+                "status": "skipped",
+                "message": "All configured site variables are already set.",
+            }
+        )
+        return summary
+
+    merged = dict(current_vars)
+    merged.update(updates)
+    if not dry_run:
+        response = requests.put(
+            f"{base_url}/sites/{site_id}",
+            headers=headers,
+            json={"variables": merged},
+            timeout=30,
+        )
+        response.raise_for_status()
+
+    for key, value in updates.items():
+        summary["changes"].append(
+            {
+                "status": "preview" if dry_run else "success",
+                "variable": key,
+                "value": value,
+                "message": ("Would set" if dry_run else "Set") + f" '{key}' from environment default.",
+            }
+        )
+    summary["updated"] = len(updates)
+    return summary
+
+
 def _execute_cloud_management_action(
     base_url: str,
     token: str,
@@ -1177,6 +1255,67 @@ def _execute_dns_override_action(
     }
 
 
+def _execute_set_site_variables_action(
+    base_url: str,
+    token: str,
+    site_ids: Sequence[str],
+    *,
+    dry_run: bool,
+) -> Dict[str, Any]:
+    headers = _mist_headers(token)
+    defaults = _load_site_variable_defaults()
+    normalized_site_ids = [sid for sid in site_ids if isinstance(sid, str) and sid]
+
+    results: List[Dict[str, Any]] = []
+    totals = {"updated": 0, "skipped": 0, "failed": 0}
+
+    for site_id in normalized_site_ids:
+        try:
+            summary = _apply_site_variables_for_site(
+                base_url,
+                headers,
+                site_id,
+                dry_run=dry_run,
+                defaults=defaults,
+            )
+        except requests.HTTPError as exc:
+            results.append(
+                {
+                    "site_id": site_id,
+                    "site_name": site_id,
+                    "updated": 0,
+                    "skipped": 0,
+                    "failed": 1,
+                    "changes": [],
+                    "errors": [
+                        {
+                            "reason": f"API error: {exc}",
+                        }
+                    ],
+                }
+            )
+            totals["failed"] += 1
+            continue
+        results.append(summary)
+        totals["updated"] += summary.get("updated", 0)
+        totals["skipped"] += summary.get("skipped", 0)
+        totals["failed"] += summary.get("failed", 0)
+
+    totals_with_sites = {**totals, "sites": len(results)}
+    totals_with_sites.setdefault(
+        "summary",
+        _format_summary_message("Updated site variables for", totals_with_sites.get("updated", 0)),
+    )
+
+    return {
+        "ok": True,
+        "action_id": SET_SITE_VARIABLES_ACTION_ID,
+        "dry_run": dry_run,
+        "results": results,
+        "totals": totals_with_sites,
+    }
+
+
 def execute_audit_action(
     action_id: str,
     base_url: str,
@@ -1203,6 +1342,13 @@ def execute_audit_action(
             site_ids,
             dry_run=dry_run,
             device_map=device_map,
+        )
+    if action_id == SET_SITE_VARIABLES_ACTION_ID:
+        return _execute_set_site_variables_action(
+            base_url,
+            token,
+            site_ids,
+            dry_run=dry_run,
         )
     if action_id == ENABLE_CLOUD_MANAGEMENT_ACTION_ID:
         return _execute_cloud_management_action(

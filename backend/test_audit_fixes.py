@@ -1,7 +1,12 @@
 import pytest
 import requests
 
-from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID, ENABLE_CLOUD_MANAGEMENT_ACTION_ID
+from audit_actions import (
+    AP_RENAME_ACTION_ID,
+    CLEAR_DNS_OVERRIDE_ACTION_ID,
+    ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
+    SET_SITE_VARIABLES_ACTION_ID,
+)
 from audit_fixes import execute_audit_action
 
 
@@ -22,6 +27,88 @@ class DummyResponse:
 def test_execute_action_rejects_unknown_action():
     with pytest.raises(ValueError):
         execute_audit_action("unknown", "https://example", "token", [])
+
+
+def test_execute_action_skips_when_no_site_variable_defaults(monkeypatch):
+    monkeypatch.setenv("MIST_SITE_VARIABLES", "localDNSserver")
+    calls = {"get": [], "put": []}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["get"].append(url)
+        if url.endswith("/sites/site-1"):
+            return DummyResponse({"name": "Site One"})
+        raise AssertionError(f"Unexpected GET {url}")
+
+    def fake_put(url, headers=None, json=None, timeout=None):
+        calls["put"].append((url, json))
+        return DummyResponse({})
+
+    monkeypatch.setattr("audit_fixes.requests.get", fake_get)
+    monkeypatch.setattr("audit_fixes.requests.put", fake_put)
+
+    result = execute_audit_action(
+        SET_SITE_VARIABLES_ACTION_ID,
+        "https://api.mist.test/api/v1",
+        "token",
+        ["site-1"],
+        dry_run=False,
+    )
+
+    summary = result["results"][0]
+    assert summary["skipped"] == 1
+    assert summary["updated"] == 0
+    assert summary["failed"] == 0
+    assert summary["errors"]
+    assert calls["put"] == []
+
+
+def test_execute_action_sets_site_variables(monkeypatch):
+    monkeypatch.setenv("MIST_SITE_VARIABLES", "hubDNSserver1=10.1.1.1,hubDNSserver2=10.2.2.2,hubradiusserver=1.1.1.1")
+    calls = {"get": [], "put": []}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["get"].append(url)
+        if url.endswith("/sites/site-1"):
+            return DummyResponse(
+                {
+                    "name": "Site One",
+                    "variables": {
+                        "hubradiusserver": "",
+                        "siteDNS": "existing",
+                    },
+                }
+            )
+        raise AssertionError(f"Unexpected GET {url}")
+
+    def fake_put(url, headers=None, json=None, timeout=None):
+        calls["put"].append((url, json))
+        return DummyResponse({})
+
+    monkeypatch.setattr("audit_fixes.requests.get", fake_get)
+    monkeypatch.setattr("audit_fixes.requests.put", fake_put)
+
+    result = execute_audit_action(
+        SET_SITE_VARIABLES_ACTION_ID,
+        "https://api.mist.test/api/v1",
+        "token",
+        ["site-1"],
+        dry_run=False,
+    )
+
+    summary = result["results"][0]
+    assert summary["site_name"] == "Site One"
+    assert summary["updated"] == 3
+    assert summary["failed"] == 0
+    assert summary["skipped"] == 0
+    assert len(summary["changes"]) == 3
+    put_url, payload = calls["put"][0]
+    assert put_url.endswith("/sites/site-1")
+    assert payload["variables"] == {
+        "hubradiusserver": "1.1.1.1",
+        "siteDNS": "existing",
+        "hubDNSserver1": "10.1.1.1",
+        "hubDNSserver2": "10.2.2.2",
+    }
 
 
 def test_execute_action_enables_cloud_management(monkeypatch):
