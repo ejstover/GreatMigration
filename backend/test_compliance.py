@@ -20,8 +20,14 @@ from compliance import (
     DNS_OVERRIDE_LAB_TEMPLATE_IDS,
     DNS_OVERRIDE_REQUIRED_VAR_GROUPS,
     DNS_OVERRIDE_REQUIRED_VARS,
+    load_site_variable_config,
 )
-from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID, ENABLE_CLOUD_MANAGEMENT_ACTION_ID
+from audit_actions import (
+    AP_RENAME_ACTION_ID,
+    CLEAR_DNS_OVERRIDE_ACTION_ID,
+    ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
+    SET_SITE_VARIABLES_ACTION_ID,
+)
 
 
 def _format_dns_label_group(options):
@@ -42,6 +48,13 @@ def _expected_dns_labels():
         if label:
             labels.append(label)
     return labels
+
+
+def test_load_site_variable_config_parses_defaults(monkeypatch):
+    monkeypatch.setenv("MIST_SITE_VARIABLES", "foo=1, bar :2 , baz")
+    required, defaults = load_site_variable_config()
+    assert required == ("foo", "bar", "baz")
+    assert defaults == {"foo": "1", "bar": "2"}
 
 
 def test_required_site_variables_check_flags_missing():
@@ -95,6 +108,35 @@ def test_required_site_variables_check_respects_env(monkeypatch):
         "Site variable 'bar' is not defined.",
         "Site variable 'baz' is not defined.",
     }
+
+
+def test_required_site_variables_check_builds_action_from_env_defaults(monkeypatch):
+    monkeypatch.setenv(
+        "MIST_SITE_VARIABLES",
+        "hubradiusserver=1.1.1.1,localradiusserver=2.2.2.2,siteDNS,hubDNSserver1=10.10.10.1,hubDNSserver2=10.10.10.2",
+    )
+    ctx = SiteContext(
+        site_id="site-1",
+        site_name="HQ",
+        site={"variables": {}},
+        setting={},
+        templates=[],
+        devices=[],
+    )
+    check = RequiredSiteVariablesCheck()
+    findings = check.run(ctx)
+    assert len(findings) == 5
+    first_actions = findings[0].actions
+    assert first_actions and first_actions[0]["id"] == SET_SITE_VARIABLES_ACTION_ID
+    metadata = first_actions[0].get("metadata", {})
+    assert metadata.get("variables") == {
+        "hubradiusserver": "1.1.1.1",
+        "localradiusserver": "2.2.2.2",
+        "hubDNSserver1": "10.10.10.1",
+        "hubDNSserver2": "10.10.10.2",
+    }
+    for finding in findings[1:]:
+        assert finding.actions is None
 
 
 def test_switch_template_check_flags_non_lab_site_without_prod_template():

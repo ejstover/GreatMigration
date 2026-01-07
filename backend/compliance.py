@@ -14,6 +14,7 @@ from audit_actions import (
     AP_RENAME_ACTION_ID,
     CLEAR_DNS_OVERRIDE_ACTION_ID,
     ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
+    SET_SITE_VARIABLES_ACTION_ID,
 )
 
 
@@ -115,14 +116,55 @@ DEFAULT_REQUIRED_SITE_VARIABLES: Tuple[str, ...] = (
 )
 
 
-def _load_site_variable_list(var_name: str, default: Sequence[str]) -> Tuple[str, ...]:
+def _parse_site_variable_tokens(tokens: Sequence[str], fallback: Sequence[str]) -> Tuple[Tuple[str, ...], Dict[str, str]]:
+    required: List[str] = []
+    defaults: Dict[str, str] = {}
+    seen: Set[str] = set()
+
+    def _add_required(key: str) -> None:
+        normalized = key.strip()
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        required.append(normalized)
+
+    for token in tokens:
+        if not isinstance(token, str):
+            continue
+        text = token.strip()
+        if not text:
+            continue
+        if "=" in text:
+            key, value = text.split("=", 1)
+        elif ":" in text:
+            key, value = text.split(":", 1)
+        else:
+            key, value = text, None
+        _add_required(key)
+        if value is not None and str(value).strip():
+            defaults[key.strip()] = str(value).strip()
+
+    if not required:
+        for item in fallback:
+            if isinstance(item, str):
+                _add_required(item)
+
+    return tuple(required), defaults
+
+
+def load_site_variable_config(
+    var_name: str = "MIST_SITE_VARIABLES",
+    default: Sequence[str] = DEFAULT_REQUIRED_SITE_VARIABLES,
+) -> Tuple[Tuple[str, ...], Dict[str, str]]:
     raw = os.getenv(var_name)
-    if raw is None:
-        return tuple(default)
-    # Split on commas and strip whitespace while filtering empty entries
-    values = [item.strip() for item in raw.split(",")]
-    filtered = [value for value in values if value]
-    return tuple(filtered or default)
+    tokens = [item.strip() for item in raw.split(",")] if raw is not None else []
+    required, defaults = _parse_site_variable_tokens(tokens, default)
+    return (required or tuple(default)), defaults
+
+
+def _load_site_variable_list(var_name: str, default: Sequence[str]) -> Tuple[str, ...]:
+    required, _ = load_site_variable_config(var_name, default)
+    return required
 
 
 def _load_version_list_from_env(var_name: str) -> Tuple[str, ...]:
@@ -140,22 +182,44 @@ class RequiredSiteVariablesCheck(ComplianceCheck):
     severity = "error"
 
     def __init__(self, required_keys: Optional[Sequence[str]] = None) -> None:
-        default_keys = _load_site_variable_list("MIST_SITE_VARIABLES", DEFAULT_REQUIRED_SITE_VARIABLES)
+        default_keys, default_values = load_site_variable_config("MIST_SITE_VARIABLES", DEFAULT_REQUIRED_SITE_VARIABLES)
         if required_keys is None:
             self.required_keys: Tuple[str, ...] = tuple(default_keys)
         else:
             self.required_keys = tuple(required_keys)
+        self.variable_defaults: Dict[str, str] = default_values
 
     def run(self, context: SiteContext) -> List[Finding]:
         findings: List[Finding] = []
         variables = _collect_site_variables(context)
         missing = [key for key in self.required_keys if key not in variables or variables.get(key) in (None, "")]
-        for key in missing:
+        fillable = {key: self.variable_defaults[key] for key in missing if key in self.variable_defaults}
+        action: Optional[Dict[str, Any]] = None
+        if fillable:
+            sorted_keys = sorted(fillable)
+            precheck_messages = [
+                f"Will set {', '.join(sorted_keys)} using environment defaults."
+            ]
+            action = {
+                "id": SET_SITE_VARIABLES_ACTION_ID,
+                "label": "Set required site variables",
+                "button_label": "1 Click Fix Now",
+                "site_ids": [context.site_id],
+                "metadata": {
+                    "variables": fillable,
+                    "prechecks": {
+                        "can_run": True,
+                        "messages": precheck_messages,
+                    },
+                },
+            }
+        for idx, key in enumerate(missing):
             findings.append(
                 Finding(
                     site_id=context.site_id,
                     site_name=context.site_name,
                     message=f"Site variable '{key}' is not defined.",
+                    actions=[action] if action and idx == 0 else None,
                 )
             )
         return findings

@@ -206,7 +206,7 @@ Both scripts read and reuse values in `backend/.env`, so follow-up runs only pro
   * `MIST_ORG_ID`, `SWITCH_TEMPLATE_ID`, and `API_PORT` can be pre-filled to streamline onboarding.
 * **Compliance checks**
   * Override naming patterns via `SWITCH_NAME_REGEX_PATTERN` / `AP_NAME_REGEX_PATTERN`.
-  * Adjust required site variables with `MIST_SITE_VARIABLES`.
+  * Adjust required site variables with `MIST_SITE_VARIABLES`. Use `key=value` entries (for example, `hubDNSserver1=10.0.0.53`) to supply environment defaults that the 1 Click Fix action can apply automatically when a site is missing values.
   * Enforce device documentation photo counts with `SW_NUM_IMG` and `AP_NUM_IMG`.
 * **1 Click Fix safeguards**
   * AP rename actions derive new names from switch LLDP neighbours. Sites lacking neighbour data will surface actionable warnings but skip changes.
