@@ -56,6 +56,10 @@ from audit_fixes import execute_audit_action
 from audit_actions import AP_RENAME_ACTION_ID
 from audit_history import load_site_history
 
+VLAN_ID_MIN = 1
+VLAN_ID_MAX = 4094
+
+
 def _expand_vlan_id_set(raw: Any, *, base: Optional[Iterable[int]] = None) -> Set[int]:
     vlan_ids: Set[int] = set(base or [])
     if raw is None:
@@ -83,6 +87,34 @@ def _expand_vlan_id_set(raw: Any, *, base: Optional[Iterable[int]] = None) -> Se
         if val >= 0:
             vlan_ids.add(val)
     return vlan_ids
+
+
+def _validate_vlan_id_input(raw: Any, *, min_vlan: int = VLAN_ID_MIN, max_vlan: int = VLAN_ID_MAX) -> None:
+    if raw is None:
+        return
+
+    if isinstance(raw, str):
+        values: Iterable[Any] = [p.strip() for p in raw.split(",") if p.strip()]
+    elif isinstance(raw, (list, tuple, set)):
+        values = raw
+    else:
+        return
+
+    for item in values:
+        if isinstance(item, str):
+            m = re.match(r"^(\d+)\s*-\s*(\d+)$", item)
+            if m:
+                start, end = int(m.group(1)), int(m.group(2))
+                lo, hi = (start, end) if start <= end else (end, start)
+                if lo < min_vlan or hi > max_vlan:
+                    raise ValueError(f"VLAN ranges must stay between {min_vlan}-{max_vlan}.")
+                continue
+        try:
+            val = int(item)
+        except (TypeError, ValueError):
+            continue
+        if val < min_vlan or val > max_vlan:
+            raise ValueError(f"VLAN IDs must stay between {min_vlan}-{max_vlan}.")
 
 
 def _format_vlan_id_set(vlans: Iterable[int]) -> str:
@@ -4556,6 +4588,10 @@ async def api_push_batch(
     finalize_assignments = bool(finalize_assignments)
     remove_temp_config = bool(remove_temp_config)
     preserve_legacy_vlans = bool(preserve_legacy_vlans)
+    try:
+        _validate_vlan_id_input(preserve_legacy_vlans_extra)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": f"Invalid extra VLAN IDs: {exc}"}, status_code=400)
     effective_legacy_vlan_ids = _expand_vlan_id_set(preserve_legacy_vlans_extra, base=LEGACY_VLAN_IDS)
     site_selection_count = int(stage_site_deployment) + int(push_site_deployment)
     lcm_selection_count = int(apply_temp_config) + int(finalize_assignments) + int(remove_temp_config)
