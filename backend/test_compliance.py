@@ -126,17 +126,28 @@ def test_required_site_variables_check_builds_action_from_env_defaults(monkeypat
     check = RequiredSiteVariablesCheck()
     findings = check.run(ctx)
     assert len(findings) == 5
-    first_actions = findings[0].actions
-    assert first_actions and first_actions[0]["id"] == SET_SITE_VARIABLES_ACTION_ID
-    metadata = first_actions[0].get("metadata", {})
-    assert metadata.get("variables") == {
+    actions_by_variable = {}
+    for finding in findings:
+        if not finding.actions:
+            continue
+        assert len(finding.actions) == 1
+        action = finding.actions[0]
+        assert action["id"] == SET_SITE_VARIABLES_ACTION_ID
+        metadata = action.get("metadata", {})
+        variables = metadata.get("variables", {})
+        assert len(variables) == 1
+        key = next(iter(variables))
+        actions_by_variable[key] = variables[key]
+    assert actions_by_variable == {
         "hubradiusserver": "1.1.1.1",
         "localradiusserver": "2.2.2.2",
         "hubDNSserver1": "10.10.10.1",
         "hubDNSserver2": "10.10.10.2",
     }
-    for finding in findings[1:]:
-        assert finding.actions is None
+    assert any(
+        finding.message == "Site variable 'siteDNS' is not defined." and finding.actions is None
+        for finding in findings
+    )
 
 
 def test_switch_template_check_flags_non_lab_site_without_prod_template():
