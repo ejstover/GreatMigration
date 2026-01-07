@@ -10,10 +10,13 @@ GreatMigration is a network automation toolkit designed to accelerate moves to J
   - [Port profile rules](#port-profile-rules)
   - [Config conversion](#config-conversion)
   - [Compliance audit & 1 Click Fix](#compliance-audit--1-click-fix)
+- [Hamburger menu guide](#hamburger-menu-guide)
 - [Getting started](#getting-started)
   - [Prerequisites](#prerequisites)
   - [Quick start scripts](#quick-start-scripts)
   - [Manual setup](#manual-setup)
+- [Extras: LDAP, syslog, and logging](#extras-ldap-syslog-and-logging)
+- [Backend Python components (ELI15)](#backend-python-components-eli15)
 - [Configuration reference](#configuration-reference)
 - [Firewall requirements](#firewall-requirements)
 - [Operational tips](#operational-tips)
@@ -129,6 +132,25 @@ GreatMigration ships with a responsive FastAPI + HTMX interface backed by a Mist
 
 ---
 
+## Hamburger menu guide
+
+The hamburger menu (☰) in the top-left opens the main navigation. Each option focuses on one job. Here is the “explain it like I’m 15” version of what each one does and how to use it.
+
+* **Hardware Conversion** – figure out what Juniper gear replaces the Cisco gear you have.
+  * **Use it:** upload a `show tech-support` file or run the SSH collector, then check the suggested replacements and download the report.
+* **Hardware Replacement Rules** – your translation dictionary for “this Cisco model maps to that Juniper model.”
+  * **Use it:** review or edit the replacement list, save it, then re-run hardware conversions to see the updated recommendations.
+* **Config Conversion** – turn Cisco switch configs into Mist-ready JSON payloads.
+  * **Use it:** upload configs (or fetch via SSH), review the converted preview, then stage or push the payloads using Site Deployment Automation.
+* **Port Profile Rules** – auto-tag ports with the right Mist port profile based on how the Cisco port looks.
+  * **Use it:** add rules like “if it’s access VLAN 20 and description matches ‘PRINTER’, use the Printer profile,” then save/export the rules.
+* **Compliance Audit** – check Mist sites for missing variables, naming issues, and template drift; optionally fix with one click.
+  * **Use it:** pick a site, run the audit, drill into the findings, then click fix buttons if you have push rights.
+* **Help** – open your team’s runbook or documentation link.
+  * **Use it:** set `HELP_URL` in `backend/.env` so the Help link opens the right page.
+
+---
+
 ## Getting started
 
 ### Prerequisites
@@ -193,6 +215,42 @@ Both scripts read and reuse values in `backend/.env`, so follow-up runs only pro
    ```bash
    uvicorn app:app --host 0.0.0.0 --port 8000 --app-dir backend --reload
    ```
+
+---
+
+### First-run checklist
+
+1. Open a browser to `http://localhost:8000` (or the port you configured).
+2. Log in with a local account (`AUTH_METHOD=local`) or your LDAP account (`AUTH_METHOD=ldap`).
+3. Use the hamburger menu to pick your workflow (Hardware Conversion, Config Conversion, etc.).
+4. Start with a non-destructive “Stage/Test” or “Run audit” step before enabling push actions.
+
+---
+
+## Extras: LDAP, syslog, and logging
+
+* **LDAP integration (optional)** – set `AUTH_METHOD=ldap` and supply your server + group DNs in `backend/.env`. Users in `PUSH_GROUP_DN` can push changes; users in `READONLY_GROUP_DN` can still view reports without modifying Mist.
+* **Syslog export (optional)** – set `SYSLOG_HOST` and `SYSLOG_PORT` to forward user action logs to your syslog collector. If syslog is unreachable, file logging still continues locally.
+* **Local logging (default)** – user actions are written to daily log files in `backend/logs/` (one file per day) so you have an audit trail even without syslog.
+
+---
+
+## Backend Python components (ELI15)
+
+Think of the backend as a set of small “helpers” that each do one job:
+
+* `backend/app.py` – the FastAPI web server. It serves the UI, handles uploads, calls the conversion tools, and talks to Mist.
+* `backend/convertciscotojson.py` – reads Cisco configs and turns them into Mist-friendly JSON.
+* `backend/push_mist_port_config.py` – validates, builds, and pushes port configuration payloads to Mist.
+* `backend/translate_showtech.py` – parses `show tech-support` files to extract hardware and interface details.
+* `backend/ssh_collect.py` – logs into switches over SSH and collects the raw Cisco outputs the app needs.
+* `backend/compliance.py` – runs the compliance checks for naming, templates, variables, and documentation.
+* `backend/audit_actions.py` – defines which “1 Click Fix” buttons exist and how they are identified.
+* `backend/audit_fixes.py` – performs the actual fix actions (like renaming APs or cleaning DNS overrides).
+* `backend/audit_history.py` – saves and loads audit runs so the UI can show summaries and exports.
+* `backend/auth_local.py` – handles username/password login when you use local accounts.
+* `backend/auth_ldap.py` – handles LDAP login and group lookups.
+* `backend/logging_utils.py` – writes user action logs to files and (optionally) syslog.
 
 ---
 
