@@ -84,9 +84,13 @@ PAGE_COPY: dict[str, dict[str, str]] = {
         "title": "Port Profile Rules",
         "tagline": "Create and reorder port mapping rules",
     },
+    "compliance_rules": {
+        "title": "Compliance Rules",
+        "tagline": "Manage compliance tuning variables for audits",
+    },
 }
 
-NAV_LINK_KEYS = ("hardware", "replacements", "config", "audit", "rules")
+NAV_LINK_KEYS = ("hardware", "replacements", "config", "audit", "rules", "compliance_rules")
 
 
 class SSHDeviceModel(BaseModel):
@@ -214,6 +218,7 @@ README_URL = "https://github.com/jacob-hopkins/GreatMigration#readme"
 HELP_URL = os.getenv("HELP_URL", README_URL)
 RULES_PATH = Path(__file__).resolve().parent / "port_rules.json"
 REPLACEMENTS_PATH = Path(__file__).resolve().parent / "replacement_rules.json"
+COMPLIANCE_RULES_PATH = Path(__file__).resolve().parent / "compliance_rules.json"
 NETBOX_DT_URL = os.getenv(
     "NETBOX_DT_URL",
     "https://api.github.com/repos/netbox-community/devicetype-library/contents/device-types",
@@ -270,7 +275,6 @@ else:
 
 action_logger = get_user_logger()
 
-AUDIT_RUNNER: SiteAuditRunner = build_default_runner()
 
 
 def _request_user_label(request: Request) -> str:
@@ -376,6 +380,12 @@ def audit_page():
 @app.get("/rules", response_class=HTMLResponse)
 def rules_page():
     return _render_page("rules.html", "rules")
+
+
+@app.get("/compliance_rules", response_class=HTMLResponse)
+def compliance_rules_page(request: Request):
+    require_push_rights(current_user(request))
+    return _render_page("compliance_rules.html", "compliance_rules")
 
 
 @app.get("/replacements", response_class=HTMLResponse)
@@ -836,6 +846,53 @@ def api_save_rules(request: Request, doc: Dict[str, Any] = Body(...)):
         return {"ok": True}
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/compliance_rules")
+def api_get_compliance_rules(request: Request):
+    try:
+        require_push_rights(current_user(request))
+        data = json.loads(COMPLIANCE_RULES_PATH.read_text(encoding="utf-8"))
+        return {"ok": True, "doc": data}
+    except HTTPException as exc:
+        raise exc
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/compliance_rules")
+def api_save_compliance_rules(request: Request, doc: Dict[str, Any] = Body(...)):
+    try:
+        require_push_rights(current_user(request))
+        payload = doc if isinstance(doc, dict) else {}
+        rules_raw = payload.get("rules")
+        cleaned_rules: List[Dict[str, str]] = []
+        if isinstance(rules_raw, list):
+            for item in rules_raw:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "")).strip()
+                if not name:
+                    continue
+                value_raw = item.get("value", "")
+                comment_raw = item.get("comment", "")
+                value = str(value_raw) if value_raw is not None else ""
+                comment = str(comment_raw) if comment_raw is not None else ""
+                cleaned_rules.append(
+                    {
+                        "name": name,
+                        "value": value,
+                        "comment": comment,
+                    }
+                )
+
+        cleaned_doc = {"rules": cleaned_rules}
+        COMPLIANCE_RULES_PATH.write_text(json.dumps(cleaned_doc, indent=2), encoding="utf-8")
+        return {"ok": True}
+    except HTTPException as exc:
+        raise exc
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
@@ -1449,7 +1506,8 @@ def api_audit_run(
         timer = perf_counter()
 
         contexts, errors = _gather_site_contexts(base_url, headers, unique_site_ids)
-        audit_result = AUDIT_RUNNER.run(contexts)
+        audit_runner = build_default_runner()
+        audit_result = audit_runner.run(contexts)
         duration_ms = int((perf_counter() - timer) * 1000)
         finished_at = datetime.now(tz) if tz else datetime.now()
 

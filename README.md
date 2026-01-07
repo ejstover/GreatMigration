@@ -109,7 +109,7 @@ Both scripts read and reuse values in `backend/.env`, so follow-up runs only pro
      * For local auth: `LOCAL_USERS` and optional `LOCAL_PUSH_USERS`
      * For LDAP auth: `LDAP_SERVER_URL`, `LDAP_SEARCH_BASE`/`LDAP_SEARCH_BASES`, `LDAP_BIND_TEMPLATE`, `LDAP_SERVICE_DN`, `LDAP_SERVICE_PASSWORD`, plus `PUSH_GROUP_DN` and optional `READONLY_GROUP_DN`
      * Optional defaults: `MIST_BASE_URL`, `MIST_ORG_ID`, `SWITCH_TEMPLATE_ID`, `API_PORT`, `HELP_URL`
-     * Compliance tuning: `SWITCH_NAME_REGEX_PATTERN`, `AP_NAME_REGEX_PATTERN`, `MIST_SITE_VARIABLES`, `SW_NUM_IMG`, `AP_NUM_IMG`
+    * Compliance tuning: edit `backend/compliance_rules.json` (or the Compliance Rules page)
      * Device catalog sources: `NETBOX_DT_URL`, `NETBOX_LOCAL_DT`
      * Logging: `SYSLOG_HOST`, `SYSLOG_PORT`
 3. **Optional assets** – copy `backend/port_rules.sample.json` to `backend/port_rules.json` to maintain custom mappings outside version control.
@@ -129,9 +129,7 @@ Both scripts read and reuse values in `backend/.env`, so follow-up runs only pro
   * `MIST_BASE_URL` defaults to `https://api.ac2.mist.com`. Change it if your org lives in another Mist region.
   * `MIST_ORG_ID`, `SWITCH_TEMPLATE_ID`, and `API_PORT` can be pre-filled to streamline onboarding.
 * **Compliance checks**
-  * Override naming patterns via `SWITCH_NAME_REGEX_PATTERN` / `AP_NAME_REGEX_PATTERN`.
-  * Adjust required site variables with `MIST_SITE_VARIABLES`.
-  * Enforce device documentation photo counts with `SW_NUM_IMG` and `AP_NUM_IMG`.
+  * Use the Compliance Rules page (or edit `backend/compliance_rules.json`) to override naming patterns, required site variables, firmware lists, and documentation photo counts.
 * **1 Click Fix safeguards**
   * AP rename actions derive new names from switch LLDP neighbours. Sites lacking neighbour data will surface actionable warnings but skip changes.
   * Switch DNS cleanup actions verify the applied template (`Prod - Standard Template` for production sites, `Lab` template for lab sites) and the presence of `siteDNSserver`, `hubDNSserver1`, and `hubDNSserver2`. Buttons remain disabled until both checks pass and are annotated with details describing any failures.

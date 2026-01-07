@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import ast
 import copy
-import os
+import json
 import re
 import warnings
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
@@ -110,22 +111,66 @@ DEFAULT_REQUIRED_SITE_VARIABLES: Tuple[str, ...] = (
     "hubDNSserver2",
 )
 
+COMPLIANCE_RULES_PATH = Path(__file__).resolve().parent / "compliance_rules.json"
+
+
+def _load_compliance_rule_map() -> Dict[str, str]:
+    try:
+        data = json.loads(COMPLIANCE_RULES_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    rules = data.get("rules")
+    if not isinstance(rules, list):
+        return {}
+
+    mapped: Dict[str, str] = {}
+    for item in rules:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        value = item.get("value")
+        if value is None:
+            mapped[name] = ""
+        elif isinstance(value, str):
+            mapped[name] = value
+        else:
+            mapped[name] = str(value)
+    return mapped
+
+
+def _load_compliance_rule_value(rule_name: str) -> Optional[str]:
+    rules = _load_compliance_rule_map()
+    if rule_name in rules:
+        return rules[rule_name]
+    return None
+
 
 def _load_site_variable_list(var_name: str, default: Sequence[str]) -> Tuple[str, ...]:
-    raw = os.getenv(var_name)
+    raw = _load_compliance_rule_value(var_name)
     if raw is None:
         return tuple(default)
-    # Split on commas and strip whitespace while filtering empty entries
-    values = [item.strip() for item in raw.split(",")]
+    candidate = raw.strip()
+    if not candidate:
+        return tuple(default)
+    values = [item.strip() for item in candidate.split(",")]
     filtered = [value for value in values if value]
     return tuple(filtered or default)
 
 
-def _load_version_list_from_env(var_name: str) -> Tuple[str, ...]:
-    raw = os.getenv(var_name)
+def _load_version_list_from_rules(var_name: str) -> Tuple[str, ...]:
+    raw = _load_compliance_rule_value(var_name)
     if raw is None:
         return ()
-    values = [item.strip() for item in raw.split(",")]
+    candidate = raw.strip()
+    if not candidate:
+        return ()
+    values = [item.strip() for item in candidate.split(",")]
     return tuple(value for value in values if value)
 
 
@@ -1408,8 +1453,8 @@ def _literal_eval_pattern(value: str) -> Optional[str]:
     return evaluated if isinstance(evaluated, str) else None
 
 
-def _load_pattern_from_env(var_name: str, default: Optional[str]) -> Optional[re.Pattern[str]]:
-    raw = os.getenv(var_name)
+def _load_pattern_from_rules(var_name: str, default: Optional[str]) -> Optional[re.Pattern[str]]:
+    raw = _load_compliance_rule_value(var_name)
     candidate = (raw or "").strip()
     if candidate:
         evaluated = _literal_eval_pattern(candidate)
@@ -1455,8 +1500,12 @@ def _ensure_pattern(
     return fallback
 
 
-ENV_SWITCH_NAME_PATTERN = _load_pattern_from_env("SWITCH_NAME_REGEX_PATTERN", DEFAULT_SWITCH_NAME_PATTERN)
-ENV_AP_NAME_PATTERN = _load_pattern_from_env("AP_NAME_REGEX_PATTERN", DEFAULT_AP_NAME_PATTERN)
+def _load_switch_name_pattern() -> Optional[re.Pattern[str]]:
+    return _load_pattern_from_rules("SWITCH_NAME_REGEX_PATTERN", DEFAULT_SWITCH_NAME_PATTERN)
+
+
+def _load_ap_name_pattern() -> Optional[re.Pattern[str]]:
+    return _load_pattern_from_rules("AP_NAME_REGEX_PATTERN", DEFAULT_AP_NAME_PATTERN)
 
 
 NEIGHBOR_NAME_KEYS: Tuple[str, ...] = (
@@ -1603,8 +1652,8 @@ def _parse_ap_location(
     return match.group("region"), match.group("site"), match.group("location")
 
 
-def _load_positive_int_from_env(var_name: str, default: int) -> int:
-    raw = os.getenv(var_name)
+def _load_positive_int_from_rules(var_name: str, default: int) -> int:
+    raw = _load_compliance_rule_value(var_name)
     if raw is None:
         return default
     candidate = raw.strip()
@@ -1619,8 +1668,12 @@ def _load_positive_int_from_env(var_name: str, default: int) -> int:
         return default
 
 
-ENV_SWITCH_IMAGE_REQUIREMENT = _load_positive_int_from_env("SW_NUM_IMG", 2)
-ENV_AP_IMAGE_REQUIREMENT = _load_positive_int_from_env("AP_NUM_IMG", 2)
+def _load_switch_image_requirement() -> int:
+    return _load_positive_int_from_rules("SW_NUM_IMG", 2)
+
+
+def _load_ap_image_requirement() -> int:
+    return _load_positive_int_from_rules("AP_NUM_IMG", 2)
 
 
 class FirmwareManagementCheck(ComplianceCheck):
@@ -1635,9 +1688,9 @@ class FirmwareManagementCheck(ComplianceCheck):
         allowed_ap_versions: Optional[Sequence[str]] = None,
     ) -> None:
         if allowed_switch_versions is None:
-            allowed_switch_versions = _load_version_list_from_env("STD_SW_VER")
+            allowed_switch_versions = _load_version_list_from_rules("STD_SW_VER")
         if allowed_ap_versions is None:
-            allowed_ap_versions = _load_version_list_from_env("STD_AP_VER")
+            allowed_ap_versions = _load_version_list_from_rules("STD_AP_VER")
         self.allowed_switch_versions: Tuple[str, ...] = tuple(allowed_switch_versions or ())
         self.allowed_ap_versions: Tuple[str, ...] = tuple(allowed_ap_versions or ())
         self._allowed_switch_set = {value for value in self.allowed_switch_versions}
@@ -1733,8 +1786,8 @@ class DeviceNamingConventionCheck(ComplianceCheck):
         switch_pattern: Optional[re.Pattern[str] | str] = None,
         ap_pattern: Optional[re.Pattern[str] | str] = None,
     ) -> None:
-        self.switch_pattern = _ensure_pattern(switch_pattern, ENV_SWITCH_NAME_PATTERN)
-        self.ap_pattern = _ensure_pattern(ap_pattern, ENV_AP_NAME_PATTERN)
+        self.switch_pattern = _ensure_pattern(switch_pattern, _load_switch_name_pattern())
+        self.ap_pattern = _ensure_pattern(ap_pattern, _load_ap_name_pattern())
         self.prepare_run()
 
     def prepare_run(self) -> None:
@@ -1961,8 +2014,8 @@ class DeviceDocumentationCheck(ComplianceCheck):
                 return max(fallback, 0)
             return value
 
-        self.switch_min_images = _sanitize(switch_min_images, ENV_SWITCH_IMAGE_REQUIREMENT)
-        self.ap_min_images = _sanitize(ap_min_images, ENV_AP_IMAGE_REQUIREMENT)
+        self.switch_min_images = _sanitize(switch_min_images, _load_switch_image_requirement())
+        self.ap_min_images = _sanitize(ap_min_images, _load_ap_image_requirement())
         self.default_min_images = _sanitize(default_min_images, 2)
 
     def run(self, context: SiteContext) -> List[Finding]:
@@ -2077,15 +2130,13 @@ class SiteAuditRunner:
         }
 
 
-DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
-    RequiredSiteVariablesCheck(),
-    SwitchTemplateConfigurationCheck(),
-    ConfigurationOverridesCheck(),
-    FirmwareManagementCheck(),
-    DeviceNamingConventionCheck(),
-    DeviceDocumentationCheck(),
-)
-
-
 def build_default_runner() -> SiteAuditRunner:
-    return SiteAuditRunner(DEFAULT_CHECKS)
+    checks: Sequence[ComplianceCheck] = (
+        RequiredSiteVariablesCheck(),
+        SwitchTemplateConfigurationCheck(),
+        ConfigurationOverridesCheck(),
+        FirmwareManagementCheck(),
+        DeviceNamingConventionCheck(),
+        DeviceDocumentationCheck(),
+    )
+    return SiteAuditRunner(checks)

@@ -1,0 +1,39 @@
+{
+  "rules": [
+    {
+      "name": "SWITCH_NAME_REGEX_PATTERN",
+      "value": "^(NA|LA|EU|AP)[A-Z]{3}(?:MDFSPARE|MDF(AS|CS|WS)\\d+|IDF\\d+(AS|CS|WS)\\d+)$",
+      "comment": "Switch naming convention pattern."
+    },
+    {
+      "name": "AP_NAME_REGEX_PATTERN",
+      "value": "^(NA|LA|EU|AP)[A-Z]{3}(?:MDF|IDF\\d+)AP\\d+$",
+      "comment": "Access point naming convention pattern."
+    },
+    {
+      "name": "SW_NUM_IMG",
+      "value": "2",
+      "comment": "Minimum images required for switches."
+    },
+    {
+      "name": "AP_NUM_IMG",
+      "value": "2",
+      "comment": "Minimum images required for access points."
+    },
+    {
+      "name": "STD_SW_VER",
+      "value": "23.4R2-S4.11,24.4R1-S2.15",
+      "comment": "Comma-separated list of approved switch firmware versions."
+    },
+    {
+      "name": "STD_AP_VER",
+      "value": "0.12.27452",
+      "comment": "Comma-separated list of approved access point firmware versions."
+    },
+    {
+      "name": "MIST_SITE_VARIABLES",
+      "value": "hubradiusserver,localradiusserver,siteDNS,hubDNSserver1,hubDNSserver2",
+      "comment": "Comma-separated list of required site variables."
+    }
+  ]
+}
