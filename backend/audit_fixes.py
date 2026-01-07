@@ -1261,13 +1261,26 @@ def _execute_set_site_variables_action(
     site_ids: Sequence[str],
     *,
     dry_run: bool,
+    metadata: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     headers = _mist_headers(token)
     defaults = _load_site_variable_defaults()
+    requested_defaults: Dict[str, str] = {}
+    if isinstance(metadata, Mapping):
+        variables = metadata.get("variables")
+        if isinstance(variables, Mapping):
+            for key, value in variables.items():
+                if not isinstance(key, str) or not key.strip():
+                    continue
+                if _value_is_set(value):
+                    requested_defaults[key.strip()] = str(value).strip()
+                elif _value_is_set(defaults.get(key)):
+                    requested_defaults[key.strip()] = str(defaults[key]).strip()
     normalized_site_ids = [sid for sid in site_ids if isinstance(sid, str) and sid]
 
     results: List[Dict[str, Any]] = []
     totals = {"updated": 0, "skipped": 0, "failed": 0}
+    effective_defaults = requested_defaults or defaults
 
     for site_id in normalized_site_ids:
         try:
@@ -1276,7 +1289,7 @@ def _execute_set_site_variables_action(
                 headers,
                 site_id,
                 dry_run=dry_run,
-                defaults=defaults,
+                defaults=effective_defaults,
             )
         except requests.HTTPError as exc:
             results.append(
@@ -1325,6 +1338,7 @@ def execute_audit_action(
     dry_run: bool = False,
     pause: float = 0.2,
     device_map: Optional[Mapping[str, Sequence[str]]] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     if action_id == AP_RENAME_ACTION_ID:
         return _execute_ap_rename_action(
@@ -1349,6 +1363,7 @@ def execute_audit_action(
             token,
             site_ids,
             dry_run=dry_run,
+            metadata=metadata,
         )
     if action_id == ENABLE_CLOUD_MANAGEMENT_ACTION_ID:
         return _execute_cloud_management_action(

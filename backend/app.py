@@ -1749,6 +1749,13 @@ def api_audit_fix(
                         deduped.append(device_id)
                 device_map[site_id] = deduped
 
+        metadata_payload = payload.get("metadata")
+        metadata: Optional[Dict[str, Any]] = None
+        if metadata_payload is not None:
+            if not isinstance(metadata_payload, dict):
+                raise ValueError("metadata must be provided as an object")
+            metadata = metadata_payload
+
         dry_run = bool(payload.get("dry_run", False))
         pause_default = 0.2 if action_id == AP_RENAME_ACTION_ID else 0.1
         pause_value = payload.get("pause")
@@ -1769,6 +1776,7 @@ def api_audit_fix(
             dry_run=dry_run,
             pause=pause,
             device_map=device_map if device_map else None,
+            metadata=metadata,
         )
 
         totals = result.get("totals", {}) if isinstance(result, dict) else {}

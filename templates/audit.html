@@ -450,6 +450,7 @@
               action_id: action.id,
               site_ids: siteIds,
               devices: deviceTargets,
+              metadata: action.metadata,
             }),
           });
           const data = await response.json().catch(() => ({}));

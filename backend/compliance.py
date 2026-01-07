@@ -193,33 +193,37 @@ class RequiredSiteVariablesCheck(ComplianceCheck):
         findings: List[Finding] = []
         variables = _collect_site_variables(context)
         missing = [key for key in self.required_keys if key not in variables or variables.get(key) in (None, "")]
-        fillable = {key: self.variable_defaults[key] for key in missing if key in self.variable_defaults}
-        action: Optional[Dict[str, Any]] = None
-        if fillable:
-            sorted_keys = sorted(fillable)
+        actions_by_key: Dict[str, Dict[str, Any]] = {}
+        for key in missing:
+            if key not in self.variable_defaults:
+                continue
+            value = self.variable_defaults.get(key)
+            if value in (None, ""):
+                continue
             precheck_messages = [
-                f"Will set {', '.join(sorted_keys)} using environment defaults."
+                f"Will set {key} using environment defaults."
             ]
-            action = {
+            actions_by_key[key] = {
                 "id": SET_SITE_VARIABLES_ACTION_ID,
                 "label": "Set required site variables",
                 "button_label": "1 Click Fix Now",
                 "site_ids": [context.site_id],
                 "metadata": {
-                    "variables": fillable,
+                    "variables": {key: value},
                     "prechecks": {
                         "can_run": True,
                         "messages": precheck_messages,
                     },
                 },
             }
-        for idx, key in enumerate(missing):
+        for key in missing:
+            action = actions_by_key.get(key)
             findings.append(
                 Finding(
                     site_id=context.site_id,
                     site_name=context.site_name,
                     message=f"Site variable '{key}' is not defined.",
-                    actions=[action] if action and idx == 0 else None,
+                    actions=[action] if action else None,
                 )
             )
         return findings
