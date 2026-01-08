@@ -402,6 +402,31 @@
       preserveLegacyVlansExtra.classList.toggle('opacity-60', !enabled);
     }
 
+    function resetLcmStep3FieldLayout(){
+      if (!lcmStep3Fields) return;
+      const colClasses = [
+        'md:col-span-3',
+        'md:col-span-4',
+        'md:col-span-5',
+        'md:col-span-6',
+        'md:col-span-12'
+      ];
+      lcmStep3Fields.classList.remove('grid', 'md:grid-cols-12', 'gap-2', 'items-start');
+      Array.from(lcmStep3Fields.children).forEach(child => {
+        child.classList.remove(...colClasses);
+      });
+    }
+
+    function applyLcmStep3FieldLayout(){
+      if (!lcmStep3Fields) return;
+      resetLcmStep3FieldLayout();
+      lcmStep3Fields.classList.add('grid', 'md:grid-cols-12', 'gap-2', 'items-start');
+      const [cleanupBlock, preserveBlock, extraBlock] = Array.from(lcmStep3Fields.children);
+      cleanupBlock?.classList.add('md:col-span-6');
+      preserveBlock?.classList.add('md:col-span-3');
+      extraBlock?.classList.add('md:col-span-3');
+    }
+
     function updateAutomationLocks(){
       const siteChecked = siteAutomationCheckboxes.filter(cb => cb && cb.checked);
       const lcmChecked = lcmAutomationCheckboxes.filter(cb => cb && cb.checked);
@@ -958,6 +983,27 @@
 
     function renderBatchRows(){
       batchRows.innerHTML = '';
+      const lcmStep3Only = Boolean(removeTempConfig?.checked) && !applyTempConfig?.checked && !finalizeAssignments?.checked;
+      if (lcmStep3Only){
+        if (lcmStep3Fields && lcmStep3Placeholder?.parentElement){
+          applyLcmStep3FieldLayout();
+          lcmStep3Fields.classList.remove('hidden');
+          const wrapper = document.createElement('div');
+          wrapper.className = 'p-4';
+          wrapper.appendChild(lcmStep3Fields);
+          batchRows.appendChild(wrapper);
+          hide(rowsWarning);
+          pushBatchBtn.disabled = false;
+          pushBatchBtn.classList.remove('cursor-not-allowed', 'opacity-70');
+        }
+        return;
+      }
+
+      if (lcmStep3Fields && lcmStep3Placeholder?.parentElement){
+        lcmStep3Placeholder.parentElement.insertBefore(lcmStep3Fields, lcmStep3Placeholder);
+        lcmStep3Fields.classList.add('hidden');
+        resetLcmStep3FieldLayout();
+      }
       rows.forEach((row, i) => {
         const dup = isPairDuplicate(row.device_id, row.member_offset, row.port_offset);
         const dupClass = dup ? 'ring-2 ring-rose-500' : '';
