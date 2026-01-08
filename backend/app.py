@@ -3521,6 +3521,8 @@ def _build_site_cleanup_payload() -> Dict[str, Any]:
 def _port_usage_references_networks(config: Mapping[str, Any], network_names: Set[str]) -> bool:
     if not network_names or not isinstance(config, Mapping):
         return False
+    if config.get("all_networks") is True:
+        return True
     direct_keys = (
         "port_network",
         "voip_network",
@@ -3567,6 +3569,9 @@ def _usage_name_targets_legacy(name: str, legacy_vlan_ids: Set[int]) -> bool:
 def _port_profile_targets_legacy(profile: Mapping[str, Any], legacy_vlan_ids: Set[int]) -> bool:
     if not isinstance(profile, Mapping) or not legacy_vlan_ids:
         return False
+
+    if profile.get("all_networks") is True:
+        return True
 
     for key in ("vlan", "voice_vlan", "native_vlan"):
         value = _int_or_none(profile.get(key))
@@ -4052,8 +4057,10 @@ def _derive_port_config_from_port_profiles(
     token: str,
     site_id: str,
     device_id: str,
+    preserve_usage_names: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     headers = _mist_headers(token)
+    preserve_usage_names = set(preserve_usage_names or set())
 
     device_info = _mist_get_json(
         base_url,
@@ -4132,6 +4139,9 @@ def _derive_port_config_from_port_profiles(
         if not isinstance(entry, Mapping):
             continue
         usage_name = str(entry.get("usage") or "").strip()
+        if usage_name and usage_name in preserve_usage_names:
+            derived_config[port_id] = _compact_dict(dict(entry))
+            continue
         usage_config = port_usages.get(usage_name) if usage_name else None
         if not isinstance(usage_config, Mapping):
             usage_config = {}
@@ -4565,23 +4575,6 @@ def _remove_temporary_config_for_rows(
     derived_payloads: Dict[Tuple[str, str], Dict[str, Any]] = {}
     derivation_warnings: Dict[Tuple[str, str], str] = {}
 
-    for row in ok_rows:
-        site_id = str(row.get("site_id") or "").strip()
-        device_id = str(row.get("device_id") or "").strip()
-        key = (site_id, device_id)
-        if not site_id or not device_id:
-            continue
-        try:
-            port_config = _derive_port_config_from_port_profiles(base_url, token, site_id, device_id)
-            if port_config:
-                derived_payloads[key] = {"port_config": port_config}
-            else:
-                derivation_warnings[key] = "No switchport port_config details discovered from Mist."
-        except MistAPIError as exc:
-            derivation_warnings[key] = f"Unable to fetch device details for port profile conversion: {exc}"
-        except Exception as exc:  # pragma: no cover - network/parse failures reported to UI
-            derivation_warnings[key] = f"Unable to derive port configuration from port profile usage: {exc}"
-
     def _collect_site_cleanup_targets(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
         sites: Dict[str, Dict[str, Any]] = {}
         for row in rows:
@@ -4633,13 +4626,61 @@ def _remove_temporary_config_for_rows(
                 )
                 record.setdefault("_errors", []).append((str(exc), None))
 
+    cleanup_payloads: Dict[str, Dict[str, Any]] = {}
+    preserved_usage_names_by_site: Dict[str, Set[str]] = {}
+
     def _cleanup_payload_for_site(site_id: str) -> Dict[str, Any]:
-        settings = site_settings.get(site_id, {})
-        return _build_site_cleanup_payload_for_setting(
-            settings,
-            preserve_legacy_vlans=preserve_legacy_vlans,
-            legacy_vlan_ids=effective_legacy_vlan_ids,
-        )
+        if site_id not in cleanup_payloads:
+            settings = site_settings.get(site_id, {})
+            cleanup_payloads[site_id] = _build_site_cleanup_payload_for_setting(
+                settings,
+                preserve_legacy_vlans=preserve_legacy_vlans,
+                legacy_vlan_ids=effective_legacy_vlan_ids,
+            )
+        return cleanup_payloads[site_id]
+
+    if preserve_legacy_vlans:
+        for site_id in sites.keys():
+            cleanup_payload = _cleanup_payload_for_site(site_id)
+            preserved_usages = cleanup_payload.get("port_usages")
+            preserved_profiles = cleanup_payload.get("port_profiles")
+            preserved_names: Set[str] = set()
+            if isinstance(preserved_usages, Mapping):
+                preserved_names.update(
+                    str(name).strip() for name in preserved_usages.keys() if str(name).strip()
+                )
+            if isinstance(preserved_profiles, Sequence) and not isinstance(preserved_profiles, (str, bytes)):
+                for profile in preserved_profiles:
+                    if not isinstance(profile, Mapping):
+                        continue
+                    name = str(profile.get("name") or "").strip()
+                    if name:
+                        preserved_names.add(name)
+            preserved_usage_names_by_site[site_id] = preserved_names
+
+    for row in ok_rows:
+        site_id = str(row.get("site_id") or "").strip()
+        device_id = str(row.get("device_id") or "").strip()
+        key = (site_id, device_id)
+        if not site_id or not device_id:
+            continue
+        preserve_usages = preserved_usage_names_by_site.get(site_id, set())
+        try:
+            port_config = _derive_port_config_from_port_profiles(
+                base_url,
+                token,
+                site_id,
+                device_id,
+                preserve_usage_names=preserve_usages,
+            )
+            if port_config:
+                derived_payloads[key] = {"port_config": port_config}
+            else:
+                derivation_warnings[key] = "No switchport port_config details discovered from Mist."
+        except MistAPIError as exc:
+            derivation_warnings[key] = f"Unable to fetch device details for port profile conversion: {exc}"
+        except Exception as exc:  # pragma: no cover - network/parse failures reported to UI
+            derivation_warnings[key] = f"Unable to derive port configuration from port profile usage: {exc}"
 
     if dry_run:
         for row in ok_rows:
