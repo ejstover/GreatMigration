@@ -415,6 +415,16 @@
       }
     }
 
+    function syncBatchSectionVisibility(){
+      if (!batchSection) return;
+      const lcmStep3Only = Boolean(removeTempConfig?.checked) && !applyTempConfig?.checked && !finalizeAssignments?.checked;
+      if (convertedItems.length || lcmStep3Only){
+        show(batchSection);
+      } else {
+        hide(batchSection);
+      }
+    }
+
     function syncLegacyVlanExtras(){
       if (!preserveLegacyVlansExtra) return;
       const enabled = Boolean(preserveLegacyVlans?.checked);
@@ -482,6 +492,7 @@
       syncPushBtnLabel();
       renderConvertedList();
       syncLcmCleanupVisibility();
+      syncBatchSectionVisibility();
     }
 
     async function logTiming(eventName, durationMs, metadata = {}){
@@ -738,7 +749,7 @@
       batchOutput.innerHTML = '';
       convertStatus.textContent = '';
       hide(results);
-      hide(batchSection);
+      syncBatchSectionVisibility();
       hide(rowsWarning);
       batchStatus.textContent = '';
       syncPushBtnLabel();
@@ -828,7 +839,7 @@
       }
 
       renderBatchRows();
-      show(batchSection);
+      syncBatchSectionVisibility();
     }
 
     function renderConvertedList(){
