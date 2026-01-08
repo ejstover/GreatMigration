@@ -74,7 +74,25 @@ def validate_rules_doc(doc: Dict[str, Any]) -> None:
     if not isinstance(rules, list):
         raise ValueError("Rules document missing 'rules' list")
 
-    allowed_when = {"mode", "data_vlan", "voice_vlan", "native_vlan", "description_regex"}
+    allowed_when = {
+        "mode",
+        "data_vlan",
+        "data_vlan_in",
+        "voice_vlan",
+        "native_vlan",
+        "allowed_vlans_contains",
+        "allowed_vlans_equals",
+        "has_voice",
+        "description_regex",
+        "name_regex",
+        "juniper_if_regex",
+        "port_network",
+        "voip_network",
+        "native_network",
+        "networks_contains",
+        "networks_equals",
+        "any",
+    }
     allowed_set = {"usage"}
 
     for idx, rule in enumerate(rules, 1):
@@ -174,6 +192,11 @@ def evaluate_rule(when: Dict[str, Any], intf: Dict[str, Any]) -> bool:
     allowed_vlans_set  = set(_normalize_vlan_list(intf.get("allowed_vlans")))
     name       = intf.get("name") or ""
     juniper_if = intf.get("juniper_if") or ""
+    port_network = intf.get("port_network")
+    voip_network = intf.get("voip_network")
+    native_network = intf.get("native_network")
+    networks_value = intf.get("networks") or intf.get("dynamic_vlan_networks") or []
+    networks_set = set(str(v) for v in networks_value if str(v))
 
     for k, v in when.items():
         if k == "mode":
@@ -198,6 +221,16 @@ def evaluate_rule(when: Dict[str, Any], intf: Dict[str, Any]) -> bool:
             if not _match_regex(name, v): return False
         elif k == "juniper_if_regex":
             if not _match_regex(juniper_if, v): return False
+        elif k == "port_network":
+            if str(port_network or "") != str(v): return False
+        elif k == "voip_network":
+            if str(voip_network or "") != str(v): return False
+        elif k == "native_network":
+            if str(native_network or "") != str(v): return False
+        elif k == "networks_contains":
+            if str(v) not in networks_set: return False
+        elif k == "networks_equals":
+            if networks_set != set(str(x) for x in (v or [])): return False
         elif k == "any":
             pass
         else:

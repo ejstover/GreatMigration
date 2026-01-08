@@ -3910,7 +3910,7 @@ def _derive_port_config_from_config_cmd(
     site_id: str,
     device_id: str,
 ) -> Dict[str, Any]:
-    url = f"{base_url}/sites/{site_id}/devices/{device_id}/config_cmd"
+    url = f"{base_url}/sites/{site_id}/devices/{device_id}"
     headers = _mist_headers(token)
     resp = requests.get(url, headers=headers, timeout=60)
     data = _safe_json_response(resp)

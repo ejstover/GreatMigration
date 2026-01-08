@@ -219,32 +219,29 @@
                   <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 3 · Deploy</span>
                   <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Deploy the final Juniper config</span>
                   <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and select the site + switches that should receive the final Juniper configuration.</span>
-                  <span id="lcm_step3_placeholder"></span>
-                  <div id="lcm_step3_fields" class="hidden">
-                    <div id="lcm_cleanup_options" class="mt-3 space-y-2 text-xs text-slate-600 dark:text-slate-300">
-                      <label class="flex flex-col gap-1">
-                        <span class="font-semibold text-slate-700 dark:text-slate-200">Cleanup site</span>
-                        <select id="lcm_cleanup_site" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
-                          <option value="">Select a site…</option>
-                        </select>
-                        <span>Choose the Mist site where the legacy configuration should be removed.</span>
-                      </label>
-                      <div>
-                        <span class="font-semibold text-slate-700 dark:text-slate-200">Switches to clean up</span>
-                        <div id="lcm_cleanup_devices" class="mt-1 rounded-md border border-slate-200 bg-white/80 p-2 text-xs text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
-                          Select a site to list switches.
-                        </div>
+                  <span class="mt-2 inline-flex items-start gap-2 rounded-md bg-white/60 px-2 py-1 text-xs text-slate-700 shadow-sm ring-1 ring-slate-200 dark:bg-slate-900/60 dark:text-slate-200 dark:ring-slate-700">
+                    <input id="preserve_legacy_vlans" type="checkbox" class="mt-0.5 h-4 w-4" checked />
+                    <span>Preserve legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default) and their port profiles during cleanup.</span>
+                  </span>
+                  <label class="mt-2 flex flex-col gap-1 text-xs text-slate-600 dark:text-slate-300">
+                    <span class="font-semibold text-slate-700 dark:text-slate-200">Additional VLANs to preserve (optional)</span>
+                    <input id="preserve_legacy_vlans_extra" type="text" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="e.g. 42,100-110" />
+                    <span>Enter ad-hoc VLAN IDs or ranges to keep alongside the defaults for this run.</span>
+                  </label>
+                  <div id="lcm_cleanup_options" class="mt-3 hidden space-y-2 text-xs text-slate-600 dark:text-slate-300">
+                    <label class="flex flex-col gap-1">
+                      <span class="font-semibold text-slate-700 dark:text-slate-200">Cleanup site</span>
+                      <select id="lcm_cleanup_site" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+                        <option value="">Select a site…</option>
+                      </select>
+                      <span>Choose the Mist site where the legacy configuration should be removed.</span>
+                    </label>
+                    <div>
+                      <span class="font-semibold text-slate-700 dark:text-slate-200">Switches to clean up</span>
+                      <div id="lcm_cleanup_devices" class="mt-1 rounded-md border border-slate-200 bg-white/80 p-2 text-xs text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
+                        Select a site to list switches.
                       </div>
                     </div>
-                    <span class="mt-2 inline-flex items-start gap-2 rounded-md bg-white/60 px-2 py-1 text-xs text-slate-700 shadow-sm ring-1 ring-slate-200 dark:bg-slate-900/60 dark:text-slate-200 dark:ring-slate-700">
-                      <input id="preserve_legacy_vlans" type="checkbox" class="mt-0.5 h-4 w-4" checked />
-                      <span>Preserve legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default) and their port profiles during cleanup.</span>
-                    </span>
-                    <label class="mt-2 flex flex-col gap-1 text-xs text-slate-600 dark:text-slate-300">
-                      <span class="font-semibold text-slate-700 dark:text-slate-200">Additional VLANs to preserve (optional)</span>
-                      <input id="preserve_legacy_vlans_extra" type="text" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="e.g. 42,100-110" />
-                      <span>Enter ad-hoc VLAN IDs or ranges to keep alongside the defaults for this run.</span>
-                    </label>
                   </div>
                 </span>
               </span>
@@ -358,8 +355,6 @@
     const removeTempConfig = document.getElementById('remove_temp_config');
     const preserveLegacyVlans = document.getElementById('preserve_legacy_vlans');
     const preserveLegacyVlansExtra = document.getElementById('preserve_legacy_vlans_extra');
-    const lcmStep3Fields = document.getElementById('lcm_step3_fields');
-    const lcmStep3Placeholder = document.getElementById('lcm_step3_placeholder');
     const lcmCleanupOptions = document.getElementById('lcm_cleanup_options');
     const lcmCleanupSite = document.getElementById('lcm_cleanup_site');
     const lcmCleanupDevices = document.getElementById('lcm_cleanup_devices');
@@ -373,7 +368,6 @@
     let sitesCache = []; // list of sites
     const devicesBySite = new Map(); // site_id -> devices[]
     let lcmCleanupSelectedIds = new Set();
-    const lcmStep3OriginalParent = lcmStep3Fields?.parentElement || null;
     let sshCollectStartedAt = null;
     let sshCollectRequested = 0;
     const siteAutomationCheckboxes = [siteStage, sitePush].filter(Boolean);
@@ -474,7 +468,6 @@
       syncPushBtnLabel();
       renderConvertedList();
       syncLcmCleanupVisibility();
-      renderBatchRows();
     }
 
     async function logTiming(eventName, durationMs, metadata = {}){
@@ -967,7 +960,7 @@
     function syncLcmCleanupVisibility(){
       if (!lcmCleanupOptions) return;
       const shouldShow = Boolean(removeTempConfig?.checked);
-      lcmStep3Fields?.classList.toggle('hidden', !shouldShow);
+      lcmCleanupOptions.classList.toggle('hidden', !shouldShow);
       if (batchSection){
         if (shouldShow){
           show(batchSection);
@@ -979,7 +972,6 @@
         lcmCleanupSelectedIds = new Set();
         if (lcmCleanupSite) lcmCleanupSite.value = '';
         if (lcmCleanupDevices) lcmCleanupDevices.textContent = 'Select a site to list switches.';
-        resetLcmStep3FieldLayout();
       } else {
         renderLcmCleanupSiteOptions();
         const siteId = lcmCleanupSite?.value || '';
@@ -1554,10 +1546,7 @@
       });
     });
     preserveLegacyVlans?.addEventListener('change', syncLegacyVlanExtras);
-    removeTempConfig?.addEventListener('change', () => {
-      syncLcmCleanupVisibility();
-      renderBatchRows();
-    });
+    removeTempConfig?.addEventListener('change', syncLcmCleanupVisibility);
     lcmCleanupSite?.addEventListener('change', async () => {
       lcmCleanupSelectedIds = new Set();
       if (lcmCleanupSite?.value) {
