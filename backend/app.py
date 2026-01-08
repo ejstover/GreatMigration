@@ -3618,7 +3618,8 @@ def _build_site_cleanup_payload_for_setting(
         for p in preserved_port_profiles
         if isinstance(p, Mapping) and str(p.get("name") or "").strip()
     }
-    override_usage_names: Set[str] = set(preserved_port_usages.keys()) | preserved_profile_names
+    preserved_usage_names: Set[str] = set(preserved_port_usages.keys())
+    override_usage_names: Set[str] = preserved_usage_names | preserved_profile_names
     override_candidates = _normalize_port_override_list(existing_setting.get("port_overrides"))
     if not override_candidates and isinstance(switch_section, Mapping):
         override_candidates = _normalize_port_override_list(switch_section.get("port_overrides"))
@@ -3632,9 +3633,34 @@ def _build_site_cleanup_payload_for_setting(
         if _port_usage_references_networks(override, preserved_network_names):
             preserved_overrides.append(_compact_dict(dict(override)))
 
+    preserved_port_config: Dict[str, Dict[str, Any]] = {}
+    existing_port_config = existing_setting.get("port_config") if isinstance(existing_setting, Mapping) else {}
+    if not isinstance(existing_port_config, Mapping) and isinstance(switch_section, Mapping):
+        existing_port_config = switch_section.get("port_config")
+    if isinstance(existing_port_config, Mapping):
+        for port_id, cfg in existing_port_config.items():
+            if not isinstance(cfg, Mapping):
+                continue
+            port_key = str(port_id or "").strip()
+            if not port_key:
+                continue
+            usage_value = str(cfg.get("usage") or cfg.get("port_usage") or "").strip()
+            profile_value = str(cfg.get("port_profile") or cfg.get("port_profile_name") or "").strip()
+            keep = False
+            if usage_value and usage_value in preserved_usage_names:
+                keep = True
+            if profile_value and profile_value in preserved_profile_names:
+                keep = True
+            if not keep and _port_usage_references_networks(cfg, preserved_network_names):
+                keep = True
+            if not keep and _port_profile_targets_legacy(cfg, legacy_vlan_ids):
+                keep = True
+            if keep:
+                preserved_port_config[port_key] = _compact_dict(dict(cfg))
+
     cleanup_payload: Dict[str, Any] = {
         "networks": _sort_network_map_by_vlan_id(preserved_networks),
-        "port_config": {},
+        "port_config": preserved_port_config,
         "port_overrides": preserved_overrides,
     }
     if preserved_port_usages:
