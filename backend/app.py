@@ -3542,6 +3542,28 @@ def _port_usage_references_networks(config: Mapping[str, Any], network_names: Se
     return False
 
 
+def _extract_vlan_ids_from_usage_name(name: str) -> Set[int]:
+    if not name:
+        return set()
+    tokens = re.findall(r"(?:^|_)(VV|V|N|A)([0-9][0-9,-]*)", name.upper())
+    vlan_ids: Set[int] = set()
+    for prefix, value in tokens:
+        if prefix == "A":
+            vlan_ids.update(_expand_vlan_id_set(value))
+            continue
+        try:
+            vlan_ids.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    return vlan_ids
+
+
+def _usage_name_targets_legacy(name: str, legacy_vlan_ids: Set[int]) -> bool:
+    if not name or not legacy_vlan_ids:
+        return False
+    return bool(_extract_vlan_ids_from_usage_name(name).intersection(legacy_vlan_ids))
+
+
 def _port_profile_targets_legacy(profile: Mapping[str, Any], legacy_vlan_ids: Set[int]) -> bool:
     if not isinstance(profile, Mapping) or not legacy_vlan_ids:
         return False
@@ -3630,6 +3652,9 @@ def _build_site_cleanup_payload_for_setting(
         if usage_value and usage_value in override_usage_names:
             preserved_overrides.append(_compact_dict(dict(override)))
             continue
+        if _usage_name_targets_legacy(usage_value, legacy_vlan_ids):
+            preserved_overrides.append(_compact_dict(dict(override)))
+            continue
         if _port_usage_references_networks(override, preserved_network_names):
             preserved_overrides.append(_compact_dict(dict(override)))
 
@@ -3649,11 +3674,15 @@ def _build_site_cleanup_payload_for_setting(
             keep = False
             if usage_value and usage_value in preserved_usage_names:
                 keep = True
+            if usage_value and usage_value in preserved_profile_names:
+                keep = True
             if profile_value and profile_value in preserved_profile_names:
                 keep = True
             if not keep and _port_usage_references_networks(cfg, preserved_network_names):
                 keep = True
             if not keep and _port_profile_targets_legacy(cfg, legacy_vlan_ids):
+                keep = True
+            if not keep and _usage_name_targets_legacy(usage_value, legacy_vlan_ids):
                 keep = True
             if keep:
                 preserved_port_config[port_key] = _compact_dict(dict(cfg))
