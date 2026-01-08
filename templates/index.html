@@ -10,8 +10,6 @@
   <script>tailwind.config = { darkMode: 'media' };</script>
 
   <style>
-    .dropzone { border: 2px dashed #cbd5e1; }
-    .dropzone.dragover { border-color: #60a5fa; background: #f8fafc; }
     pre { white-space: pre-wrap; word-wrap: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }
     .status-info { border-color: #bae6fd; background: #ecfeff; }
     .status-success { border-color: #86efac; background: #f0fdf4; }
@@ -82,13 +80,10 @@
           </div>
           <div class="flex flex-wrap items-center gap-3 mt-4">
             <button id="cfg_ssh_collect" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Fetch Configs</button>
-            <button id="choose_files" class="px-4 py-2 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">Manual Upload</button>
+            <button id="choose_files" class="px-4 py-2 rounded bg-sky-600 text-white hover:bg-sky-700">Manual Upload</button>
             <span id="cfg_ssh_progress" class="text-sm text-slate-600 dark:text-slate-300"></span>
           </div>
-          <div id="dz" class="dropzone mt-4 rounded-2xl bg-slate-50 dark:bg-slate-900/60 dark:border-slate-700 p-6 text-center text-slate-500 dark:text-slate-300">
-            <p class="mb-2">Drag & drop Cisco config files here (or use Manual Upload)</p>
-            <input id="file_input" type="file" multiple class="hidden" accept=".txt,.cfg,.conf,.json" />
-          </div>
+          <input id="file_input" type="file" multiple class="hidden" accept=".txt,.cfg,.conf,.json" />
           <div class="flex flex-wrap items-center justify-between gap-3 mt-3">
             <div id="convert_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
             <button id="clear_all" class="px-4 py-2 rounded bg-red-600 text-white hover:bg-red-700">Clear</button>
@@ -101,7 +96,7 @@
       </section>
 
       <!-- LCM Step 3 -->
-      <section class="mb-6">
+      <section id="lcm_step3_section" class="mb-6">
         <div class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-6">
           <div class="flex items-start gap-3 mb-4">
             <span class="mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-100 text-xs font-bold tracking-wide text-sky-700 dark:bg-sky-900/40 dark:text-sky-200">LCM</span>
@@ -112,7 +107,13 @@
             </div>
           </div>
           <div class="tooltip relative flex flex-col gap-4 rounded-xl border border-slate-200 bg-slate-50/60 p-4 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
-            <div class="flex items-start justify-between gap-4">
+            <button id="lcm_step3_toggle" type="button" class="absolute right-3 top-3 inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800" aria-expanded="false">
+              <span class="sr-only">Toggle LCM Step 3 details</span>
+              <svg class="h-4 w-4 transition-transform" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.25 8.27a.75.75 0 01-.02-1.06z" clip-rule="evenodd" />
+              </svg>
+            </button>
+            <div class="flex items-start gap-4 pr-10">
               <label class="flex items-start gap-3">
                 <input id="remove_temp_config" type="checkbox" class="mt-1 h-4 w-4" />
                 <span>
@@ -121,15 +122,7 @@
                   <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and select the site + switches that should receive the final Juniper configuration.</span>
                 </span>
               </label>
-              <div class="flex items-center gap-2">
-                <span class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
-                <button id="lcm_step3_toggle" type="button" class="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800" aria-expanded="false">
-                  <span class="sr-only">Toggle LCM Step 3 details</span>
-                  <svg class="h-4 w-4 transition-transform" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                    <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.25 8.27a.75.75 0 01-.02-1.06z" clip-rule="evenodd" />
-                  </svg>
-                </button>
-              </div>
+              <span class="mt-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
             </div>
             <div id="lcm_step3_body" class="hidden space-y-4 text-xs text-slate-600 dark:text-slate-300">
               <div id="lcm_cleanup_options" class="space-y-3">
@@ -354,7 +347,6 @@
     const sshFailureSummary = document.getElementById('cfg_ssh_failure_summary');
     const sshFailureList = document.getElementById('cfg_ssh_failure_list');
 
-    const dz = document.getElementById('dz');
     const fileInput = document.getElementById('file_input');
     const chooseBtn = document.getElementById('choose_files');
     const convertStatus = document.getElementById('convert_status');
@@ -383,6 +375,7 @@
     const lcmCleanupDevices = document.getElementById('lcm_cleanup_devices');
     const lcmStep3Toggle = document.getElementById('lcm_step3_toggle');
     const lcmStep3Body = document.getElementById('lcm_step3_body');
+    const lcmStep3Section = document.getElementById('lcm_step3_section');
     const siteStage = document.getElementById('site_stage');
     const sitePush = document.getElementById('site_push');
 
@@ -435,6 +428,15 @@
         const icon = lcmStep3Toggle.querySelector('svg');
         if (icon) icon.classList.toggle('rotate-180', expanded);
       }
+    }
+
+    function dismissLcmStep3Assets(){
+      if (lcmStep3Section) hide(lcmStep3Section);
+      if (removeTempConfig){
+        removeTempConfig.checked = false;
+      }
+      setLcmStep3Expanded(false);
+      updateAutomationLocks();
     }
 
     function updateAutomationLocks(){
@@ -568,6 +570,7 @@
     if (sshCollectBtn){
       sshCollectBtn.addEventListener('click', async (e) => {
         e.preventDefault();
+        dismissLcmStep3Assets();
         if (sshCollectBtn.disabled) return;
         const devicesRaw = (sshDevicesInput?.value || '').split(/\r?\n|,/);
         const devices = devicesRaw.map(v => v.trim()).filter(Boolean).map(host => ({ host, label: host }));
@@ -718,16 +721,10 @@
     chooseBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      dismissLcmStep3Assets();
       fileInput.value = '';
       fileInput.click();
     });
-    dz.addEventListener('click', () => {
-      fileInput.value = '';
-      fileInput.click();
-    });
-    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
-    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-    dz.addEventListener('drop', (e) => { e.preventDefault(); dz.classList.remove('dragover'); if (e.dataTransfer.files?.length) handleFiles([...e.dataTransfer.files]); });
     fileInput.addEventListener('change', () => { handleFiles([...fileInput.files]); fileInput.value = ''; });
 
     clearAll.addEventListener('click', () => {
