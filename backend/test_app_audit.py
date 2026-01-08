@@ -523,6 +523,66 @@ def test_cleanup_payload_preserves_legacy_usage_name(app_module):
     assert cleanup["networks"] == {"legacy_net": {"vlan_id": 10, "note": "keep"}}
     assert cleanup["port_config"] == {"ge-0/0/20": {"usage": "legacy_AUTO_ACCESS_V10_POE_EDGE"}}
 
+
+def test_cleanup_payload_preserves_all_networks_trunk(app_module):
+    settings = {
+        "networks": {
+            "legacy_net": {"vlan_id": 10, "note": "keep"},
+            "temp_net": {"vlan_id": 200, "note": "drop"},
+        },
+        "switch": {
+            "port_usages": {
+                "legacy_TRUNK_ALL": {"mode": "trunk", "all_networks": True},
+                "temp_profile": {"port_network": "temp_net"},
+            }
+        },
+    }
+
+    cleanup = app_module._build_site_cleanup_payload_for_setting(
+        settings,
+        preserve_legacy_vlans=True,
+        legacy_vlan_ids={10},
+    )
+
+    assert cleanup["networks"] == {"legacy_net": {"vlan_id": 10, "note": "keep"}}
+    assert cleanup.get("port_usages") == {"legacy_TRUNK_ALL": {"mode": "trunk", "all_networks": True}}
+
+
+def test_derive_port_config_preserves_usage_names(monkeypatch, app_module):
+    device_info = {
+        "port_config": {
+            "ge-0/0/20": {"usage": "legacy_AUTO_ACCESS_V10_POE_EDGE"},
+            "ge-0/0/21": {"usage": "AUTO_ACCESS"},
+        }
+    }
+    derived_settings = {
+        "port_usages": {"AUTO_ACCESS": {"mode": "access"}},
+        "networks": {},
+    }
+
+    def fake_get_json(base_url: str, headers: Dict[str, str], path: str, optional: bool = False):
+        if path.endswith("/setting/derived"):
+            return derived_settings
+        return device_info
+
+    monkeypatch.setattr(app_module, "_mist_get_json", fake_get_json)
+    monkeypatch.setattr(
+        app_module.pm,
+        "RULES_DOC",
+        {"rules": [{"when": {"any": True}, "set": {"usage": "end_user"}}]},
+    )
+
+    derived = app_module._derive_port_config_from_port_profiles(
+        "https://example.com/api/v1",
+        "token",
+        "site-1",
+        "device-1",
+        preserve_usage_names={"legacy_AUTO_ACCESS_V10_POE_EDGE"},
+    )
+
+    assert derived["ge-0/0/20"]["usage"] == "legacy_AUTO_ACCESS_V10_POE_EDGE"
+    assert derived["ge-0/0/21"]["usage"] == "end_user"
+
 def test_load_site_history_parses_breakdown(tmp_path):
     from audit_history import load_site_history
 
