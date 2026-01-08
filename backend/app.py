@@ -3917,6 +3917,40 @@ def _derive_port_config_from_config_cmd(
     if not (200 <= resp.status_code < 300):
         raise MistAPIError(resp.status_code, _extract_mist_error(resp), response=data)
 
+    device_model: Optional[str] = None
+    member_models: Dict[int, Optional[str]] = {}
+    try:
+        device_info = _mist_get_json(base_url, headers, f"/sites/{site_id}/devices/{device_id}", optional=True)
+    except Exception:
+        device_info = None
+
+    if isinstance(device_info, Mapping):
+        raw_model = device_info.get("model")
+        if isinstance(raw_model, str) and raw_model.strip():
+            device_model = raw_model.strip()
+        vc_data = device_info.get("virtual_chassis")
+        members: Optional[Sequence[Any]] = None
+        if isinstance(vc_data, Mapping):
+            maybe_members = vc_data.get("members") or vc_data.get("devices")
+            if isinstance(maybe_members, Sequence) and not isinstance(maybe_members, (str, bytes, bytearray)):
+                members = maybe_members
+        elif isinstance(vc_data, Sequence) and not isinstance(vc_data, (str, bytes, bytearray)):
+            members = vc_data
+        if members:
+            for member in members:
+                if not isinstance(member, Mapping):
+                    continue
+                member_id = _int_or_none(
+                    member.get("member_id") or member.get("member") or member.get("id") or member.get("slot")
+                )
+                if member_id is None:
+                    continue
+                member_model = member.get("model") or member.get("device_model")
+                if isinstance(member_model, str) and member_model.strip():
+                    member_models[member_id] = member_model.strip()
+                else:
+                    member_models[member_id] = None
+
     cli = data.get("cli") if isinstance(data, Mapping) else None
     if not isinstance(cli, Sequence) or isinstance(cli, (str, bytes, bytearray)):
         raise MistAPIError(resp.status_code, "Config command output missing 'cli' entries.", response=data)
@@ -3925,7 +3959,37 @@ def _derive_port_config_from_config_cmd(
     if not interfaces:
         return {}
 
-    return map_interfaces_to_port_config(interfaces, model=None)
+    port_config = map_interfaces_to_port_config(interfaces, model=None)
+    if not port_config:
+        return port_config
+
+    if not device_model and not member_models:
+        return port_config
+
+    allowed_members = set(member_models.keys()) if member_models else {0}
+    filtered: Dict[str, Any] = {}
+    for ifname, cfg in port_config.items():
+        m = pm.MIST_IF_RE.match(ifname)
+        if not m:
+            filtered[ifname] = cfg
+            continue
+        member = int(m.group("member"))
+        if member not in allowed_members:
+            continue
+        model = member_models.get(member) or device_model
+        mk = pm._model_key(model)
+        caps = pm.MODEL_CAPS.get(mk) if mk else None
+        if not caps:
+            filtered[ifname] = cfg
+            continue
+        pic = int(m.group("pic"))
+        port = int(m.group("port"))
+        if pic == 0 and port >= caps["access_pic0"]:
+            continue
+        if pic == 2 and port >= caps.get("uplink_pic2", 0):
+            continue
+        filtered[ifname] = cfg
+    return filtered
 
 
 def _apply_temporary_config_for_rows(
