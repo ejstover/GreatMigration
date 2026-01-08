@@ -126,30 +126,73 @@
       });
     }
 
+    const conditionOptions = [
+      { value: 'mode' },
+      { value: 'data_vlan' },
+      { value: 'voice_vlan' },
+      { value: 'native_vlan' },
+      { value: 'description_regex' },
+      { value: 'allowed_vlans', help: 'Comma separated VLAN IDs. Example: 10,20,30' }
+    ];
+    const listFields = new Set(['allowed_vlans']);
+
     function createConditionRow(cond){
       const div = document.createElement('div');
       div.className = 'flex items-center gap-2 mb-1';
       const sel = document.createElement('select');
       sel.className = 'border rounded p-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
-      ['mode','data_vlan','voice_vlan','native_vlan','description_regex'].forEach(f=>{
-        const o=document.createElement('option'); o.value=f; o.textContent=f; if(f===cond.field) o.selected=true; sel.appendChild(o);
+      conditionOptions.forEach(opt=>{
+        const o=document.createElement('option');
+        o.value=opt.value;
+        o.textContent=opt.value;
+        if(opt.value===cond.field) o.selected=true;
+        sel.appendChild(o);
       });
       const val = document.createElement('input');
       val.className = 'border rounded p-1 flex-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
-      val.value = cond.value || '';
+      if(Array.isArray(cond.value)) {
+        val.value = cond.value.join(',');
+      } else {
+        val.value = cond.value || '';
+      }
       div.appendChild(sel);
       div.appendChild(val);
-      const regexTip = document.createElement('span');
-      regexTip.className = 'tooltip hidden';
-      regexTip.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 112 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg><span class="tip">Supports regular expressions.</span>';
-      div.appendChild(regexTip);
+      const helpTip = document.createElement('span');
+      helpTip.className = 'tooltip hidden';
+      helpTip.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 112 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg><span class="tip"></span>';
+      const helpText = helpTip.querySelector('.tip');
+      div.appendChild(helpTip);
       const del = document.createElement('button');
       del.textContent='✕';
       del.className='text-red-500 text-sm';
       del.addEventListener('click',()=>{ const parent=div.parentElement; div.remove(); if(parent) updateAndLabels(parent); });
       div.appendChild(del);
-      function toggleTip(){ if(sel.value.includes('regex')) regexTip.classList.remove('hidden'); else regexTip.classList.add('hidden'); }
-      sel.addEventListener('change',toggleTip);
+      function toggleTip(){
+        let message = '';
+        if(sel.value.includes('regex')) {
+          message = 'Supports regular expressions.';
+        } else {
+          const opt = conditionOptions.find(o=>o.value===sel.value);
+          if(opt?.help) message = opt.help;
+        }
+        if(message){
+          helpText.textContent = message;
+          helpTip.classList.remove('hidden');
+        } else {
+          helpTip.classList.add('hidden');
+        }
+      }
+      sel.addEventListener('change',()=>{
+        if(listFields.has(sel.value)){
+          val.placeholder = 'e.g. 10,20,30';
+        } else {
+          val.placeholder = '';
+        }
+        toggleTip();
+      });
+      if(listFields.has(sel.value)){
+        val.placeholder = 'e.g. 10,20,30';
+      }
       toggleTip();
       return div;
     }
@@ -192,8 +235,18 @@
         const when={};
         tr.querySelectorAll('.conds > div').forEach(div=>{
           const f=div.querySelector('select').value;
-          const v=div.querySelector('input').value;
-          if(v) when[f]=isNaN(Number(v))? v: Number(v);
+          const raw=div.querySelector('input').value.trim();
+          if(!raw) return;
+          if(listFields.has(f)){
+            const parts = raw.split(/[,\s]+/).map(p=>p.trim()).filter(Boolean);
+            if(parts.length){
+              const nums = parts.map(p=>Number(p)).filter(n=>!Number.isNaN(n));
+              when[f] = nums;
+            }
+            return;
+          }
+          if(isNaN(Number(raw))){ when[f]=raw; }
+          else { when[f]=Number(raw); }
         });
         const usage = tr.querySelector('.usage').value;
         const set={};
