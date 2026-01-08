@@ -80,9 +80,18 @@
               <p class="text-xs text-slate-500 dark:text-slate-400">Usernames persist locally for convenience. Passwords clear immediately after the job starts.</p>
             </div>
           </div>
-          <div class="flex items-center gap-3 mt-4">
-            <button id="cfg_ssh_collect" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Fetch configs</button>
+          <div class="flex flex-wrap items-center gap-3 mt-4">
+            <button id="cfg_ssh_collect" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Fetch Configs</button>
+            <button id="choose_files" class="px-4 py-2 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600">Manual Upload</button>
             <span id="cfg_ssh_progress" class="text-sm text-slate-600 dark:text-slate-300"></span>
+          </div>
+          <div id="dz" class="dropzone mt-4 rounded-2xl bg-slate-50 dark:bg-slate-900/60 dark:border-slate-700 p-6 text-center text-slate-500 dark:text-slate-300">
+            <p class="mb-2">Drag & drop Cisco config files here (or use Manual Upload)</p>
+            <input id="file_input" type="file" multiple class="hidden" accept=".txt,.cfg,.conf,.json" />
+          </div>
+          <div class="flex flex-wrap items-center justify-between gap-3 mt-3">
+            <div id="convert_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
+            <button id="clear_all" class="px-4 py-2 rounded bg-red-600 text-white hover:bg-red-700">Clear</button>
           </div>
           <div id="cfg_ssh_failure_panel" class="hidden mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/70 dark:text-rose-100">
             <div id="cfg_ssh_failure_summary" class="font-semibold"></div>
@@ -91,18 +100,57 @@
         </div>
       </section>
 
-      <!-- Drag & Drop -->
+      <!-- LCM Step 3 -->
       <section class="mb-6">
-      <div id="dz" class="dropzone rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 p-8 text-center text-slate-500 dark:text-slate-300">
-        <p class="mb-2">Drag & drop Cisco config files here (or click to select)</p>
-        <input id="file_input" type="file" multiple class="hidden" accept=".txt,.cfg,.conf,.json" />
-        <button id="choose_files" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Choose files</button>
-      </div>
-      <div class="flex items-center justify-between mt-2">
-        <div id="convert_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
-        <button id="clear_all" class="px-4 py-2 rounded bg-red-600 text-white hover:bg-red-700">Clear</button>
-      </div>
-    </section>
+        <div class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-6">
+          <div class="flex items-start gap-3 mb-4">
+            <span class="mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-100 text-xs font-bold tracking-wide text-sky-700 dark:bg-sky-900/40 dark:text-sky-200">LCM</span>
+            <div>
+              <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Lifecycle automation</p>
+              <h2 class="text-lg font-semibold text-slate-800 dark:text-slate-100">LCM Step 3 · Deploy the final Juniper config</h2>
+              <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and choose which site + switches should receive the final Juniper configuration.</p>
+            </div>
+          </div>
+          <label class="tooltip relative flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+            <span class="flex items-start gap-3">
+              <input id="remove_temp_config" type="checkbox" class="mt-1 h-4 w-4" />
+              <span>
+                <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 3 · Deploy</span>
+                <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Deploy the final Juniper config</span>
+                <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and select the site + switches that should receive the final Juniper configuration.</span>
+              </span>
+            </span>
+            <div class="space-y-2 text-xs text-slate-600 dark:text-slate-300">
+              <span class="inline-flex items-start gap-2 rounded-md bg-white/60 px-2 py-1 text-xs text-slate-700 shadow-sm ring-1 ring-slate-200 dark:bg-slate-900/60 dark:text-slate-200 dark:ring-slate-700">
+                <input id="preserve_legacy_vlans" type="checkbox" class="mt-0.5 h-4 w-4" checked />
+                <span>Preserve legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default) and their port profiles during cleanup.</span>
+              </span>
+              <label class="flex flex-col gap-1">
+                <span class="font-semibold text-slate-700 dark:text-slate-200">Additional VLANs to preserve (optional)</span>
+                <input id="preserve_legacy_vlans_extra" type="text" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="e.g. 42,100-110" />
+                <span>Enter ad-hoc VLAN IDs or ranges to keep alongside the defaults for this run.</span>
+              </label>
+              <div id="lcm_cleanup_options" class="hidden space-y-2 text-xs text-slate-600 dark:text-slate-300">
+                <label class="flex flex-col gap-1">
+                  <span class="font-semibold text-slate-700 dark:text-slate-200">Cleanup site</span>
+                  <select id="lcm_cleanup_site" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+                    <option value="">Select a site…</option>
+                  </select>
+                  <span>Choose the Mist site where the legacy configuration should be removed.</span>
+                </label>
+                <div>
+                  <span class="font-semibold text-slate-700 dark:text-slate-200">Switches to clean up</span>
+                  <div id="lcm_cleanup_devices" class="mt-1 rounded-md border border-slate-200 bg-white/80 p-2 text-xs text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
+                    Select a site to list switches.
+                  </div>
+                </div>
+              </div>
+            </div>
+            <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
+            <span class="tip">Resets the temporary lifecycle payload on Mist while preserving legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default, plus any extra IDs you list). Select the site and switches that should receive the final Juniper configuration.</span>
+          </label>
+        </div>
+      </section>
 
     <!-- Converted JSON -->
     <section id="results" class="hidden mb-8">
@@ -185,7 +233,7 @@
                 <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Pick the automation phases that stage, cut over, and clean up the migration so operators know exactly which Life Cycle Management (LCM) tasks will run.</p>
               </div>
             </div>
-            <div class="grid gap-4 md:grid-cols-3">
+            <div class="grid gap-4 md:grid-cols-2">
               <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
                 <span class="flex items-start gap-3">
                   <input id="apply_temp_config" type="checkbox" class="mt-1 h-4 w-4" />
@@ -210,43 +258,6 @@
               </span>
               <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
               <span class="tip">Sends the temporary VLAN and port usage payloads to Mist-managed switches so the legacy Cisco layout runs on the Juniper hardware.</span>
-            </label>
-
-            <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
-              <span class="flex items-start gap-3">
-                <input id="remove_temp_config" type="checkbox" class="mt-1 h-4 w-4" />
-                <span>
-                  <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 3 · Deploy</span>
-                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Deploy the final Juniper config</span>
-                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and select the site + switches that should receive the final Juniper configuration.</span>
-                  <span class="mt-2 inline-flex items-start gap-2 rounded-md bg-white/60 px-2 py-1 text-xs text-slate-700 shadow-sm ring-1 ring-slate-200 dark:bg-slate-900/60 dark:text-slate-200 dark:ring-slate-700">
-                    <input id="preserve_legacy_vlans" type="checkbox" class="mt-0.5 h-4 w-4" checked />
-                    <span>Preserve legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default) and their port profiles during cleanup.</span>
-                  </span>
-                  <label class="mt-2 flex flex-col gap-1 text-xs text-slate-600 dark:text-slate-300">
-                    <span class="font-semibold text-slate-700 dark:text-slate-200">Additional VLANs to preserve (optional)</span>
-                    <input id="preserve_legacy_vlans_extra" type="text" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="e.g. 42,100-110" />
-                    <span>Enter ad-hoc VLAN IDs or ranges to keep alongside the defaults for this run.</span>
-                  </label>
-                  <div id="lcm_cleanup_options" class="mt-3 hidden space-y-2 text-xs text-slate-600 dark:text-slate-300">
-                    <label class="flex flex-col gap-1">
-                      <span class="font-semibold text-slate-700 dark:text-slate-200">Cleanup site</span>
-                      <select id="lcm_cleanup_site" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
-                        <option value="">Select a site…</option>
-                      </select>
-                      <span>Choose the Mist site where the legacy configuration should be removed.</span>
-                    </label>
-                    <div>
-                      <span class="font-semibold text-slate-700 dark:text-slate-200">Switches to clean up</span>
-                      <div id="lcm_cleanup_devices" class="mt-1 rounded-md border border-slate-200 bg-white/80 p-2 text-xs text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
-                        Select a site to list switches.
-                      </div>
-                    </div>
-                  </div>
-                </span>
-              </span>
-              <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
-              <span class="tip">Resets the temporary lifecycle payload on Mist while preserving legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default, plus any extra IDs you list). Select the site and switches that should receive the final Juniper configuration.</span>
             </label>
           </div>
           </div>
@@ -400,31 +411,6 @@
       const enabled = Boolean(preserveLegacyVlans?.checked);
       preserveLegacyVlansExtra.disabled = !enabled;
       preserveLegacyVlansExtra.classList.toggle('opacity-60', !enabled);
-    }
-
-    function resetLcmStep3FieldLayout(){
-      if (!lcmStep3Fields) return;
-      const colClasses = [
-        'md:col-span-3',
-        'md:col-span-4',
-        'md:col-span-5',
-        'md:col-span-6',
-        'md:col-span-12'
-      ];
-      lcmStep3Fields.classList.remove('grid', 'md:grid-cols-12', 'gap-2', 'items-start');
-      Array.from(lcmStep3Fields.children).forEach(child => {
-        child.classList.remove(...colClasses);
-      });
-    }
-
-    function applyLcmStep3FieldLayout(){
-      if (!lcmStep3Fields) return;
-      resetLcmStep3FieldLayout();
-      lcmStep3Fields.classList.add('grid', 'md:grid-cols-12', 'gap-2', 'items-start');
-      const [cleanupBlock, preserveBlock, extraBlock] = Array.from(lcmStep3Fields.children);
-      cleanupBlock?.classList.add('md:col-span-6');
-      preserveBlock?.classList.add('md:col-span-3');
-      extraBlock?.classList.add('md:col-span-3');
     }
 
     function updateAutomationLocks(){
@@ -711,8 +697,9 @@
       fileInput.value = '';
       fileInput.click();
     });
-    dz.addEventListener('click', (e) => {
-      if (e.target === dz) { fileInput.value = ''; fileInput.click(); }
+    dz.addEventListener('click', () => {
+      fileInput.value = '';
+      fileInput.click();
     });
     dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
     dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
@@ -985,24 +972,10 @@
       batchRows.innerHTML = '';
       const lcmStep3Only = Boolean(removeTempConfig?.checked) && !applyTempConfig?.checked && !finalizeAssignments?.checked;
       if (lcmStep3Only){
-        if (lcmStep3Fields && lcmStep3Placeholder?.parentElement){
-          applyLcmStep3FieldLayout();
-          lcmStep3Fields.classList.remove('hidden');
-          const wrapper = document.createElement('div');
-          wrapper.className = 'p-4';
-          wrapper.appendChild(lcmStep3Fields);
-          batchRows.appendChild(wrapper);
-          hide(rowsWarning);
-          pushBatchBtn.disabled = false;
-          pushBatchBtn.classList.remove('cursor-not-allowed', 'opacity-70');
-        }
+        hide(rowsWarning);
+        pushBatchBtn.disabled = false;
+        pushBatchBtn.classList.remove('cursor-not-allowed', 'opacity-70');
         return;
-      }
-
-      if (lcmStep3Fields && lcmStep3Placeholder?.parentElement){
-        lcmStep3Placeholder.parentElement.insertBefore(lcmStep3Fields, lcmStep3Placeholder);
-        lcmStep3Fields.classList.add('hidden');
-        resetLcmStep3FieldLayout();
       }
       rows.forEach((row, i) => {
         const dup = isPairDuplicate(row.device_id, row.member_offset, row.port_offset);
