@@ -499,6 +499,30 @@ def test_remove_temp_config_preserves_legacy_vlan(monkeypatch, app_module):
     }
     assert cleanup.get("port_overrides") == [{"port_id": "1", "usage": "legacy_profile"}]
 
+
+def test_cleanup_payload_preserves_legacy_usage_name(app_module):
+    settings = {
+        "networks": {
+            "legacy_net": {"vlan_id": 10, "note": "keep"},
+            "temp_net": {"vlan_id": 200, "note": "drop"},
+        },
+        "switch": {
+            "port_config": {
+                "ge-0/0/20": {"usage": "legacy_AUTO_ACCESS_V10_POE_EDGE"},
+                "ge-0/0/21": {"usage": "legacy_AUTO_ACCESS_V200_POE_EDGE"},
+            }
+        },
+    }
+
+    cleanup = app_module._build_site_cleanup_payload_for_setting(
+        settings,
+        preserve_legacy_vlans=True,
+        legacy_vlan_ids={10},
+    )
+
+    assert cleanup["networks"] == {"legacy_net": {"vlan_id": 10, "note": "keep"}}
+    assert cleanup["port_config"] == {"ge-0/0/20": {"usage": "legacy_AUTO_ACCESS_V10_POE_EDGE"}}
+
 def test_load_site_history_parses_breakdown(tmp_path):
     from audit_history import load_site_history
 
