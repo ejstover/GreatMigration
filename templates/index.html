@@ -218,7 +218,7 @@
                 <span>
                   <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 3 · Deploy</span>
                   <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Deploy the final Juniper config</span>
-                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and push the converted Cisco → Juniper payload when you are ready to promote the new standard.</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and select the site + switches that should receive the final Juniper configuration.</span>
                   <span class="mt-2 inline-flex items-start gap-2 rounded-md bg-white/60 px-2 py-1 text-xs text-slate-700 shadow-sm ring-1 ring-slate-200 dark:bg-slate-900/60 dark:text-slate-200 dark:ring-slate-700">
                     <input id="preserve_legacy_vlans" type="checkbox" class="mt-0.5 h-4 w-4" checked />
                     <span>Preserve legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default) and their port profiles during cleanup.</span>
@@ -228,10 +228,25 @@
                     <input id="preserve_legacy_vlans_extra" type="text" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="e.g. 42,100-110" />
                     <span>Enter ad-hoc VLAN IDs or ranges to keep alongside the defaults for this run.</span>
                   </label>
+                  <div id="lcm_cleanup_options" class="mt-3 hidden space-y-2 text-xs text-slate-600 dark:text-slate-300">
+                    <label class="flex flex-col gap-1">
+                      <span class="font-semibold text-slate-700 dark:text-slate-200">Cleanup site</span>
+                      <select id="lcm_cleanup_site" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+                        <option value="">Select a site…</option>
+                      </select>
+                      <span>Choose the Mist site where the legacy configuration should be removed.</span>
+                    </label>
+                    <div>
+                      <span class="font-semibold text-slate-700 dark:text-slate-200">Switches to clean up</span>
+                      <div id="lcm_cleanup_devices" class="mt-1 rounded-md border border-slate-200 bg-white/80 p-2 text-xs text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
+                        Select a site to list switches.
+                      </div>
+                    </div>
+                  </div>
                 </span>
               </span>
               <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
-              <span class="tip">Resets the temporary lifecycle payload on Mist while preserving legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default, plus any extra IDs you list) and then applies the converted Juniper configuration so the switch runs the new standard VLANs.</span>
+              <span class="tip">Resets the temporary lifecycle payload on Mist while preserving legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default, plus any extra IDs you list). Select the site and switches that should receive the final Juniper configuration.</span>
             </label>
           </div>
           </div>
@@ -340,6 +355,9 @@
     const removeTempConfig = document.getElementById('remove_temp_config');
     const preserveLegacyVlans = document.getElementById('preserve_legacy_vlans');
     const preserveLegacyVlansExtra = document.getElementById('preserve_legacy_vlans_extra');
+    const lcmCleanupOptions = document.getElementById('lcm_cleanup_options');
+    const lcmCleanupSite = document.getElementById('lcm_cleanup_site');
+    const lcmCleanupDevices = document.getElementById('lcm_cleanup_devices');
     const siteStage = document.getElementById('site_stage');
     const sitePush = document.getElementById('site_push');
 
@@ -349,6 +367,7 @@
     let seenFiles = new Set(); // dedupe chooser/dnd
     let sitesCache = []; // list of sites
     const devicesBySite = new Map(); // site_id -> devices[]
+    let lcmCleanupSelectedIds = new Set();
     let sshCollectStartedAt = null;
     let sshCollectRequested = 0;
     const siteAutomationCheckboxes = [siteStage, sitePush].filter(Boolean);
@@ -423,6 +442,7 @@
 
       syncPushBtnLabel();
       renderConvertedList();
+      syncLcmCleanupVisibility();
     }
 
     async function logTiming(eventName, durationMs, metadata = {}){
@@ -697,6 +717,7 @@
         const data = await res.json();
         if (!data.ok) throw new Error(JSON.stringify(data.error));
         sitesCache = data.items || [];
+        renderLcmCleanupSiteOptions();
       } catch (e){
         sitesCache = [];
         console.error('Failed to fetch sites', e);
@@ -832,6 +853,107 @@
         opts.push(`<option value="${d.id}" ${sel}>${escapeHtml(label)}</option>`);
       });
       return opts.join('');
+    }
+
+    function renderLcmCleanupSiteOptions(){
+      if (!lcmCleanupSite) return;
+      const selected = lcmCleanupSite.value;
+      lcmCleanupSite.innerHTML = siteOptionsHtml(selected);
+    }
+
+    function getSelectedLcmCleanupDevices(){
+      if (!lcmCleanupDevices) return [];
+      return Array.from(lcmCleanupDevices.querySelectorAll('input[name="lcm_cleanup_device"]:checked'))
+        .map(input => String(input.value || '').trim())
+        .filter(Boolean);
+    }
+
+    async function renderLcmCleanupDeviceList(siteId){
+      if (!lcmCleanupDevices) return;
+      lcmCleanupDevices.innerHTML = '';
+      if (!siteId){
+        lcmCleanupDevices.textContent = 'Select a site to list switches.';
+        return;
+      }
+      const devices = await fetchDevices(siteId);
+      if (!devices.length){
+        lcmCleanupDevices.textContent = 'No switches found for the selected site.';
+        return;
+      }
+
+      const controls = document.createElement('div');
+      controls.className = 'flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 mb-2';
+      const selectAll = document.createElement('button');
+      selectAll.type = 'button';
+      selectAll.className = 'px-2 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800';
+      selectAll.textContent = 'Select all';
+      selectAll.addEventListener('click', () => {
+        lcmCleanupSelectedIds = new Set(devices.map(d => d.id).filter(Boolean));
+        renderLcmCleanupDeviceList(siteId);
+      });
+      const clearAll = document.createElement('button');
+      clearAll.type = 'button';
+      clearAll.className = 'px-2 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800';
+      clearAll.textContent = 'Clear';
+      clearAll.addEventListener('click', () => {
+        lcmCleanupSelectedIds = new Set();
+        renderLcmCleanupDeviceList(siteId);
+      });
+      controls.appendChild(selectAll);
+      controls.appendChild(clearAll);
+      lcmCleanupDevices.appendChild(controls);
+
+      const grid = document.createElement('div');
+      grid.className = 'grid gap-2 sm:grid-cols-2';
+      devices.forEach((device, idx) => {
+        if (!device?.id) return;
+        const label = document.createElement('label');
+        label.className = 'flex items-start gap-2 text-xs text-slate-700 dark:text-slate-200';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.name = 'lcm_cleanup_device';
+        checkbox.value = device.id;
+        checkbox.className = 'mt-0.5 h-4 w-4';
+        checkbox.checked = lcmCleanupSelectedIds.has(device.id);
+        checkbox.addEventListener('change', () => {
+          if (checkbox.checked) {
+            lcmCleanupSelectedIds.add(device.id);
+          } else {
+            lcmCleanupSelectedIds.delete(device.id);
+          }
+        });
+        const info = document.createElement('span');
+        const detail = `${device.name || device.id}${device.model ? ` — ${device.model}` : ''}${device.type ? ` (${device.type})` : ''}`;
+        info.textContent = detail.trim();
+        label.appendChild(checkbox);
+        label.appendChild(info);
+        grid.appendChild(label);
+      });
+      lcmCleanupDevices.appendChild(grid);
+    }
+
+    function syncLcmCleanupVisibility(){
+      if (!lcmCleanupOptions) return;
+      const shouldShow = Boolean(removeTempConfig?.checked);
+      lcmCleanupOptions.classList.toggle('hidden', !shouldShow);
+      if (batchSection){
+        if (shouldShow){
+          show(batchSection);
+        } else if (!convertedItems.length){
+          hide(batchSection);
+        }
+      }
+      if (!shouldShow){
+        lcmCleanupSelectedIds = new Set();
+        if (lcmCleanupSite) lcmCleanupSite.value = '';
+        if (lcmCleanupDevices) lcmCleanupDevices.textContent = 'Select a site to list switches.';
+      } else {
+        renderLcmCleanupSiteOptions();
+        const siteId = lcmCleanupSite?.value || '';
+        if (siteId) {
+          renderLcmCleanupDeviceList(siteId);
+        }
+      }
     }
 
     function renderBatchRows(){
@@ -1204,9 +1326,20 @@
       batchStatus.textContent = '';
       renderPhaseStatus({});
 
-      for (const r of rows){
-        if (!r.site_id || !r.device_id){
-          alert('Each row must have a Site and a Device selected.');
+      const siteAutomationActive = siteAutomationCheckboxes.some(cb => cb && cb.checked);
+      const lcmStep3Only = Boolean(removeTempConfig?.checked) && !applyTempConfig?.checked && !finalizeAssignments?.checked;
+      if (!lcmStep3Only){
+        for (const r of rows){
+          if (!r.site_id || !r.device_id){
+            alert('Each row must have a Site and a Device selected.');
+            return;
+          }
+        }
+      } else {
+        const cleanupSiteId = (lcmCleanupSite?.value || '').trim();
+        const cleanupDevices = getSelectedLcmCleanupDevices();
+        if (!cleanupSiteId || !cleanupDevices.length){
+          alert('Select a cleanup site and at least one switch for LCM Step 3.');
           return;
         }
       }
@@ -1214,7 +1347,7 @@
 
       const previewOnly = isPreviewOnly();
 
-      const payloadRows = rows.map(r => ({
+      const payloadRows = lcmStep3Only ? [] : rows.map(r => ({
         site_id: r.site_id,
         device_id: r.device_id,
         input_json: convertedItems[r.idx].json,
@@ -1236,6 +1369,12 @@
       form.append('preserve_legacy_vlans', preserveLegacyVlans?.checked ? 'true' : 'false');
       const extraLegacyVlans = (preserveLegacyVlansExtra?.value || '').trim();
       if (extraLegacyVlans) form.append('preserve_legacy_vlans_extra', extraLegacyVlans);
+      if (lcmStep3Only){
+        const cleanupSiteId = (lcmCleanupSite?.value || '').trim();
+        const cleanupDevices = getSelectedLcmCleanupDevices();
+        if (cleanupSiteId) form.append('lcm_cleanup_site_id', cleanupSiteId);
+        if (cleanupDevices.length) form.append('lcm_cleanup_device_ids', JSON.stringify(cleanupDevices));
+      }
       form.append('stage_site_deployment', siteStage?.checked ? 'true' : 'false');
       form.append('push_site_deployment', sitePush?.checked ? 'true' : 'false');
 
@@ -1251,9 +1390,8 @@
 
         const okCount = (data.results || []).filter(r => r.ok).length;
         const total = (data.results || []).length;
-        const siteActive = siteAutomationCheckboxes.some(cb => cb && cb.checked);
         const lcmActive = lcmAutomationCheckboxes.some(cb => cb && cb.checked);
-        if (siteActive){
+        if (siteAutomationActive){
           const label = previewOnly ? 'stage/test run' : 'push';
           batchStatus.textContent = `${okCount}/${total} ${label}${total === 1 ? '' : 's'} succeeded.`;
         } else if (lcmActive){
@@ -1362,6 +1500,15 @@
       });
     });
     preserveLegacyVlans?.addEventListener('change', syncLegacyVlanExtras);
+    removeTempConfig?.addEventListener('change', syncLcmCleanupVisibility);
+    lcmCleanupSite?.addEventListener('change', async () => {
+      lcmCleanupSelectedIds = new Set();
+      if (lcmCleanupSite?.value) {
+        await renderLcmCleanupDeviceList(lcmCleanupSite.value);
+      } else if (lcmCleanupDevices) {
+        lcmCleanupDevices.textContent = 'Select a site to list switches.';
+      }
+    });
 
     // --- Init ---
     window.addEventListener('load', async () => {

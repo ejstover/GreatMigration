@@ -99,8 +99,8 @@ GreatMigration ships with a responsive FastAPI + HTMX interface backed by a Mist
 * Batch pushes reuse `_build_payload_for_row` inside `backend/app.py` to merge the converted `port_config` with Mist site/device
   selections, apply rule-driven port usages, enforce capacity checks (`validate_port_config_against_model`), and PUT the results to
   `/sites/{site_id}/devices/{device_id}`.
-* Lifecycle Management (LCM) automation reuses the same converted payloads for Step 3 after staging temporary VLANs/port profiles
-  in earlier steps, ensuring the final Juniper configuration exactly matches the Cisco source minus deprecated interfaces.
+* Lifecycle Management (LCM) automation lets Step 3 target a site and device list to remove the temporary Cisco layout, preserving
+  legacy VLANs while regenerating port assignments from live switch data for the final Juniper configuration.
 
 ### Compliance audit & 1 Click Fix
 

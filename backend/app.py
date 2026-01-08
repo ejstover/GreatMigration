@@ -3917,69 +3917,79 @@ def _derive_port_config_from_config_cmd(
     if not (200 <= resp.status_code < 300):
         raise MistAPIError(resp.status_code, _extract_mist_error(resp), response=data)
 
-    device_port_config = data.get("port_config") if isinstance(data, Mapping) else None
-    if not isinstance(device_port_config, Mapping) or not device_port_config:
+    device_model: Optional[str] = None
+    member_models: Dict[int, Optional[str]] = {}
+    try:
+        device_info = _mist_get_json(base_url, headers, f"/sites/{site_id}/devices/{device_id}", optional=True)
+    except Exception:
+        device_info = None
+
+    if isinstance(device_info, Mapping):
+        raw_model = device_info.get("model")
+        if isinstance(raw_model, str) and raw_model.strip():
+            device_model = raw_model.strip()
+        vc_data = device_info.get("virtual_chassis")
+        members: Optional[Sequence[Any]] = None
+        if isinstance(vc_data, Mapping):
+            maybe_members = vc_data.get("members") or vc_data.get("devices")
+            if isinstance(maybe_members, Sequence) and not isinstance(maybe_members, (str, bytes, bytearray)):
+                members = maybe_members
+        elif isinstance(vc_data, Sequence) and not isinstance(vc_data, (str, bytes, bytearray)):
+            members = vc_data
+        if members:
+            for member in members:
+                if not isinstance(member, Mapping):
+                    continue
+                member_id = _int_or_none(
+                    member.get("member_id") or member.get("member") or member.get("id") or member.get("slot")
+                )
+                if member_id is None:
+                    continue
+                member_model = member.get("model") or member.get("device_model")
+                if isinstance(member_model, str) and member_model.strip():
+                    member_models[member_id] = member_model.strip()
+                else:
+                    member_models[member_id] = None
+
+    cli = data.get("cli") if isinstance(data, Mapping) else None
+    if not isinstance(cli, Sequence) or isinstance(cli, (str, bytes, bytearray)):
+        raise MistAPIError(resp.status_code, "Config command output missing 'cli' entries.", response=data)
+
+    interfaces = _parse_config_cmd_interfaces(cli)
+    if not interfaces:
         return {}
 
-    derived_url = f"{base_url}/sites/{site_id}/setting/derived"
-    derived_resp = requests.get(derived_url, headers=headers, timeout=60)
-    derived_data = _safe_json_response(derived_resp)
-    if derived_resp.status_code == 404:
-        derived_data = {}
-    elif not (200 <= derived_resp.status_code < 300):
-        raise MistAPIError(derived_resp.status_code, _extract_mist_error(derived_resp), response=derived_data)
+    port_config = map_interfaces_to_port_config(interfaces, model=None)
+    if not port_config:
+        return port_config
 
-    port_usages: Mapping[str, Any] = {}
-    if isinstance(derived_data, Mapping):
-        port_usages = derived_data.get("port_usages") or {}
-        if not isinstance(port_usages, Mapping):
-            port_usages = {}
-        if not port_usages:
-            switch_section = derived_data.get("switch") if isinstance(derived_data.get("switch"), Mapping) else {}
-            port_usages = switch_section.get("port_usages") or {}
-            if not isinstance(port_usages, Mapping):
-                port_usages = {}
+    if not device_model and not member_models:
+        return port_config
 
-    rules = pm.RULES_DOC.get("rules", []) or []
-    final_port_config: Dict[str, Dict[str, Any]] = {}
-    for ifname, entry in device_port_config.items():
-        if not isinstance(entry, Mapping):
+    allowed_members = set(member_models.keys()) if member_models else {0}
+    filtered: Dict[str, Any] = {}
+    for ifname, cfg in port_config.items():
+        m = pm.MIST_IF_RE.match(ifname)
+        if not m:
+            filtered[ifname] = cfg
             continue
-        current_usage = entry.get("usage")
-        usage_name = current_usage if isinstance(current_usage, str) else ""
-        usage_profile = port_usages.get(usage_name) if usage_name else None
-
-        profile_networks = []
-        if isinstance(usage_profile, Mapping):
-            networks_value = usage_profile.get("networks") or usage_profile.get("dynamic_vlan_networks") or []
-            if isinstance(networks_value, (list, tuple, set)):
-                profile_networks = [str(v) for v in networks_value if str(v)]
-
-        rule_input = {
-            "mode": (usage_profile.get("mode") if isinstance(usage_profile, Mapping) else None),
-            "port_network": (usage_profile.get("port_network") if isinstance(usage_profile, Mapping) else None),
-            "voip_network": (usage_profile.get("voip_network") if isinstance(usage_profile, Mapping) else None),
-            "native_network": (usage_profile.get("native_network") if isinstance(usage_profile, Mapping) else None),
-            "networks": profile_networks,
-            "description": (usage_profile.get("description") if isinstance(usage_profile, Mapping) else None),
-        }
-
-        chosen = None
-        for rule in rules:
-            if pm.evaluate_rule(rule.get("when", {}) or {}, rule_input):
-                chosen = rule
-                break
-
-        mapped_usage = None
-        if chosen:
-            mapped_usage = (chosen.get("set", {}) or {}).get("usage")
-
-        final_usage = mapped_usage or usage_name
-        if not final_usage:
+        member = int(m.group("member"))
+        if member not in allowed_members:
             continue
-        final_port_config[str(ifname)] = {"usage": final_usage}
-
-    return final_port_config
+        model = member_models.get(member) or device_model
+        mk = pm._model_key(model)
+        caps = pm.MODEL_CAPS.get(mk) if mk else None
+        if not caps:
+            filtered[ifname] = cfg
+            continue
+        pic = int(m.group("pic"))
+        port = int(m.group("port"))
+        if pic == 0 and port >= caps["access_pic0"]:
+            continue
+        if pic == 2 and port >= caps.get("uplink_pic2", 0):
+            continue
+        filtered[ifname] = cfg
+    return filtered
 
 
 def _apply_temporary_config_for_rows(
@@ -4662,6 +4672,8 @@ async def api_push_batch(
     remove_temp_config: bool = Form(False),
     preserve_legacy_vlans: bool = Form(True),
     preserve_legacy_vlans_extra: Optional[str] = Form(None),
+    lcm_cleanup_site_id: Optional[str] = Form(None),
+    lcm_cleanup_device_ids: Optional[str] = Form(None),
     stage_site_deployment: bool = Form(False),
     push_site_deployment: bool = Form(False),
 ) -> JSONResponse:
@@ -4692,6 +4704,21 @@ async def api_push_batch(
         push_site_deployment or finalize_assignments or remove_temp_config
     )
 
+    cleanup_site_id = (lcm_cleanup_site_id or "").strip()
+    cleanup_device_ids: List[str] = []
+    if lcm_cleanup_device_ids:
+        try:
+            parsed_devices = json.loads(lcm_cleanup_device_ids)
+        except Exception:
+            parsed_devices = lcm_cleanup_device_ids.split(",")
+        if isinstance(parsed_devices, str):
+            parsed_devices = parsed_devices.split(",")
+        if isinstance(parsed_devices, Sequence) and not isinstance(parsed_devices, (bytes, bytearray)):
+            for item in parsed_devices:
+                device_id = str(item or "").strip()
+                if device_id and device_id not in cleanup_device_ids:
+                    cleanup_device_ids.append(device_id)
+
     _ensure_push_allowed(request, dry_run=preview_only)
 
     if site_actions_selected and lcm_actions_selected:
@@ -4721,6 +4748,16 @@ async def api_push_batch(
             status_code=400,
         )
 
+    if remove_temp_config:
+        if not cleanup_site_id or not cleanup_device_ids:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "LCM Step 3 requires a site and at least one device for cleanup.",
+                },
+                status_code=400,
+            )
+
     should_push_live = push_site_deployment
     effective_dry_run = not should_push_live
 
@@ -4730,77 +4767,105 @@ async def api_push_batch(
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Invalid 'rows' payload: {e}"}, status_code=400)
 
-    # Pre-scan for duplicate (device_id, member_offset, port_offset) triples
-    pair_counts: Dict[str, int] = {}
-    for r in row_list:
-        device_id = (r.get("device_id") or "").strip()
-        member_offset = int(r.get("member_offset") or 0)
-        port_offset = int(r.get("port_offset") or 0)
-        key = f"{device_id}@@{member_offset}@@{port_offset}"
-        if device_id:
-            pair_counts[key] = pair_counts.get(key, 0) + 1
-
+    use_cleanup_targets = bool(remove_temp_config and cleanup_site_id and cleanup_device_ids)
     results: List[Dict[str, Any]] = []
-    used_ifnames: Dict[str, set[str]] = {}
-    for i, r in enumerate(row_list):
-        try:
-            site_id = (r.get("site_id") or "").strip()
+
+    if use_cleanup_targets:
+        for i, device_id in enumerate(cleanup_device_ids):
+            results.append(
+                {
+                    "ok": True,
+                    "row_index": i,
+                    "site_id": cleanup_site_id,
+                    "device_id": device_id,
+                }
+            )
+    else:
+        # Pre-scan for duplicate (device_id, member_offset, port_offset) triples
+        pair_counts: Dict[str, int] = {}
+        for r in row_list:
             device_id = (r.get("device_id") or "").strip()
-            payload_in = r.get("input_json")
-            excludes = r.get("excludes") or ""
-            exclude_uplinks = bool(r.get("exclude_uplinks"))
             member_offset = int(r.get("member_offset") or 0)
             port_offset = int(r.get("port_offset") or 0)
-            row_model_override = r.get("model_override") or model_override
-
-            if not site_id or not device_id or not isinstance(payload_in, (dict, list)):
-                results.append({"ok": False, "row_index": i, "error": "Missing site_id/device_id or malformed input_json"})
-                continue
-
-            # Reject duplicate (device_id, member_offset, port_offset) triples
             key = f"{device_id}@@{member_offset}@@{port_offset}"
-            if pair_counts.get(key, 0) > 1:
-                results.append({
-                    "ok": False,
-                    "row_index": i,
-                    "site_id": site_id,
-                    "device_id": device_id,
-                    "error": "Duplicate device with the same Start member and Start port detected. Use distinct offsets for repeated device selections.",
-                })
-                continue
+            if device_id:
+                pair_counts[key] = pair_counts.get(key, 0) + 1
 
-            if isinstance(payload_in, list):
-                payload_in = {"interfaces": payload_in}
+        used_ifnames: Dict[str, set[str]] = {}
+        for i, r in enumerate(row_list):
+            try:
+                site_id = (r.get("site_id") or "").strip()
+                device_id = (r.get("device_id") or "").strip()
+                payload_in = r.get("input_json")
+                excludes = r.get("excludes") or ""
+                exclude_uplinks = bool(r.get("exclude_uplinks"))
+                member_offset = int(r.get("member_offset") or 0)
+                port_offset = int(r.get("port_offset") or 0)
+                row_model_override = r.get("model_override") or model_override
 
-            row_result = _build_payload_for_row(
-                base_url=base_url, tz=tz, token=token,
-                site_id=site_id, device_id=device_id,
-                payload_in=payload_in, model_override=row_model_override,
-                excludes=excludes, exclude_uplinks=exclude_uplinks,
-                member_offset=member_offset, port_offset=port_offset, normalize_modules=normalize_modules,
-                dry_run=effective_dry_run,
-            )
-            row_result["row_index"] = i
-            row_result["site_id"] = site_id
-            row_result["device_id"] = device_id
-            payload_for_reuse = row_result.get("payload")
-            if isinstance(payload_for_reuse, Mapping):
-                row_result["_site_deployment_payload"] = copy.deepcopy(payload_for_reuse)
-            if row_result.get("ok"):
-                names = set((row_result.get("payload") or {}).get("port_config", {}).keys())
-                used = used_ifnames.setdefault(device_id, set())
-                overlap = used.intersection(names)
-                if overlap:
-                    row_result["ok"] = False
-                    row_result["error"] = "Port overlap detected with another row for this device."
-                else:
-                    used.update(names)
-            results.append(row_result)
+                if not site_id or not device_id or not isinstance(payload_in, (dict, list)):
+                    results.append(
+                        {
+                            "ok": False,
+                            "row_index": i,
+                            "error": "Missing site_id/device_id or malformed input_json",
+                        }
+                    )
+                    continue
 
-        except PortConfigError as e:
-            results.append({"ok": False, "row_index": i, "error": str(e)})
-        except Exception as e:
-            results.append({"ok": False, "row_index": i, "error": f"Server error: {e}"})
+                # Reject duplicate (device_id, member_offset, port_offset) triples
+                key = f"{device_id}@@{member_offset}@@{port_offset}"
+                if pair_counts.get(key, 0) > 1:
+                    results.append(
+                        {
+                            "ok": False,
+                            "row_index": i,
+                            "site_id": site_id,
+                            "device_id": device_id,
+                            "error": "Duplicate device with the same Start member and Start port detected. Use distinct offsets for repeated device selections.",
+                        }
+                    )
+                    continue
+
+                if isinstance(payload_in, list):
+                    payload_in = {"interfaces": payload_in}
+
+                row_result = _build_payload_for_row(
+                    base_url=base_url,
+                    tz=tz,
+                    token=token,
+                    site_id=site_id,
+                    device_id=device_id,
+                    payload_in=payload_in,
+                    model_override=row_model_override,
+                    excludes=excludes,
+                    exclude_uplinks=exclude_uplinks,
+                    member_offset=member_offset,
+                    port_offset=port_offset,
+                    normalize_modules=normalize_modules,
+                    dry_run=effective_dry_run,
+                )
+                row_result["row_index"] = i
+                row_result["site_id"] = site_id
+                row_result["device_id"] = device_id
+                payload_for_reuse = row_result.get("payload")
+                if isinstance(payload_for_reuse, Mapping):
+                    row_result["_site_deployment_payload"] = copy.deepcopy(payload_for_reuse)
+                if row_result.get("ok"):
+                    names = set((row_result.get("payload") or {}).get("port_config", {}).keys())
+                    used = used_ifnames.setdefault(device_id, set())
+                    overlap = used.intersection(names)
+                    if overlap:
+                        row_result["ok"] = False
+                        row_result["error"] = "Port overlap detected with another row for this device."
+                    else:
+                        used.update(names)
+                results.append(row_result)
+
+            except PortConfigError as e:
+                results.append({"ok": False, "row_index": i, "error": str(e)})
+            except Exception as e:
+                results.append({"ok": False, "row_index": i, "error": f"Server error: {e}"})
 
     phase_status: Dict[str, Dict[str, Any]] = {}
 
