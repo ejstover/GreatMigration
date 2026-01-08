@@ -3910,22 +3910,76 @@ def _derive_port_config_from_config_cmd(
     site_id: str,
     device_id: str,
 ) -> Dict[str, Any]:
-    url = f"{base_url}/sites/{site_id}/devices/{device_id}/config_cmd"
+    url = f"{base_url}/sites/{site_id}/devices/{device_id}"
     headers = _mist_headers(token)
     resp = requests.get(url, headers=headers, timeout=60)
     data = _safe_json_response(resp)
     if not (200 <= resp.status_code < 300):
         raise MistAPIError(resp.status_code, _extract_mist_error(resp), response=data)
 
-    cli = data.get("cli") if isinstance(data, Mapping) else None
-    if not isinstance(cli, Sequence) or isinstance(cli, (str, bytes, bytearray)):
-        raise MistAPIError(resp.status_code, "Config command output missing 'cli' entries.", response=data)
-
-    interfaces = _parse_config_cmd_interfaces(cli)
-    if not interfaces:
+    device_port_config = data.get("port_config") if isinstance(data, Mapping) else None
+    if not isinstance(device_port_config, Mapping) or not device_port_config:
         return {}
 
-    return map_interfaces_to_port_config(interfaces, model=None)
+    derived_url = f"{base_url}/sites/{site_id}/setting/derived"
+    derived_resp = requests.get(derived_url, headers=headers, timeout=60)
+    derived_data = _safe_json_response(derived_resp)
+    if derived_resp.status_code == 404:
+        derived_data = {}
+    elif not (200 <= derived_resp.status_code < 300):
+        raise MistAPIError(derived_resp.status_code, _extract_mist_error(derived_resp), response=derived_data)
+
+    port_usages: Mapping[str, Any] = {}
+    if isinstance(derived_data, Mapping):
+        port_usages = derived_data.get("port_usages") or {}
+        if not isinstance(port_usages, Mapping):
+            port_usages = {}
+        if not port_usages:
+            switch_section = derived_data.get("switch") if isinstance(derived_data.get("switch"), Mapping) else {}
+            port_usages = switch_section.get("port_usages") or {}
+            if not isinstance(port_usages, Mapping):
+                port_usages = {}
+
+    rules = pm.RULES_DOC.get("rules", []) or []
+    final_port_config: Dict[str, Dict[str, Any]] = {}
+    for ifname, entry in device_port_config.items():
+        if not isinstance(entry, Mapping):
+            continue
+        current_usage = entry.get("usage")
+        usage_name = current_usage if isinstance(current_usage, str) else ""
+        usage_profile = port_usages.get(usage_name) if usage_name else None
+
+        profile_networks = []
+        if isinstance(usage_profile, Mapping):
+            networks_value = usage_profile.get("networks") or usage_profile.get("dynamic_vlan_networks") or []
+            if isinstance(networks_value, (list, tuple, set)):
+                profile_networks = [str(v) for v in networks_value if str(v)]
+
+        rule_input = {
+            "mode": (usage_profile.get("mode") if isinstance(usage_profile, Mapping) else None),
+            "port_network": (usage_profile.get("port_network") if isinstance(usage_profile, Mapping) else None),
+            "voip_network": (usage_profile.get("voip_network") if isinstance(usage_profile, Mapping) else None),
+            "native_network": (usage_profile.get("native_network") if isinstance(usage_profile, Mapping) else None),
+            "networks": profile_networks,
+            "description": (usage_profile.get("description") if isinstance(usage_profile, Mapping) else None),
+        }
+
+        chosen = None
+        for rule in rules:
+            if pm.evaluate_rule(rule.get("when", {}) or {}, rule_input):
+                chosen = rule
+                break
+
+        mapped_usage = None
+        if chosen:
+            mapped_usage = (chosen.get("set", {}) or {}).get("usage")
+
+        final_usage = mapped_usage or usage_name
+        if not final_usage:
+            continue
+        final_port_config[str(ifname)] = {"usage": final_usage}
+
+    return final_port_config
 
 
 def _apply_temporary_config_for_rows(
