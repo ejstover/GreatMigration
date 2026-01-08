@@ -35,6 +35,10 @@ try:
 except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore
 
+
+class PortConfigError(Exception):
+    """Raised when building or validating Mist port configuration."""
+
 # -------------------------------
 # Defaults
 # -------------------------------
@@ -152,7 +156,7 @@ def filter_description_blacklist(raw: str) -> str:
 def load_token() -> str:
     tok = (API_TOKEN or "").strip() or (os.getenv("MIST_TOKEN") or "").strip()
     if not tok:
-        raise SystemExit("Missing API token: set env var MIST_TOKEN (preferred) or edit API_TOKEN.")
+        raise PortConfigError("Missing API token: set env var MIST_TOKEN (preferred) or edit API_TOKEN.")
     return tok
 
 def timestamp_str(tz_name: str) -> str:
@@ -202,6 +206,11 @@ def evaluate_rule(when: Dict[str, Any], intf: Dict[str, Any]) -> bool:
     allowed_vlans_set  = set(_normalize_vlan_list(intf.get("allowed_vlans")))
     name       = intf.get("name") or ""
     juniper_if = intf.get("juniper_if") or ""
+    port_network = intf.get("port_network")
+    voip_network = intf.get("voip_network")
+    native_network = intf.get("native_network")
+    networks_value = intf.get("networks") or intf.get("dynamic_vlan_networks") or []
+    networks_set = set(str(v) for v in networks_value if str(v))
 
     for k, v in when.items():
         if k == "mode":
@@ -224,6 +233,16 @@ def evaluate_rule(when: Dict[str, Any], intf: Dict[str, Any]) -> bool:
             if not _match_regex(name, v): return False
         elif k == "juniper_if_regex":
             if not _match_regex(juniper_if, v): return False
+        elif k == "port_network":
+            if str(port_network or "") != str(v): return False
+        elif k == "voip_network":
+            if str(voip_network or "") != str(v): return False
+        elif k == "native_network":
+            if str(native_network or "") != str(v): return False
+        elif k == "networks_contains":
+            if str(v) not in networks_set: return False
+        elif k == "networks_equals":
+            if networks_set != set(str(x) for x in (v or [])): return False
         elif k == "any":
             pass
         else:
@@ -337,7 +356,7 @@ def remap_members(port_config: Dict[str, Any], member_offset: int = 0, normalize
         new_member = (member - base) + int(member_offset or 0)
         new_name = f"{itype}-{new_member}/{pic}/{port}"
         if new_name in out:
-            raise SystemExit(f"Member remap collision on {new_name}")
+            raise PortConfigError(f"Member remap collision on {new_name}")
         out[new_name] = cfg
     return out
 
@@ -351,7 +370,7 @@ def remap_ports(
     speed boundary.
 
     Example: ``mge-0/0/0`` with ``port_offset=24`` on an EX4100-48MP becomes
-    ``ge-0/0/24``.  Collisions raise ``SystemExit`` to match
+    ``ge-0/0/24``.  Collisions raise :class:`PortConfigError` to match
     :func:`remap_members` behaviour.
     """
     if int(port_offset or 0) == 0:
@@ -384,7 +403,7 @@ def remap_ports(
 
         new_name = f"{new_type}-{member}/{pic}/{new_port}"
         if new_name in out:
-            raise SystemExit(f"Port remap collision on {new_name}")
+            raise PortConfigError(f"Port remap collision on {new_name}")
         out[new_name] = cfg
     return out
 
@@ -423,7 +442,7 @@ def map_interfaces_to_port_config(intfs: List[Dict[str, Any]], model: Optional[s
         cfg: Dict[str, Any] = {"usage": usage or "blackhole", "description": filtered_desc}
 
         if mist_if in port_config:
-            raise SystemExit(f"Key collision for {mist_if} (from {intf.get('name')}); check Cisco mapping.")
+            raise PortConfigError(f"Key collision for {mist_if} (from {intf.get('name')}); check Cisco mapping.")
         port_config[mist_if] = cfg
 
     return port_config
@@ -433,7 +452,7 @@ def extract_port_config(input_json: Dict[str, Any], model: Optional[str] = None)
         return map_interfaces_to_port_config(input_json["interfaces"], model)
     if "port_config" in input_json and isinstance(input_json["port_config"], dict):
         return input_json["port_config"]
-    raise SystemExit("Input JSON must contain either 'interfaces' or 'port_config'.")
+    raise PortConfigError("Input JSON must contain either 'interfaces' or 'port_config'.")
 
 def ensure_port_config(*args) -> Dict[str, Dict[str, Any]]:
     if len(args) == 1:
@@ -441,7 +460,7 @@ def ensure_port_config(*args) -> Dict[str, Dict[str, Any]]:
     elif len(args) >= 2:
         return extract_port_config(args[0], model=args[1])
     else:
-        raise SystemExit("ensure_port_config requires 1 or 2 arguments.")
+        raise PortConfigError("ensure_port_config requires 1 or 2 arguments.")
 
 # -------------------------------
 # Model capacity map & validator
@@ -565,7 +584,7 @@ def main():
     if not args.dry_run and not validation.get("ok"):
         print("❌ Capacity error:")
         print(json.dumps(validation, indent=2))
-        raise SystemExit(2)
+        raise PortConfigError("Capacity validation failed.")
 
     # Timestamp descriptions
     ts = timestamp_str(tz_name)
@@ -606,4 +625,8 @@ def main():
         resp.raise_for_status()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except PortConfigError as exc:  # pragma: no cover - CLI convenience
+        print(f"❌ {exc}")
+        raise SystemExit(2)

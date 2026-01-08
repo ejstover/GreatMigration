@@ -10,6 +10,13 @@
   <style>
     .card { transition: box-shadow .2s ease, transform .2s ease; }
     .card:hover { transform: translateY(-1px); box-shadow: 0 10px 30px rgba(15,23,42,0.08); }
+    @media print {
+      body { background: white !important; color: #0f172a !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      #menu, #menu_btn, #logout_btn, .no-print { display: none !important; }
+      #main { margin: 0 !important; }
+      header, section, .card { box-shadow: none !important; }
+      a { color: inherit !important; }
+    }
   </style>
   </head>
   <body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100 overflow-x-hidden">
@@ -40,7 +47,7 @@
     </header>
 
     <div class="max-w-7xl mx-auto p-6 space-y-6">
-      <section class="bg-white dark:bg-slate-800 rounded-2xl shadow p-6 space-y-4">
+      <section class="bg-white dark:bg-slate-800 rounded-2xl shadow p-6 space-y-4 no-print">
         <h2 class="text-xl font-semibold">Scope</h2>
         <p class="text-sm text-slate-600 dark:text-slate-300">Run compliance checks across one or more Mist sites. Use the filters below to choose sites or audit the entire organization.</p>
         <div class="flex flex-col md:flex-row gap-6">
@@ -117,14 +124,29 @@
       const siteSearch = document.getElementById('site_search');
       const siteList = document.getElementById('site_list');
       const runAuditBtn = document.getElementById('run_audit');
+      let exportPdfBtn = null;
       const auditStatus = document.getElementById('audit_status');
       const resultsContainer = document.getElementById('audit_results');
       const selectionSummary = document.getElementById('selection_summary');
       const selectAllBtn = document.getElementById('select_all');
       const clearSelectionBtn = document.getElementById('clear_selection');
 
+      const CHECK_LEVEL_LABELS = { org: 'Org', site: 'Site', device: 'Device' };
+      const CHECK_LEVEL_ORDER = ['org', 'site', 'device'];
+      const CHECK_LEVEL_MAP = {
+        required_site_variables: 'site',
+        switch_template_configuration: 'site',
+        configuration_overrides: 'device',
+        firmware_management: 'device',
+        cloud_management: 'device',
+        spare_switch_presence: 'device',
+        device_naming_convention: 'device',
+        device_documentation: 'device'
+      };
+
       let allSites = [];
       const selectedSiteIds = new Set();
+      let hasAuditResults = false;
 
       function updateSelectionSummary() {
         if (entireOrg.checked) {
@@ -220,6 +242,45 @@
           className += 'text-slate-600 dark:text-slate-300';
         }
         auditStatus.className = className;
+      }
+
+      function setExportEnabled(enabled) {
+        if (!exportPdfBtn) return;
+        exportPdfBtn.disabled = !enabled;
+        exportPdfBtn.setAttribute('aria-disabled', String(!enabled));
+      }
+      setExportEnabled(false);
+
+      function createExportButton() {
+        if (exportPdfBtn && exportPdfBtn.isConnected) {
+          return exportPdfBtn;
+        }
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.id = 'export_pdf';
+        btn.className = 'no-print inline-flex items-center justify-center w-10 h-10 rounded-full border border-emerald-600 text-emerald-700 dark:text-emerald-200 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
+        btn.setAttribute('aria-label', 'Export audit report as PDF');
+        btn.innerHTML = `
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M6 21h12" />
+          </svg>
+          <span class="sr-only">Export PDF</span>
+        `;
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          exportAuditReport();
+        });
+        exportPdfBtn = btn;
+        return exportPdfBtn;
+      }
+
+      function exportAuditReport() {
+        if (!hasAuditResults) {
+          showStatus('Run an audit to export the report.', 'error');
+          return;
+        }
+        exportPdfBtn?.blur();
+        window.requestAnimationFrame(() => window.print());
       }
 
       function ensureActionStatusElement(button) {
@@ -389,6 +450,7 @@
               action_id: action.id,
               site_ids: siteIds,
               devices: deviceTargets,
+              metadata: action.metadata,
             }),
           });
           const data = await response.json().catch(() => ({}));
@@ -517,13 +579,7 @@
         return link;
       }
 
-      function renderFindings(list, severity) {
-        if (!list.length) {
-          const ok = document.createElement('div');
-          ok.className = 'rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 dark:bg-emerald-900/40 dark:border-emerald-700 dark:text-emerald-200 px-4 py-3 text-sm';
-          ok.textContent = 'No issues detected for this check.';
-          return ok;
-        }
+      function renderFindingList(list) {
         const container = document.createElement('div');
         container.className = 'space-y-3';
         list.forEach(finding => {
@@ -591,7 +647,51 @@
         return container;
       }
 
+      function renderCategorizedFindings(siteFindings, deviceFindings, fallbackFindings) {
+        const hasCategorizedData = (siteFindings && siteFindings.length) || (deviceFindings && deviceFindings.length);
+        const effectiveFallback = Array.isArray(fallbackFindings) ? fallbackFindings : [];
+
+        if (!hasCategorizedData) {
+          if (!effectiveFallback.length) {
+            const ok = document.createElement('div');
+            ok.className = 'rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 dark:bg-emerald-900/40 dark:border-emerald-700 dark:text-emerald-200 px-4 py-3 text-sm';
+            ok.textContent = 'No issues detected for this check.';
+            return ok;
+          }
+          return renderFindingList(effectiveFallback);
+        }
+
+        const container = document.createElement('div');
+        container.className = 'space-y-4';
+
+        if (siteFindings && siteFindings.length) {
+          const section = document.createElement('div');
+          section.className = 'space-y-2';
+          const heading = document.createElement('h4');
+          heading.className = 'text-sm font-semibold text-slate-700 dark:text-slate-200';
+          heading.textContent = 'Site-level findings';
+          section.appendChild(heading);
+          section.appendChild(renderFindingList(siteFindings));
+          container.appendChild(section);
+        }
+
+        if (deviceFindings && deviceFindings.length) {
+          const section = document.createElement('div');
+          section.className = 'space-y-2';
+          const heading = document.createElement('h4');
+          heading.className = 'text-sm font-semibold text-slate-700 dark:text-slate-200';
+          heading.textContent = 'Device-level findings';
+          section.appendChild(heading);
+          section.appendChild(renderFindingList(deviceFindings));
+          container.appendChild(section);
+        }
+
+        return container;
+      }
+
       function renderResults(data) {
+        hasAuditResults = Boolean(data);
+        setExportEnabled(Boolean(data));
         resultsContainer.innerHTML = '';
         if (!data) return;
 
@@ -623,23 +723,39 @@
 
         const meta = document.createElement('div');
         meta.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6';
-        meta.innerHTML = `
-          <h3 class="text-lg font-semibold mb-2">Audit summary</h3>
-          <dl class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-sm">
-            <div><dt class="text-slate-500 dark:text-slate-400">Started</dt><dd>${startedDisplay}</dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Sites audited</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalSites.toLocaleString()}</dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Devices audited</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalDevices.toLocaleString()}</dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">Issues identified</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalFindings.toLocaleString()}</dd></div>
-            <div><dt class="text-slate-500 dark:text-slate-400">1 Click Fix Now issues</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalQuickFixes.toLocaleString()}</dd></div>
-          </dl>
-          <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">Duration: ${durationDisplay}</p>
+
+        const summaryHeader = document.createElement('div');
+        summaryHeader.className = 'flex items-center justify-between gap-3';
+        const summaryTitle = document.createElement('h3');
+        summaryTitle.className = 'text-lg font-semibold';
+        summaryTitle.textContent = 'Audit summary';
+        summaryHeader.appendChild(summaryTitle);
+        summaryHeader.appendChild(createExportButton());
+        meta.appendChild(summaryHeader);
+
+        const summaryStats = document.createElement('dl');
+        summaryStats.className = 'mt-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-sm';
+        summaryStats.innerHTML = `
+          <div><dt class="text-slate-500 dark:text-slate-400">Started</dt><dd>${startedDisplay}</dd></div>
+          <div><dt class="text-slate-500 dark:text-slate-400">Sites audited</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalSites.toLocaleString()}</dd></div>
+          <div><dt class="text-slate-500 dark:text-slate-400">Devices audited</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalDevices.toLocaleString()}</dd></div>
+          <div><dt class="text-slate-500 dark:text-slate-400">Issues identified</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalFindings.toLocaleString()}</dd></div>
+          <div><dt class="text-slate-500 dark:text-slate-400">1 Click Fix Now issues</dt><dd class="text-lg font-semibold text-slate-900 dark:text-slate-100">${totalQuickFixes.toLocaleString()}</dd></div>
         `;
+        meta.appendChild(summaryStats);
+
+        const duration = document.createElement('p');
+        duration.className = 'mt-3 text-xs text-slate-500 dark:text-slate-400';
+        duration.textContent = `Duration: ${durationDisplay}`;
+        meta.appendChild(duration);
+
         resultsContainer.appendChild(meta);
+        setExportEnabled(true);
 
         const layout = document.createElement('div');
         layout.className = 'lg:flex lg:items-start lg:gap-6';
         const mainColumn = document.createElement('div');
-        mainColumn.className = 'flex-1 space-y-4';
+        mainColumn.className = 'flex-1 space-y-6';
         const sideColumn = document.createElement('aside');
         sideColumn.className = 'mt-6 lg:mt-0 lg:w-80 space-y-4';
         layout.appendChild(mainColumn);
@@ -653,104 +769,141 @@
           empty.textContent = 'No checks were executed.';
           mainColumn.appendChild(empty);
         } else {
+          const checksByLevel = CHECK_LEVEL_ORDER.reduce((acc, level) => {
+            acc[level] = [];
+            return acc;
+          }, {});
+
           checks.forEach(check => {
-            const card = document.createElement('div');
-            card.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6 space-y-3';
-          const header = document.createElement('div');
-          header.className = 'flex flex-wrap items-center justify-between gap-3';
-          const title = document.createElement('div');
-          title.innerHTML = `<h3 class="text-lg font-semibold">${check.name || 'Check'}</h3><p class="text-sm text-slate-500 dark:text-slate-400">${check.description || ''}</p>`;
-          if (check.id === 'configuration_overrides') {
-            const heading = title.querySelector('h3');
-            if (heading) {
-              const tip = document.createElement('span');
-              tip.className = 'ml-2 inline-flex items-center text-xs text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 cursor-help';
-              tip.setAttribute('title', 'Local switch configuration overrides the assigned template. Additional fields are surfaced as exceptions.');
-              tip.innerHTML = `
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-10.5a.75.75 0 10-1.5 0v.75a.75.75 0 001.5 0V7.5zm0 3a.75.75 0 10-1.5 0v3a.75.75 0 001.5 0v-3z" clip-rule="evenodd" />
-                </svg>
-              `;
-              const sr = document.createElement('span');
-              sr.className = 'sr-only';
-              sr.textContent = 'Local configuration overrides template';
-              tip.appendChild(sr);
-              heading.appendChild(tip);
+            const level = CHECK_LEVEL_MAP[check.id] || 'org';
+            if (!checksByLevel[level]) {
+              checksByLevel[level] = [];
             }
-          }
-          const findings = Array.isArray(check.findings) ? check.findings : [];
-          const badgeSeverity = findings.length ? check.severity : 'success';
-          const badge = createSeverityBadge(badgeSeverity);
-          const controls = document.createElement('div');
-          controls.className = 'flex items-center gap-2';
-          controls.appendChild(badge);
+            checksByLevel[level].push(check);
+          });
 
-          let customControlsHandled = false;
-          if (check.id === 'firmware_management') {
-            customControlsHandled = true;
-            controls.appendChild(createGuideLink(
-              'https://www.juniper.net/documentation/us/en/software/mist/mist-wireless/topics/task/ap-firmware-upgrade-manual.html',
-              'AP firmware upgrade guide'
-            ));
-            controls.appendChild(createGuideLink(
-              'https://www.juniper.net/documentation/us/en/software/mist/mist-wired/topics/topic-map/switch-upgrade-map.html',
-              'Switch upgrade guide'
-            ));
-          }
+          CHECK_LEVEL_ORDER.forEach(level => {
+            const section = document.createElement('div');
+            section.className = 'space-y-3';
+            const heading = document.createElement('h3');
+            heading.className = 'text-xl font-semibold';
+            heading.textContent = CHECK_LEVEL_LABELS[level] || level;
+            section.appendChild(heading);
 
-          const actions = Array.isArray(check.actions) ? check.actions : [];
-          if (!customControlsHandled && canUseFixes && actions.length) {
-            actions.forEach(action => {
-              if (!action) {
-                return;
+            const levelChecks = Array.isArray(checksByLevel[level]) ? checksByLevel[level] : [];
+            if (!levelChecks.length) {
+              const emptyLevel = document.createElement('p');
+              emptyLevel.className = 'text-sm text-slate-500 dark:text-slate-400';
+              emptyLevel.textContent = level === 'org'
+                ? 'No organization-level checks are defined yet.'
+                : 'No checks in this category.';
+              section.appendChild(emptyLevel);
+            } else {
+              levelChecks.forEach(check => {
+                const card = document.createElement('div');
+                card.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6 space-y-3';
+              const header = document.createElement('div');
+              header.className = 'flex flex-wrap items-center justify-between gap-3';
+              const title = document.createElement('div');
+              title.innerHTML = `<h3 class="text-lg font-semibold">${check.name || 'Check'}</h3><p class="text-sm text-slate-500 dark:text-slate-400">${check.description || ''}</p>`;
+              if (check.id === 'configuration_overrides') {
+                const heading = title.querySelector('h3');
+                if (heading) {
+                  const tip = document.createElement('span');
+                  tip.className = 'ml-2 inline-flex items-center text-xs text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 cursor-help';
+                  tip.setAttribute('title', 'Local switch configuration overrides the assigned template. Additional fields are surfaced as exceptions.');
+                  tip.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                      <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-10.5a.75.75 0 10-1.5 0v.75a.75.75 0 001.5 0V7.5zm0 3a.75.75 0 10-1.5 0v3a.75.75 0 001.5 0v-3z" clip-rule="evenodd" />
+                    </svg>
+                  `;
+                  const sr = document.createElement('span');
+                  sr.className = 'sr-only';
+                  sr.textContent = 'Local configuration overrides template';
+                  tip.appendChild(sr);
+                  heading.appendChild(tip);
+                }
               }
-              if (Array.isArray(action.devices) && action.devices.length) {
-                return;
-              }
-              const siteIds = Array.isArray(action.site_ids) ? action.site_ids : [];
-              if (!siteIds.length) {
-                return;
-              }
-              const wrapper = document.createElement('div');
-              wrapper.className = 'flex items-center gap-2';
-              const button = document.createElement('button');
-              button.type = 'button';
-              button.className = 'text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
-              button.textContent = action.button_label || '1 Click Fix Now';
-              button.addEventListener('click', () => runOneClickFix(action, button));
-              const status = document.createElement('span');
-              status.className = 'text-xs font-medium hidden whitespace-normal';
-              status.setAttribute('data-role', 'action-status');
-              wrapper.appendChild(button);
-              wrapper.appendChild(status);
-              button._actionStatusElement = status;
-              const precheckState = evaluateActionPrechecks(action);
-              if (precheckState.messages.length) {
-                setInitialActionStatus(button, precheckState.messages.join(' '), precheckState.canRun ? 'info' : 'error');
-              } else {
-                setInitialActionStatus(button, '', 'info');
-              }
-              button._precheckCanRun = precheckState.canRun;
-              if (!precheckState.canRun) {
-                button.disabled = true;
-              }
-              controls.appendChild(wrapper);
-            });
-          }
+              const siteFindings = Array.isArray(check.site_level_findings) ? check.site_level_findings : [];
+              const deviceFindings = Array.isArray(check.device_level_findings) ? check.device_level_findings : [];
+              const fallbackFindings = Array.isArray(check.findings) ? check.findings : [];
+              const totalFindingsForBadge = siteFindings.length + deviceFindings.length + (!siteFindings.length && !deviceFindings.length ? fallbackFindings.length : 0);
+              const badgeSeverity = totalFindingsForBadge ? check.severity : 'success';
+              const badge = createSeverityBadge(badgeSeverity);
+              const controls = document.createElement('div');
+              controls.className = 'flex items-center gap-2';
+              controls.appendChild(badge);
 
-          header.appendChild(title);
-          header.appendChild(controls);
-            card.appendChild(header);
+              let customControlsHandled = false;
+              if (check.id === 'firmware_management') {
+                customControlsHandled = true;
+                controls.appendChild(createGuideLink(
+                  'https://www.juniper.net/documentation/us/en/software/mist/mist-wireless/topics/task/ap-firmware-upgrade-manual.html',
+                  'AP firmware upgrade guide'
+                ));
+                controls.appendChild(createGuideLink(
+                  'https://www.juniper.net/documentation/us/en/software/mist/mist-wired/topics/topic-map/switch-upgrade-map.html',
+                  'Switch upgrade guide'
+                ));
+              }
 
-            const stats = document.createElement('div');
-            stats.className = 'flex flex-wrap gap-4 text-xs text-slate-500 dark:text-slate-400';
-            const failingCount = Array.isArray(check.failing_sites) ? check.failing_sites.length : 0;
-            const passingCount = typeof check.passing_sites === 'number' ? check.passing_sites : Math.max((data.total_sites || 0) - failingCount, 0);
-            stats.innerHTML = `<span><strong>${passingCount}</strong> site${passingCount === 1 ? '' : 's'} passing</span><span><strong>${failingCount}</strong> site${failingCount === 1 ? '' : 's'} with findings</span>`;
-            card.appendChild(stats);
+              const actions = Array.isArray(check.actions) ? check.actions : [];
+              if (!customControlsHandled && canUseFixes && actions.length) {
+                actions.forEach(action => {
+                  if (!action) {
+                    return;
+                  }
+                  if (Array.isArray(action.devices) && action.devices.length) {
+                    return;
+                  }
+                  const siteIds = Array.isArray(action.site_ids) ? action.site_ids : [];
+                  if (!siteIds.length) {
+                    return;
+                  }
+                  const wrapper = document.createElement('div');
+                  wrapper.className = 'flex items-center gap-2';
+                  const button = document.createElement('button');
+                  button.type = 'button';
+                  button.className = 'text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
+                  button.textContent = action.button_label || '1 Click Fix Now';
+                  button.addEventListener('click', () => runOneClickFix(action, button));
+                  const status = document.createElement('span');
+                  status.className = 'text-xs font-medium hidden whitespace-normal';
+                  status.setAttribute('data-role', 'action-status');
+                  wrapper.appendChild(button);
+                  wrapper.appendChild(status);
+                  button._actionStatusElement = status;
+                  const precheckState = evaluateActionPrechecks(action);
+                  if (precheckState.messages.length) {
+                    setInitialActionStatus(button, precheckState.messages.join(' '), precheckState.canRun ? 'info' : 'error');
+                  } else {
+                    setInitialActionStatus(button, '', 'info');
+                  }
+                  button._precheckCanRun = precheckState.canRun;
+                  if (!precheckState.canRun) {
+                    button.disabled = true;
+                  }
+                  controls.appendChild(wrapper);
+                });
+              }
 
-            card.appendChild(renderFindings(findings, check.severity));
-            mainColumn.appendChild(card);
+              header.appendChild(title);
+              header.appendChild(controls);
+                card.appendChild(header);
+
+                const stats = document.createElement('div');
+                stats.className = 'flex flex-wrap gap-4 text-xs text-slate-500 dark:text-slate-400';
+                const failingCount = Array.isArray(check.failing_sites) ? check.failing_sites.length : 0;
+                const passingCount = typeof check.passing_sites === 'number' ? check.passing_sites : Math.max((data.total_sites || 0) - failingCount, 0);
+                stats.innerHTML = `<span><strong>${passingCount}</strong> site${passingCount === 1 ? '' : 's'} passing</span><span><strong>${failingCount}</strong> site${failingCount === 1 ? '' : 's'} with findings</span>`;
+                card.appendChild(stats);
+
+                card.appendChild(renderCategorizedFindings(siteFindings, deviceFindings, fallbackFindings));
+                section.appendChild(card);
+              });
+            }
+
+            mainColumn.appendChild(section);
           });
         }
 
@@ -938,6 +1091,8 @@
 
       runAuditBtn.addEventListener('click', async () => {
         runAuditBtn.disabled = true;
+        hasAuditResults = false;
+        setExportEnabled(false);
         showStatus('Running audit…', 'info');
         resultsContainer.innerHTML = '';
         try {

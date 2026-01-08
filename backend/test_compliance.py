@@ -8,6 +8,8 @@ from compliance import (
     SwitchTemplateConfigurationCheck,
     ConfigurationOverridesCheck,
     FirmwareManagementCheck,
+    CloudManagementCheck,
+    SpareSwitchPresenceCheck,
     DeviceNamingConventionCheck,
     DeviceDocumentationCheck,
     SiteAuditRunner,
@@ -18,8 +20,14 @@ from compliance import (
     DNS_OVERRIDE_LAB_TEMPLATE_IDS,
     DNS_OVERRIDE_REQUIRED_VAR_GROUPS,
     DNS_OVERRIDE_REQUIRED_VARS,
+    load_site_variable_config,
 )
-from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
+from audit_actions import (
+    AP_RENAME_ACTION_ID,
+    CLEAR_DNS_OVERRIDE_ACTION_ID,
+    ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
+    SET_SITE_VARIABLES_ACTION_ID,
+)
 
 
 def _format_dns_label_group(options):
@@ -40,6 +48,13 @@ def _expected_dns_labels():
         if label:
             labels.append(label)
     return labels
+
+
+def test_load_site_variable_config_parses_defaults(monkeypatch):
+    monkeypatch.setenv("MIST_SITE_VARIABLES", "foo=1, bar :2 , baz")
+    required, defaults = load_site_variable_config()
+    assert required == ("foo", "bar", "baz")
+    assert defaults == {"foo": "1", "bar": "2"}
 
 
 def test_required_site_variables_check_flags_missing():
@@ -93,6 +108,46 @@ def test_required_site_variables_check_respects_env(monkeypatch):
         "Site variable 'bar' is not defined.",
         "Site variable 'baz' is not defined.",
     }
+
+
+def test_required_site_variables_check_builds_action_from_env_defaults(monkeypatch):
+    monkeypatch.setenv(
+        "MIST_SITE_VARIABLES",
+        "hubradiusserver=1.1.1.1,localradiusserver=2.2.2.2,siteDNS,hubDNSserver1=10.10.10.1,hubDNSserver2=10.10.10.2",
+    )
+    ctx = SiteContext(
+        site_id="site-1",
+        site_name="HQ",
+        site={"variables": {}},
+        setting={},
+        templates=[],
+        devices=[],
+    )
+    check = RequiredSiteVariablesCheck()
+    findings = check.run(ctx)
+    assert len(findings) == 5
+    actions_by_variable = {}
+    for finding in findings:
+        if not finding.actions:
+            continue
+        assert len(finding.actions) == 1
+        action = finding.actions[0]
+        assert action["id"] == SET_SITE_VARIABLES_ACTION_ID
+        metadata = action.get("metadata", {})
+        variables = metadata.get("variables", {})
+        assert len(variables) == 1
+        key = next(iter(variables))
+        actions_by_variable[key] = variables[key]
+    assert actions_by_variable == {
+        "hubradiusserver": "1.1.1.1",
+        "localradiusserver": "2.2.2.2",
+        "hubDNSserver1": "10.10.10.1",
+        "hubDNSserver2": "10.10.10.2",
+    }
+    assert any(
+        finding.message == "Site variable 'siteDNS' is not defined." and finding.actions is None
+        for finding in findings
+    )
 
 
 def test_switch_template_check_flags_non_lab_site_without_prod_template():
@@ -418,6 +473,122 @@ def test_firmware_management_check_skips_when_unconfigured(monkeypatch):
 
     check = FirmwareManagementCheck()
     assert check.run(ctx) == []
+
+
+def test_cloud_management_check_flags_unmanaged_switch():
+    ctx = SiteContext(
+        site_id="site-cloud-1",
+        site_name="Branch",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "sw-1",
+                "name": "SW-1",
+                "type": "switch",
+                "disable_auto_config": True,
+            },
+        ],
+    )
+
+    check = CloudManagementCheck()
+    findings = check.run(ctx)
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert "locally managed" in finding.message
+    assert finding.device_id == "sw-1"
+    assert finding.details == {"disable_auto_config": True}
+    assert finding.actions is not None
+    assert len(finding.actions) == 1
+    action = finding.actions[0]
+    assert action["id"] == ENABLE_CLOUD_MANAGEMENT_ACTION_ID
+    assert action["site_ids"] == ["site-cloud-1"]
+    assert action["devices"] == [{"site_id": "site-cloud-1", "device_id": "sw-1"}]
+
+
+def test_cloud_management_check_ignores_managed_switch():
+    ctx = SiteContext(
+        site_id="site-cloud-2",
+        site_name="Branch",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "sw-2",
+                "name": "SW-2",
+                "type": "switch",
+                "disable_auto_config": False,
+            },
+        ],
+    )
+
+    check = CloudManagementCheck()
+    assert check.run(ctx) == []
+
+
+def test_cloud_management_check_ignores_non_switch_devices():
+    ctx = SiteContext(
+        site_id="site-cloud-3",
+        site_name="Branch",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "ap-1",
+                "name": "AP-1",
+                "type": "ap",
+                "disable_auto_config": True,
+            },
+        ],
+    )
+
+    check = CloudManagementCheck()
+    assert check.run(ctx) == []
+
+
+def test_spare_switch_presence_flags_missing_spare():
+    ctx = SiteContext(
+        site_id="site-spare-1",
+        site_name="Branch",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-1", "name": "SW-1", "type": "switch", "role": "distribution"},
+            {"id": "sw-2", "name": "SW-2", "type": "switch", "role": "ACCESS"},
+        ],
+    )
+
+    check = SpareSwitchPresenceCheck()
+    findings = check.run(ctx)
+
+    assert len(findings) == 1
+    assert findings[0].device_id is None
+    assert "role 'spare'" in findings[0].message
+    assert findings[0].details == {"total_switches": 2, "spare_switches": 0}
+
+
+def test_spare_switch_presence_allows_spare_role():
+    ctx = SiteContext(
+        site_id="site-spare-2",
+        site_name="Branch",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {"id": "sw-1", "name": "SW-1", "type": "switch", "role": "spare"},
+            {"id": "ap-1", "name": "AP-1", "type": "ap", "role": "spare"},
+        ],
+    )
+
+    check = SpareSwitchPresenceCheck()
+    findings = check.run(ctx)
+
+    assert findings == []
 
 
 def test_configuration_overrides_check_includes_offline_devices():
@@ -1498,3 +1669,45 @@ def test_site_audit_runner_counts_quick_fix_findings():
 
     assert result["total_findings"] == 2
     assert result["total_quick_fix_issues"] == 2
+
+
+def test_site_audit_runner_categorizes_findings():
+    contexts = [
+        SiteContext(
+            site_id="site-7",
+            site_name="HQ",
+            site={},
+            setting={},
+            templates=[],
+            devices=[],
+        )
+    ]
+
+    class CategorizedCheck(ComplianceCheck):
+        id = "categorized"
+        name = "Categorized check"
+
+        def run(self, context: SiteContext):
+            return [
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    message="Site-level issue",
+                ),
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    device_id="dev-1",
+                    device_name="Switch 1",
+                    message="Device-level issue",
+                ),
+            ]
+
+    runner = SiteAuditRunner([CategorizedCheck()])
+    result = runner.run(contexts)
+    checks = result["checks"]
+    assert len(checks) == 1
+    check = checks[0]
+    assert len(check["findings"]) == 2
+    assert [f["message"] for f in check["site_level_findings"]] == ["Site-level issue"]
+    assert [f["device_id"] for f in check["device_level_findings"]] == ["dev-1"]

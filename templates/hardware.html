@@ -286,6 +286,7 @@
       if (Number.isInteger(value)) return value.toString();
       return value.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 0 });
     };
+    const accessorySort = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 
     const buildBillOfMaterialsSummary = (resultsData, accessoriesData) => {
       const totals = new Map();
@@ -332,7 +333,7 @@
 
       return Array.from(totals.entries())
         .map(([name, quantity]) => ({ name, quantity }))
-        .sort((a, b) => a.name.localeCompare(b.name));
+        .sort((a, b) => accessorySort(a.name, b.name));
     };
 
     const renderBillOfMaterialsSummary = (items) => {
@@ -392,7 +393,7 @@
       };
 
       const fillAccessoryOptions = (select, selectedValue = '') => {
-        const sortedAccessories = [...availableAccessories].sort((a, b) => a.localeCompare(b));
+        const sortedAccessories = [...availableAccessories].sort(accessorySort);
         select.innerHTML = '';
         const placeholder = document.createElement('option');
         placeholder.value = '';

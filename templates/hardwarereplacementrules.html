@@ -143,6 +143,7 @@ let pendingVendor = '';
 let rulesDoc = {rules: [], accessories: []};
 let ciscoTypes = [];
 let juniperTypes = [];
+const accessorySort = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 
 function openModal(sel, vendor){
   pendingSelect = sel;
@@ -229,7 +230,7 @@ if (accessoryAddBtn && accessoryInput) {
       return;
     }
     rulesDoc.accessories.push(value);
-    rulesDoc.accessories.sort((a,b)=>a.localeCompare(b));
+    rulesDoc.accessories.sort(accessorySort);
     accessoryInput.value = '';
     renderAccessories();
   });
@@ -294,7 +295,7 @@ saveBtns.forEach(btn=>btn.addEventListener('click',()=>{
             .filter(Boolean)
             .map(name=>[name.toLowerCase(), name])
         ).values()
-      ).sort((a,b)=>a.localeCompare(b))
+      ).sort(accessorySort)
     : [];
   const payload = {rules: filteredRules, accessories: accessoriesPayload};
   fetch('/api/replacements',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
@@ -329,7 +330,7 @@ Promise.all([
     }
     rulesDoc = {
       rules: incomingRules,
-      accessories: Array.from(accessoriesMap.values()).sort((a,b)=>a.localeCompare(b))
+      accessories: Array.from(accessoriesMap.values()).sort(accessorySort)
     };
     rulesDoc.rules.forEach(r=>{
       if(r.cisco && !ciscoTypes.includes(r.cisco)) ciscoTypes.push(r.cisco);

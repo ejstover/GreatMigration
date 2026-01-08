@@ -178,6 +178,411 @@ def test_fetch_site_context_filters_recent_last_seen(monkeypatch, app_module):
     assert device_ids == ["recent", "recent-iso", "recent-ms"]
 
 
+def test_build_temp_config_payload_groups_port_profiles(app_module):
+    row = {
+        "_temp_config_source": {
+            "vlans": [
+                {"id": 17, "name": "17"},
+                {"id": 100, "name": "Data"},
+                {"id": 120, "name": "Voice"},
+            ],
+            "interfaces": [],
+        }
+    }
+
+    for idx in range(1, 17):
+        row["_temp_config_source"]["interfaces"].append(
+            {
+                "mode": "access",
+                "data_vlan": 17,
+                "juniper_if": f"ge-0/0/{idx}",
+                "name": f"Gig{idx}",
+            }
+        )
+
+    for idx in range(17, 27):
+        row["_temp_config_source"]["interfaces"].append(
+            {
+                "mode": "access",
+                "data_vlan": 100,
+                "voice_vlan": 120,
+                "juniper_if": f"ge-0/0/{idx}",
+                "name": f"Gig{idx}",
+            }
+        )
+
+    payload = app_module._build_temp_config_payload(row)
+    assert payload is not None
+
+    usages = payload.get("port_usages")
+    assert isinstance(usages, dict)
+    assert len(usages) == 2
+    assert all(isinstance(name, str) and name for name in usages)
+    networks = {net.get("name"): net for net in payload.get("networks", []) if isinstance(net, dict)}
+    for usage_payload in usages.values():
+        port_network = usage_payload.get("port_network")
+        assert isinstance(port_network, str)
+        assert port_network in networks
+    assert "port_config" not in payload
+    assert "port_overrides" not in payload
+
+
+def test_prepare_payload_excludes_port_overrides(monkeypatch, app_module):
+    monkeypatch.setattr(app_module, "_collect_candidate_org_ids", lambda *args, **kwargs: set())
+    monkeypatch.setattr(app_module, "_load_site_template_networks", lambda *args, **kwargs: {})
+    monkeypatch.setattr(app_module, "_collect_existing_vlan_details", lambda *args, **kwargs: (set(), []))
+    monkeypatch.setattr(
+        app_module,
+        "_resolve_network_conflicts",
+        lambda networks, profiles, usages, conflicts: (networks, profiles, usages, {}, []),
+    )
+    monkeypatch.setattr(
+        app_module, "_merge_new_vlan_networks", lambda existing, new, vlan_ids: {}
+    )
+
+    class FakeResp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {}
+
+    monkeypatch.setattr(app_module.requests, "get", lambda *args, **kwargs: FakeResp())
+
+    payload = {
+        "port_usages": [
+            {"name": "temp1", "port_network": "data_vlan", "mode": "access"},
+            {"name": "temp2", "port_network": "data_vlan", "mode": "access"},
+        ],
+        "port_overrides": [
+            {"port_id": "ge-0/0/1", "usage": "temp1", "device_id": "dev-1"},
+            {"port_id": "ge-0/0/1", "usage": "temp2", "device_id": "dev-2"},
+        ]
+    }
+
+    request_body, warnings, rename_map = app_module._prepare_switch_port_profile_payload(
+        "https://example.com/api/v1", "token", "site-1", payload
+    )
+
+    assert "switch" not in request_body
+    assert "port_overrides" not in request_body
+    assert "port_usages" in request_body
+    assert warnings == []
+    assert rename_map == {}
+
+
+def test_apply_temp_config_payload_strips_port_assignments(monkeypatch, app_module):
+    captured_payloads: list[Dict[str, Any]] = []
+
+    def fake_prepare(base_url: str, token: str, site_id: str, payload: Dict[str, Any], **kwargs):
+        captured_payloads.append(payload)
+        return payload, [], {}
+
+    monkeypatch.setattr(app_module, "_prepare_switch_port_profile_payload", fake_prepare)
+
+    row = {
+        "ok": True,
+        "site_id": "site-1",
+        "device_id": "device-1",
+        "_temp_config_source": {
+            "vlans": [{"id": 10, "name": "Data"}],
+            "interfaces": [
+                {
+                    "mode": "access",
+                    "data_vlan": 10,
+                    "juniper_if": "ge-0/0/1",
+                    "name": "Gig1",
+                }
+            ],
+        },
+    }
+
+    result = app_module._apply_temporary_config_for_rows(
+        "https://example.com/api/v1",
+        "token",
+        [row],
+        dry_run=True,
+    )
+
+    assert result["successes"] == 1
+    preview_payload = result["payloads"][0]["payload"]
+
+    assert captured_payloads
+    assert "port_config" not in captured_payloads[0]
+    assert "port_overrides" not in captured_payloads[0]
+    assert "port_usages" in captured_payloads[0]
+    assert "port_config" in preview_payload
+    assert "port_overrides" not in preview_payload
+
+
+def test_remove_temp_config_returns_preview_when_dry_run(monkeypatch, app_module):
+    def fake_get(url: str, headers=None, timeout: int = 60):
+        class Resp:
+            status_code = 200
+
+            def json(self):
+                return {"switch": {}}
+
+            text = ""
+
+        return Resp()
+
+    monkeypatch.setattr(app_module.requests, "get", fake_get)
+
+    row = {
+        "ok": True,
+        "site_id": "site-1",
+        "device_id": "device-1",
+        "_site_deployment_payload": {"port_config": {"ge-0/0/1": {"usage": "end_user"}}},
+    }
+
+    monkeypatch.setattr(
+        app_module,
+        "_derive_port_config_from_config_cmd",
+        lambda *args, **kwargs: {"ge-0/0/1": {"usage": "derived_user"}},
+    )
+
+    result = app_module._remove_temporary_config_for_rows(
+        "https://example.com/api/v1",
+        "token",
+        [row],
+        dry_run=True,
+    )
+
+    assert result["skipped"] is True
+    assert result["total"] == 1
+    payloads = result.get("payloads") or []
+    assert len(payloads) == 1
+    preview = payloads[0]["payload"]
+    assert preview["cleanup_request"] == {
+        "networks": {},
+        "port_usages": {},
+        "port_config": {},
+        "port_overrides": [],
+    }
+    assert preview["push_request"]["port_config"]["ge-0/0/1"]["usage"] == "derived_user"
+
+
+def test_remove_temp_config_wipes_and_pushes(monkeypatch, app_module):
+    calls: list[Dict[str, Any]] = []
+
+    def fake_get(url: str, headers: Dict[str, str], timeout: int = 60):
+        calls.append({"url": url, "json": None})
+
+        class Resp:
+            status_code = 200
+
+            def json(self):
+                return {"switch": {}}
+
+            text = ""
+
+        return Resp()
+
+    def fake_put(url: str, headers: Dict[str, str], json: Dict[str, Any], timeout: int = 60):
+        calls.append({"url": url, "json": json})
+
+        class Resp:
+            status_code = 200
+
+            def json(self):
+                return {"ok": True}
+
+            text = ""
+
+        return Resp()
+
+    monkeypatch.setattr(app_module.requests, "put", fake_put)
+    monkeypatch.setattr(app_module.requests, "get", fake_get)
+
+    final_payload = {"port_config": {"ge-0/0/5": {"usage": "access"}}}
+    row = {
+        "ok": True,
+        "site_id": "site-1",
+        "device_id": "device-1",
+        "_site_deployment_payload": final_payload,
+    }
+
+    result = app_module._remove_temporary_config_for_rows(
+        "https://example.com/api/v1",
+        "token",
+        [row],
+        dry_run=False,
+    )
+
+    assert result["ok"] is True
+    assert result["successes"] == 1
+    assert result["failures"] == []
+    assert len(calls) == 4
+    assert calls[0]["url"] == "https://example.com/api/v1/sites/site-1/devices/device-1/config_cmd"
+    assert calls[1]["url"] == "https://example.com/api/v1/sites/site-1/setting"
+    assert calls[2]["url"] == "https://example.com/api/v1/sites/site-1/setting"
+    assert calls[2]["json"] == {
+        "networks": {},
+        "port_usages": {},
+        "port_config": {},
+        "port_overrides": [],
+    }
+    assert calls[3]["json"] == final_payload
+
+
+def test_remove_temp_config_preserves_legacy_vlan(monkeypatch, app_module):
+    calls: list[Dict[str, Any]] = []
+
+    def fake_get(url: str, headers: Dict[str, str], timeout: int = 60):
+        calls.append({"method": "get", "url": url})
+
+        class Resp:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "networks": {
+                        "legacy_net": {"vlan_id": 501, "note": "keep"},
+                        "temp_net": {"vlan_id": 200, "note": "drop"},
+                    },
+                    "switch": {
+                        "port_usages": {
+                            "legacy_profile": {"port_network": "legacy_net", "note": "keep"},
+                            "temp_profile": {"port_network": "temp_net"},
+                        },
+                        "port_overrides": [
+                            {"port_id": "1", "usage": "legacy_profile"},
+                            {"port_id": "2", "usage": "temp_profile"},
+                        ],
+                    },
+                }
+
+            text = ""
+
+        return Resp()
+
+    def fake_put(url: str, headers: Dict[str, str], json: Dict[str, Any], timeout: int = 60):
+        calls.append({"method": "put", "url": url, "json": json})
+
+        class Resp:
+            status_code = 200
+
+            def json(self):
+                return {"ok": True}
+
+            text = ""
+
+        return Resp()
+
+    monkeypatch.setattr(app_module.requests, "get", fake_get)
+    monkeypatch.setattr(app_module.requests, "put", fake_put)
+
+    final_payload = {"port_config": {"ge-0/0/5": {"usage": "access"}}}
+    row = {
+        "ok": True,
+        "site_id": "site-1",
+        "device_id": "device-1",
+        "_site_deployment_payload": final_payload,
+    }
+
+    result = app_module._remove_temporary_config_for_rows(
+        "https://example.com/api/v1",
+        "token",
+        [row],
+        dry_run=False,
+    )
+
+    assert result["ok"] is True
+    assert result["successes"] == 1
+    assert result["failures"] == []
+    assert [call.get("method") for call in calls] == ["get", "get", "put", "put"]
+    cleanup = calls[2]["json"]
+    assert cleanup["networks"] == {"legacy_net": {"vlan_id": 501, "note": "keep"}}
+    assert cleanup.get("port_usages") == {
+        "legacy_profile": {"port_network": "legacy_net", "note": "keep"}
+    }
+    assert cleanup.get("port_overrides") == [{"port_id": "1", "usage": "legacy_profile"}]
+
+
+def test_cleanup_payload_preserves_legacy_usage_name(app_module):
+    settings = {
+        "networks": {
+            "legacy_net": {"vlan_id": 10, "note": "keep"},
+            "temp_net": {"vlan_id": 200, "note": "drop"},
+        },
+        "switch": {
+            "port_config": {
+                "ge-0/0/20": {"usage": "legacy_AUTO_ACCESS_V10_POE_EDGE"},
+                "ge-0/0/21": {"usage": "legacy_AUTO_ACCESS_V200_POE_EDGE"},
+            }
+        },
+    }
+
+    cleanup = app_module._build_site_cleanup_payload_for_setting(
+        settings,
+        preserve_legacy_vlans=True,
+        legacy_vlan_ids={10},
+    )
+
+    assert cleanup["networks"] == {"legacy_net": {"vlan_id": 10, "note": "keep"}}
+    assert cleanup["port_config"] == {"ge-0/0/20": {"usage": "legacy_AUTO_ACCESS_V10_POE_EDGE"}}
+
+
+def test_cleanup_payload_preserves_all_networks_trunk(app_module):
+    settings = {
+        "networks": {
+            "legacy_net": {"vlan_id": 10, "note": "keep"},
+            "temp_net": {"vlan_id": 200, "note": "drop"},
+        },
+        "switch": {
+            "port_usages": {
+                "legacy_TRUNK_ALL": {"mode": "trunk", "all_networks": True},
+                "temp_profile": {"port_network": "temp_net"},
+            }
+        },
+    }
+
+    cleanup = app_module._build_site_cleanup_payload_for_setting(
+        settings,
+        preserve_legacy_vlans=True,
+        legacy_vlan_ids={10},
+    )
+
+    assert cleanup["networks"] == {"legacy_net": {"vlan_id": 10, "note": "keep"}}
+    assert cleanup.get("port_usages") == {"legacy_TRUNK_ALL": {"mode": "trunk", "all_networks": True}}
+
+
+def test_derive_port_config_preserves_usage_names(monkeypatch, app_module):
+    device_info = {
+        "port_config": {
+            "ge-0/0/20": {"usage": "legacy_AUTO_ACCESS_V10_POE_EDGE"},
+            "ge-0/0/21": {"usage": "AUTO_ACCESS"},
+        }
+    }
+    derived_settings = {
+        "port_usages": {"AUTO_ACCESS": {"mode": "access"}},
+        "networks": {},
+    }
+
+    def fake_get_json(base_url: str, headers: Dict[str, str], path: str, optional: bool = False):
+        if path.endswith("/setting/derived"):
+            return derived_settings
+        return device_info
+
+    monkeypatch.setattr(app_module, "_mist_get_json", fake_get_json)
+    monkeypatch.setattr(
+        app_module.pm,
+        "RULES_DOC",
+        {"rules": [{"when": {"any": True}, "set": {"usage": "end_user"}}]},
+    )
+
+    derived = app_module._derive_port_config_from_port_profiles(
+        "https://example.com/api/v1",
+        "token",
+        "site-1",
+        "device-1",
+        preserve_usage_names={"legacy_AUTO_ACCESS_V10_POE_EDGE"},
+    )
+
+    assert derived["ge-0/0/20"]["usage"] == "legacy_AUTO_ACCESS_V10_POE_EDGE"
+    assert derived["ge-0/0/21"]["usage"] == "end_user"
+
 def test_load_site_history_parses_breakdown(tmp_path):
     from audit_history import load_site_history
 

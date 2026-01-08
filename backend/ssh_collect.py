@@ -15,6 +15,7 @@ pipelines.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 import uuid
@@ -47,6 +48,22 @@ def _raise_missing_netmiko() -> None:
     raise RuntimeError(message)
 
 from translate_showtech import find_copper_10g_ports, load_mapping, parse_showtech
+
+
+def _looks_like_cli_error(output: str | None) -> bool:
+    if not output:
+        return False
+    text = output.strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    error_markers = (
+        "invalid input detected",
+        "incomplete command",
+        "ambiguous command",
+        "unknown command",
+    )
+    return text.startswith("%") or any(marker in lowered for marker in error_markers)
 
 
 @dataclass
@@ -101,11 +118,25 @@ class JobState:
                     "error_info": r.error_info,
                     "hardware": r.hardware,
                     "running_config": r.running_config,
+                    "show_vlan_text": self._select_show_vlan_output(r.command_outputs),
                     "temp_files": r.temp_files,
                 }
                 for r in self.results
             ],
         }
+
+    @staticmethod
+    def _select_show_vlan_output(command_outputs: Dict[str, str] | None) -> Optional[str]:
+        if not command_outputs:
+            return None
+        show_vlan = command_outputs.get("show vlan")
+        show_vlan_brief = command_outputs.get("show vlan brief")
+
+        if show_vlan and _looks_like_cli_error(show_vlan) and show_vlan_brief:
+            return show_vlan_brief
+        if show_vlan:
+            return show_vlan
+        return show_vlan_brief
 
 
 _JOBS: Dict[str, JobState] = {}
@@ -118,6 +149,38 @@ def get_job(job_id: str) -> Optional[JobState]:
 def sanitize_label(value: str) -> str:
     safe = "".join(ch for ch in value if ch.isalnum() or ch in ("-", "_", "."))
     return safe or "device"
+
+
+def _extract_hostname(command_outputs: Dict[str, str] | None) -> Optional[str]:
+    if not command_outputs:
+        return None
+    running_cfg = command_outputs.get("show running-config", "")
+    for line in running_cfg.splitlines():
+        match = re.match(r"\s*hostname\s+([^\s]+)", line, flags=re.IGNORECASE)
+        if match:
+            hostname = match.group(1).strip()
+            if hostname:
+                return sanitize_label(hostname)
+    return None
+
+
+def _build_running_config_filename(host: str, label: str, command_outputs: Dict[str, str]) -> str:
+    parts: List[str] = []
+
+    hostname = _extract_hostname(command_outputs)
+    if hostname:
+        parts.append(hostname)
+
+    safe_host = sanitize_label(host.replace(" ", "_")) if host else ""
+    if safe_host and safe_host not in parts:
+        parts.append(safe_host)
+
+    safe_label = sanitize_label(label.replace(" ", "_")) if label else ""
+    if safe_label and safe_label not in parts:
+        parts.append(safe_label)
+
+    base = "-".join(p for p in parts if p) or "device"
+    return f"{base}.running-config.txt"
 
 
 def build_showtech_text(outputs: Dict[str, str]) -> str:
@@ -245,6 +308,14 @@ def _collect_one_device(
                 "filename": "show_interfaces.txt",
                 "timeout": max(read_timeout, 120),
             },
+            "show vlan": {
+                "filename": "show_vlan.txt",
+                "timeout": max(read_timeout, 60),
+            },
+            "show vlan brief": {
+                "filename": "show_vlan_brief.txt",
+                "timeout": max(read_timeout, 60),
+            },
             "show running-config": {
                 "filename": "show_running_config.txt",
                 "timeout": max(read_timeout, 120),
@@ -293,7 +364,7 @@ def _collect_one_device(
 
         running_cfg = result.command_outputs.get("show running-config", "")
         result.running_config = {
-            "filename": f"{safe_label or 'device'}.running-config.txt",
+            "filename": _build_running_config_filename(device.host, label, result.command_outputs),
             "text": running_cfg,
         }
 
@@ -423,4 +494,3 @@ def cleanup_old_jobs(max_age: float = 3600.0) -> None:
                 job.temp_dir.rmdir()
             except Exception:
                 pass
-

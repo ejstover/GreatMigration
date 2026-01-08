@@ -10,8 +10,6 @@
   <script>tailwind.config = { darkMode: 'media' };</script>
 
   <style>
-    .dropzone { border: 2px dashed #cbd5e1; }
-    .dropzone.dragover { border-color: #60a5fa; background: #f8fafc; }
     pre { white-space: pre-wrap; word-wrap: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }
     .status-info { border-color: #bae6fd; background: #ecfeff; }
     .status-success { border-color: #86efac; background: #f0fdf4; }
@@ -80,9 +78,15 @@
               <p class="text-xs text-slate-500 dark:text-slate-400">Usernames persist locally for convenience. Passwords clear immediately after the job starts.</p>
             </div>
           </div>
-          <div class="flex items-center gap-3 mt-4">
-            <button id="cfg_ssh_collect" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Fetch configs</button>
+          <div class="flex flex-wrap items-center gap-3 mt-4">
+            <button id="cfg_ssh_collect" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Fetch Configs</button>
+            <button id="choose_files" class="px-4 py-2 rounded bg-sky-600 text-white hover:bg-sky-700">Manual Upload</button>
             <span id="cfg_ssh_progress" class="text-sm text-slate-600 dark:text-slate-300"></span>
+          </div>
+          <input id="file_input" type="file" multiple class="hidden" accept=".txt,.cfg,.conf,.json" />
+          <div class="flex flex-wrap items-center justify-between gap-3 mt-3">
+            <div id="convert_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
+            <button id="clear_all" class="px-4 py-2 rounded bg-red-600 text-white hover:bg-red-700">Clear</button>
           </div>
           <div id="cfg_ssh_failure_panel" class="hidden mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/70 dark:text-rose-100">
             <div id="cfg_ssh_failure_summary" class="font-semibold"></div>
@@ -91,18 +95,69 @@
         </div>
       </section>
 
-      <!-- Drag & Drop -->
-      <section class="mb-6">
-      <div id="dz" class="dropzone rounded-2xl bg-white dark:bg-slate-800 dark:border-slate-700 p-8 text-center text-slate-500 dark:text-slate-300">
-        <p class="mb-2">Drag & drop Cisco config files here (or click to select)</p>
-        <input id="file_input" type="file" multiple class="hidden" accept=".txt,.cfg,.conf,.json" />
-        <button id="choose_files" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Choose files</button>
-      </div>
-      <div class="flex items-center justify-between mt-2">
-        <div id="convert_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
-        <button id="clear_all" class="px-4 py-2 rounded bg-red-600 text-white hover:bg-red-700">Clear</button>
-      </div>
-    </section>
+      <!-- LCM Step 3 -->
+      <section id="lcm_step3_section" class="mb-6">
+        <div class="rounded-2xl border border-slate-200/70 bg-white p-6 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+          <div class="flex items-start gap-4 mb-5">
+            <span class="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sky-100 via-sky-50 to-transparent text-xs font-bold tracking-wide text-sky-700 ring-1 ring-sky-100 dark:from-sky-900/60 dark:via-sky-900/20 dark:text-sky-200 dark:ring-sky-900/60">LCM</span>
+            <div>
+              <p class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Lifecycle automation</p>
+              <h2 class="text-lg font-semibold text-slate-800 dark:text-slate-100">LCM Step 3 · Deploy the final Juniper config</h2>
+              <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and choose which site + switches should receive the final Juniper configuration.</p>
+            </div>
+          </div>
+          <div class="tooltip relative flex flex-col gap-4 rounded-xl border border-slate-200 bg-white/80 p-5 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/50">
+            <button id="lcm_step3_toggle" type="button" class="absolute right-4 top-4 inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800" aria-expanded="false">
+              <span class="sr-only">Toggle LCM Step 3 details</span>
+              <svg class="h-4 w-4 transition-transform" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.25 8.27a.75.75 0 01-.02-1.06z" clip-rule="evenodd" />
+              </svg>
+            </button>
+            <div class="flex items-start gap-4 pr-12">
+              <label class="flex flex-1 items-start gap-3">
+                <input id="remove_temp_config" type="checkbox" class="mt-1 h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-900 dark:focus:ring-sky-900/40" />
+                <span>
+                  <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 3 · Deploy</span>
+                  <span class="block text-sm font-semibold text-slate-800 dark:text-slate-100">Deploy the final Juniper config</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and select the site + switches that should receive the final Juniper configuration.</span>
+                </span>
+              </label>
+              <span class="mt-1 ml-auto inline-flex h-7 w-7 items-center justify-center rounded-full bg-sky-100 text-xs font-bold text-sky-700 ring-1 ring-sky-100 dark:bg-sky-900/60 dark:text-sky-200 dark:ring-sky-900/60">?</span>
+            </div>
+            <div id="lcm_step3_body" class="hidden space-y-4 text-sm text-slate-600 dark:text-slate-300">
+              <div class="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+                <div id="lcm_cleanup_options" class="space-y-3 rounded-lg border border-slate-200 bg-slate-50/70 p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900/40">
+                  <label class="flex flex-col gap-1">
+                    <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Cleanup site</span>
+                    <select id="lcm_cleanup_site" class="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+                      <option value="">Select a site…</option>
+                    </select>
+                    <span class="text-xs text-slate-500 dark:text-slate-400">Choose the Mist site where the legacy configuration should be removed.</span>
+                  </label>
+                  <div>
+                    <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Switches to clean up</span>
+                    <div id="lcm_cleanup_devices" class="mt-2 rounded-md border border-slate-200 bg-white/80 p-3 text-xs text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
+                      Select a site to list switches.
+                    </div>
+                  </div>
+                </div>
+                <div class="space-y-3 rounded-lg border border-slate-200 bg-white/70 p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900/50">
+                  <label class="inline-flex items-start gap-2 text-sm text-slate-700 dark:text-slate-200">
+                    <input id="preserve_legacy_vlans" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-900 dark:focus:ring-sky-900/40" checked />
+                    <span>Preserve legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default) and their port profiles during cleanup.</span>
+                  </label>
+                  <label class="flex flex-col gap-1">
+                    <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Additional VLANs to preserve (optional)</span>
+                    <input id="preserve_legacy_vlans_extra" type="text" class="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="e.g. 42,100-110" />
+                    <span class="text-xs text-slate-500 dark:text-slate-400">Enter ad-hoc VLAN IDs or ranges to keep alongside the defaults for this run.</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <span class="tip">Resets the temporary lifecycle payload on Mist while preserving legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default, plus any extra IDs you list). Select the site and switches that should receive the final Juniper configuration.</span>
+          </div>
+        </div>
+      </section>
 
     <!-- Converted JSON -->
     <section id="results" class="hidden mb-8">
@@ -128,21 +183,90 @@
           <div class="flex items-center gap-6 mt-6 md:mt-0">
             <label class="tooltip">
               <span class="inline-flex items-center gap-2">
-                <input id="dry_run" type="checkbox" class="w-4 h-4" checked />
-                <span class="text-sm">Test mode (no changes)</span>
-              </span>
-              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
-              <span class="tip">Sends the exact payload to Mist <em>without</em> applying changes. You’ll see the JSON and any warnings, but devices aren’t modified.</span>
-            </label>
-
-            <label class="tooltip">
-              <span class="inline-flex items-center gap-2">
                 <input id="strict_overflow" type="checkbox" class="w-4 h-4" />
                 <span class="text-sm">Strict overflow (convert)</span>
               </span>
               <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
               <span class="tip">If checked during conversion, any interface that can’t be mapped cleanly (e.g., out-of-range module/port) is dropped instead of guessed.</span>
             </label>
+          </div>
+        </div>
+
+        <div class="mt-6 border-t border-slate-200 dark:border-slate-700 pt-4 space-y-6">
+          <div>
+            <div class="flex items-start gap-3 mb-4">
+              <span class="mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">SDA</span>
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Site Deployment Automation</p>
+                <h3 class="text-base font-semibold text-slate-800 dark:text-slate-100">Convert Cisco configs into Juniper API payloads</h3>
+                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Choose whether to simulate or push the converted payloads so the output always matches the Site Deployment steps you plan to run.</p>
+              </div>
+            </div>
+            <div class="grid gap-4 md:grid-cols-2">
+              <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-emerald-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+                <span class="flex items-start gap-3">
+                  <input id="site_stage" type="checkbox" class="mt-1 h-4 w-4" />
+                  <span>
+                    <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">Site stage · Test</span>
+                    <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Stage/Test converted config</span>
+                    <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Build the Juniper-ready payloads without pushing them so you can review exactly what will be sent to Mist.</span>
+                  </span>
+                </span>
+                <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-200 text-xs font-bold text-emerald-700 dark:bg-emerald-900 dark:text-emerald-200">?</span>
+                <span class="tip">Runs the Cisco → Juniper conversion and shows the Mist request bodies without applying any live changes.</span>
+              </label>
+
+              <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-emerald-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+                <span class="flex items-start gap-3">
+                  <input id="site_push" type="checkbox" class="mt-1 h-4 w-4" />
+                  <span>
+                    <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">Site stage · Push</span>
+                    <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Push converted config</span>
+                    <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Apply the converted payloads to Mist-managed switches when you are ready to deploy the new Juniper configuration.</span>
+                  </span>
+                </span>
+                <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-200 text-xs font-bold text-emerald-700 dark:bg-emerald-900 dark:text-emerald-200">?</span>
+                <span class="tip">Sends the converted port configuration to Mist. Select only this push option when you are ready for a live update.</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="border-t border-slate-200 dark:border-slate-700 pt-4">
+            <div class="flex items-start gap-3 mb-4">
+              <span class="mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-100 text-xs font-bold tracking-wide text-sky-700 dark:bg-sky-900/40 dark:text-sky-200">LCM</span>
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Lifecycle automation</p>
+                <h3 class="text-base font-semibold text-slate-800 dark:text-slate-100">Mist LCM actions for Cisco → Juniper swaps</h3>
+                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Pick the automation phases that stage, cut over, and clean up the migration so operators know exactly which Life Cycle Management (LCM) tasks will run.</p>
+              </div>
+            </div>
+            <div class="grid gap-4 md:grid-cols-2">
+              <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+                <span class="flex items-start gap-3">
+                  <input id="apply_temp_config" type="checkbox" class="mt-1 h-4 w-4" />
+                  <span>
+                  <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 1 · Stage</span>
+                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Review the temporary Cisco layout</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Build the VLAN, port profile, and switchport payloads without sending them so you can validate what Step 2 will push to Mist.</span>
+                </span>
+              </span>
+              <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
+              <span class="tip">Generates the temporary VLAN and port assignment payload and shows the exact Mist requests for review. No configuration is pushed during this step.</span>
+            </label>
+
+            <label class="tooltip relative flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+              <span class="flex items-start gap-3">
+                <input id="finalize_assignments" type="checkbox" class="mt-1 h-4 w-4" />
+                <span>
+                  <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 2 · Finalize</span>
+                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Push the temporary Cisco layout</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Apply the temporary VLANs, port profiles, and switchport overrides to the Juniper switch via Mist when you are ready to stage the cutover.</span>
+                </span>
+              </span>
+              <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
+              <span class="tip">Sends the temporary VLAN and port usage payloads to Mist-managed switches so the legacy Cisco layout runs on the Juniper hardware.</span>
+            </label>
+          </div>
           </div>
         </div>
       </div>
@@ -152,12 +276,13 @@
       <div id="batch_rows" class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow divide-y dark:divide-slate-700"></div>
 
       <div class="flex items-center gap-3 mt-4">
-        <button id="push_batch_btn" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Test configuration for all</button>
+        <button id="push_batch_btn" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Run selected automation</button>
         <div id="batch_status" class="text-sm text-slate-600 dark:text-slate-300 ml-2"></div>
       </div>
 
       <!-- Results -->
       <div id="batch_output" class="mt-4 space-y-4"></div>
+      <div id="batch_phase_status" class="mt-4 space-y-3 hidden"></div>
     </section>
   </div>
   </div>
@@ -198,11 +323,16 @@
       });
 
       if (readOnly) {
-        dryRun.checked = true;
-        dryRun.disabled = true;
-        dryRun.setAttribute('aria-disabled', 'true');
-        dryRun.title = 'Read-only accounts can only run in Test mode.';
-        syncPushBtnLabel();
+        liveChangeCheckboxes.forEach(cb => {
+          if (!cb) return;
+          cb.checked = false;
+          cb.disabled = true;
+          cb.dataset.forceDisabled = 'readonly';
+          const label = cb.closest('label');
+          label?.classList.add('opacity-50', 'pointer-events-none');
+          label?.setAttribute('title', 'Read-only accounts cannot apply live changes.');
+        });
+        updateAutomationLocks();
       }
     }).catch(() => {
       window.location.href = '/login';
@@ -219,7 +349,6 @@
     const sshFailureSummary = document.getElementById('cfg_ssh_failure_summary');
     const sshFailureList = document.getElementById('cfg_ssh_failure_list');
 
-    const dz = document.getElementById('dz');
     const fileInput = document.getElementById('file_input');
     const chooseBtn = document.getElementById('choose_files');
     const convertStatus = document.getElementById('convert_status');
@@ -233,11 +362,24 @@
     const pushBatchBtn = document.getElementById('push_batch_btn');
     const batchStatus = document.getElementById('batch_status');
     const batchOutput = document.getElementById('batch_output');
+    const batchPhaseStatus = document.getElementById('batch_phase_status');
 
     const strictOverflow = document.getElementById('strict_overflow');
-    const dryRun = document.getElementById('dry_run');
     const tz = document.getElementById('tz');
     const modelOverride = document.getElementById('model_override');
+    const applyTempConfig = document.getElementById('apply_temp_config');
+    const finalizeAssignments = document.getElementById('finalize_assignments');
+    const removeTempConfig = document.getElementById('remove_temp_config');
+    const preserveLegacyVlans = document.getElementById('preserve_legacy_vlans');
+    const preserveLegacyVlansExtra = document.getElementById('preserve_legacy_vlans_extra');
+    const lcmCleanupOptions = document.getElementById('lcm_cleanup_options');
+    const lcmCleanupSite = document.getElementById('lcm_cleanup_site');
+    const lcmCleanupDevices = document.getElementById('lcm_cleanup_devices');
+    const lcmStep3Toggle = document.getElementById('lcm_step3_toggle');
+    const lcmStep3Body = document.getElementById('lcm_step3_body');
+    const lcmStep3Section = document.getElementById('lcm_step3_section');
+    const siteStage = document.getElementById('site_stage');
+    const sitePush = document.getElementById('site_push');
 
     // --- Data ---
     let convertedItems = []; // [{ source_file, output_file, json }]
@@ -245,13 +387,113 @@
     let seenFiles = new Set(); // dedupe chooser/dnd
     let sitesCache = []; // list of sites
     const devicesBySite = new Map(); // site_id -> devices[]
+    let lcmCleanupSelectedIds = new Set();
     let sshCollectStartedAt = null;
     let sshCollectRequested = 0;
+    const siteAutomationCheckboxes = [siteStage, sitePush].filter(Boolean);
+    const lcmAutomationCheckboxes = [applyTempConfig, finalizeAssignments, removeTempConfig].filter(Boolean);
+    const liveChangeCheckboxes = [sitePush, applyTempConfig, finalizeAssignments, removeTempConfig].filter(Boolean);
 
     // --- Utils ---
     function show(el){ el.classList.remove('hidden'); }
     function hide(el){ el.classList.add('hidden'); }
     function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
+
+    function isPreviewOnly(){
+      return !liveChangeCheckboxes.some(cb => cb && cb.checked);
+    }
+
+    function syncPushBtnLabel(){
+      const preview = isPreviewOnly();
+      const anySelected = siteAutomationCheckboxes.some(cb => cb && cb.checked) || lcmAutomationCheckboxes.some(cb => cb && cb.checked);
+      if (!anySelected){
+        pushBatchBtn.textContent = 'Run selected automation';
+      } else if (preview){
+        pushBatchBtn.textContent = 'Stage/test selected automation';
+      } else {
+        pushBatchBtn.textContent = 'Apply selected automation';
+      }
+    }
+
+    function syncBatchSectionVisibility(){
+      if (!batchSection) return;
+      const lcmStep3Only = Boolean(removeTempConfig?.checked) && !applyTempConfig?.checked && !finalizeAssignments?.checked;
+      if (convertedItems.length || lcmStep3Only){
+        show(batchSection);
+      } else {
+        hide(batchSection);
+      }
+    }
+
+    function syncLegacyVlanExtras(){
+      if (!preserveLegacyVlansExtra) return;
+      const enabled = Boolean(preserveLegacyVlans?.checked);
+      preserveLegacyVlansExtra.disabled = !enabled;
+      preserveLegacyVlansExtra.classList.toggle('opacity-60', !enabled);
+    }
+
+    function setLcmStep3Expanded(expanded){
+      if (!lcmStep3Body) return;
+      lcmStep3Body.classList.toggle('hidden', !expanded);
+      if (lcmStep3Toggle){
+        lcmStep3Toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        const icon = lcmStep3Toggle.querySelector('svg');
+        if (icon) icon.classList.toggle('rotate-180', expanded);
+      }
+    }
+
+    function dismissLcmStep3Assets(){
+      if (lcmStep3Section) hide(lcmStep3Section);
+      if (removeTempConfig){
+        removeTempConfig.checked = false;
+      }
+      setLcmStep3Expanded(false);
+      updateAutomationLocks();
+    }
+
+    function updateAutomationLocks(){
+      const siteChecked = siteAutomationCheckboxes.filter(cb => cb && cb.checked);
+      const lcmChecked = lcmAutomationCheckboxes.filter(cb => cb && cb.checked);
+
+      if (siteChecked.length){
+        lcmAutomationCheckboxes.forEach(cb => { if (cb) cb.checked = false; });
+      }
+      if (lcmChecked.length){
+        siteAutomationCheckboxes.forEach(cb => { if (cb) cb.checked = false; });
+      }
+
+      const finalSiteChecked = siteAutomationCheckboxes.filter(cb => cb && cb.checked);
+      const finalLcmChecked = lcmAutomationCheckboxes.filter(cb => cb && cb.checked);
+
+      function applyAvailability(cb, disable){
+        if (!cb) return;
+        const forced = cb.dataset.forceDisabled === 'readonly';
+        const label = cb.closest('label');
+        const finalDisable = forced || disable;
+        cb.disabled = finalDisable;
+        if (label && !forced){
+          label.classList.toggle('opacity-50', finalDisable);
+          label.classList.toggle('pointer-events-none', finalDisable);
+        }
+      }
+
+      siteAutomationCheckboxes.forEach(cb => {
+        if (!cb) return;
+        const disable = (!!finalLcmChecked.length && !cb.checked) || (!!finalSiteChecked.length && !cb.checked);
+        applyAvailability(cb, disable);
+      });
+
+      lcmAutomationCheckboxes.forEach(cb => {
+        if (!cb) return;
+        const disable = (!!finalSiteChecked.length && !cb.checked) || (!!finalLcmChecked.length && !cb.checked);
+        applyAvailability(cb, disable);
+      });
+
+      syncPushBtnLabel();
+      renderConvertedList();
+      syncLcmCleanupVisibility();
+      syncBatchSectionVisibility();
+    }
 
     async function logTiming(eventName, durationMs, metadata = {}){
       try {
@@ -341,6 +583,7 @@
     if (sshCollectBtn){
       sshCollectBtn.addEventListener('click', async (e) => {
         e.preventDefault();
+        dismissLcmStep3Assets();
         if (sshCollectBtn.disabled) return;
         const devicesRaw = (sshDevicesInput?.value || '').split(/\r?\n|,/);
         const devices = devicesRaw.map(v => v.trim()).filter(Boolean).map(host => ({ host, label: host }));
@@ -451,6 +694,7 @@
       }
 
       const now = Date.now();
+      const showVlanMap = {};
       const files = successes.map(item => {
         const text = item.running_config?.text || '';
         let filename = item.running_config?.filename || '';
@@ -458,11 +702,14 @@
           const base = (item.label || item.host || 'config').replace(/[^A-Za-z0-9._-]+/g, '_') || 'config';
           filename = `${base}.running-config.txt`;
         }
+        if (item.show_vlan_text){
+          showVlanMap[filename] = item.show_vlan_text;
+        }
         return new File([text], filename, { type: 'text/plain', lastModified: now });
       });
 
       if (files.length){
-        await handleFiles(files);
+        await handleFiles(files, showVlanMap);
         if (sshCollectStartedAt !== null){
           const duration = performance.now() - sshCollectStartedAt;
           logTiming('config_fetch_results', duration, {
@@ -487,15 +734,10 @@
     chooseBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      dismissLcmStep3Assets();
       fileInput.value = '';
       fileInput.click();
     });
-    dz.addEventListener('click', (e) => {
-      if (e.target === dz) { fileInput.value = ''; fileInput.click(); }
-    });
-    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
-    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-    dz.addEventListener('drop', (e) => { e.preventDefault(); dz.classList.remove('dragover'); if (e.dataTransfer.files?.length) handleFiles([...e.dataTransfer.files]); });
     fileInput.addEventListener('change', () => { handleFiles([...fileInput.files]); fileInput.value = ''; });
 
     clearAll.addEventListener('click', () => {
@@ -507,11 +749,10 @@
       batchOutput.innerHTML = '';
       convertStatus.textContent = '';
       hide(results);
-      hide(batchSection);
+      syncBatchSectionVisibility();
       hide(rowsWarning);
       batchStatus.textContent = '';
-      dryRun.checked = true;
-      pushBatchBtn.textContent = 'Test configuration for all';
+      syncPushBtnLabel();
       resetSshFailurePanel();
     });
 
@@ -522,6 +763,7 @@
         const data = await res.json();
         if (!data.ok) throw new Error(JSON.stringify(data.error));
         sitesCache = data.items || [];
+        renderLcmCleanupSiteOptions();
       } catch (e){
         sitesCache = [];
         console.error('Failed to fetch sites', e);
@@ -548,7 +790,7 @@
     // --- Conversion ---
     function keyForFile(f){ return `${f.name}|${f.size}|${f.lastModified}`; }
 
-    async function handleFiles(files){
+    async function handleFiles(files, showVlanMap = {}){
       if (!files.length) return;
 
       // dedupe files
@@ -563,6 +805,9 @@
       const form = new FormData();
       unique.forEach(f => form.append('files', f));
       form.append('strict_overflow', strictOverflow.checked ? 'true' : 'false');
+      if (showVlanMap && Object.keys(showVlanMap).length){
+        form.append('show_vlan_map', JSON.stringify(showVlanMap));
+      }
 
       const res = await fetch('/api/convert', { method: 'POST', body: form });
       const data = await res.json();
@@ -594,24 +839,42 @@
       }
 
       renderBatchRows();
-      show(batchSection);
+      syncBatchSectionVisibility();
     }
 
     function renderConvertedList(){
+      if (!convertedItems.length){
+        hide(results);
+        resultsList.innerHTML = '';
+        return;
+      }
       show(results);
       resultsList.innerHTML = '';
       convertedItems.forEach((it, idx) => {
         const card = document.createElement('div');
         card.className = 'rounded-xl border bg-white dark:bg-slate-800 dark:border-slate-700 p-4';
+        const siteAutomationActive = siteAutomationCheckboxes.some(cb => cb && cb.checked);
+        const lcmPreviewActive = (applyTempConfig && applyTempConfig.checked) || (finalizeAssignments && finalizeAssignments.checked);
+        const lcmActive = lcmAutomationCheckboxes.some(cb => cb && cb.checked);
+        const showConversionPreview = siteAutomationActive || lcmPreviewActive;
+        let previewSection = '';
+
+        if (showConversionPreview){
+          previewSection = `<details class="mt-2">
+              <summary class="cursor-pointer text-sm text-slate-600 dark:text-slate-300">Preview converted Cisco JSON</summary>
+              <pre class="text-xs mt-2 p-2 bg-slate-50 dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80">${escapeHtml(JSON.stringify(it.json, null, 2))}</pre>
+            </details>`;
+        } else if (lcmActive){
+          previewSection = `<p class="mt-2 text-xs text-slate-600 dark:text-slate-300">Run Lifecycle automation to review the attached Mist request that stages VLANs, port profiles, and switchport assignments for the existing network.</p>`;
+        } else {
+          previewSection = `<p class="mt-2 text-xs text-slate-600 dark:text-slate-300">Select a Site Deployment automation step to preview the converted Cisco configuration JSON, or choose a Lifecycle automation step to review the attached Mist request.</p>`;
+        }
         card.innerHTML = `
           <div class="flex items-center justify-between">
             <div class="text-sm font-medium">${escapeHtml(it.source_file)}</div>
             <div class="text-xs text-slate-500 dark:text-slate-300">Row ${idx+1}</div>
           </div>
-          <details class="mt-2">
-            <summary class="cursor-pointer text-sm text-slate-600 dark:text-slate-300">Preview JSON</summary>
-            <pre class="text-xs mt-2 p-2 bg-slate-50 dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80">${escapeHtml(JSON.stringify(it.json, null, 2))}</pre>
-          </details>
+          ${previewSection}
         `;
         resultsList.appendChild(card);
       });
@@ -638,8 +901,101 @@
       return opts.join('');
     }
 
+    function renderLcmCleanupSiteOptions(){
+      if (!lcmCleanupSite) return;
+      const selected = lcmCleanupSite.value;
+      lcmCleanupSite.innerHTML = siteOptionsHtml(selected);
+    }
+
+    function getSelectedLcmCleanupDevices(){
+      if (!lcmCleanupDevices) return [];
+      return Array.from(lcmCleanupDevices.querySelectorAll('input[name="lcm_cleanup_device"]:checked'))
+        .map(input => String(input.value || '').trim())
+        .filter(Boolean);
+    }
+
+    async function renderLcmCleanupDeviceList(siteId){
+      if (!lcmCleanupDevices) return;
+      lcmCleanupDevices.innerHTML = '';
+      if (!siteId){
+        lcmCleanupDevices.textContent = 'Select a site to list switches.';
+        return;
+      }
+      const devices = await fetchDevices(siteId);
+      if (!devices.length){
+        lcmCleanupDevices.textContent = 'No switches found for the selected site.';
+        return;
+      }
+
+      const controls = document.createElement('div');
+      controls.className = 'flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 mb-2';
+      const selectAll = document.createElement('button');
+      selectAll.type = 'button';
+      selectAll.className = 'px-2 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800';
+      selectAll.textContent = 'Select all';
+      selectAll.addEventListener('click', () => {
+        lcmCleanupSelectedIds = new Set(devices.map(d => d.id).filter(Boolean));
+        renderLcmCleanupDeviceList(siteId);
+      });
+      const clearAll = document.createElement('button');
+      clearAll.type = 'button';
+      clearAll.className = 'px-2 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800';
+      clearAll.textContent = 'Clear';
+      clearAll.addEventListener('click', () => {
+        lcmCleanupSelectedIds = new Set();
+        renderLcmCleanupDeviceList(siteId);
+      });
+      controls.appendChild(selectAll);
+      controls.appendChild(clearAll);
+      lcmCleanupDevices.appendChild(controls);
+
+      const grid = document.createElement('div');
+      grid.className = 'grid gap-2 sm:grid-cols-2';
+      devices.forEach((device, idx) => {
+        if (!device?.id) return;
+        const label = document.createElement('label');
+        label.className = 'flex items-start gap-2 text-xs text-slate-700 dark:text-slate-200';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.name = 'lcm_cleanup_device';
+        checkbox.value = device.id;
+        checkbox.className = 'mt-0.5 h-4 w-4';
+        checkbox.checked = lcmCleanupSelectedIds.has(device.id);
+        checkbox.addEventListener('change', () => {
+          if (checkbox.checked) {
+            lcmCleanupSelectedIds.add(device.id);
+          } else {
+            lcmCleanupSelectedIds.delete(device.id);
+          }
+        });
+        const info = document.createElement('span');
+        const detail = `${device.name || device.id}${device.model ? ` — ${device.model}` : ''}${device.type ? ` (${device.type})` : ''}`;
+        info.textContent = detail.trim();
+        label.appendChild(checkbox);
+        label.appendChild(info);
+        grid.appendChild(label);
+      });
+      lcmCleanupDevices.appendChild(grid);
+    }
+
+    function syncLcmCleanupVisibility(){
+      if (!lcmCleanupOptions) return;
+      renderLcmCleanupSiteOptions();
+      const siteId = lcmCleanupSite?.value || '';
+      if (siteId) {
+        renderLcmCleanupDeviceList(siteId);
+      }
+    }
+
     function renderBatchRows(){
       batchRows.innerHTML = '';
+      const lcmStep3Only = Boolean(removeTempConfig?.checked) && !applyTempConfig?.checked && !finalizeAssignments?.checked;
+      if (lcmStep3Only){
+        hide(rowsWarning);
+        pushBatchBtn.disabled = false;
+        pushBatchBtn.classList.remove('cursor-not-allowed', 'opacity-70');
+        return;
+      }
       rows.forEach((row, i) => {
         const dup = isPairDuplicate(row.device_id, row.member_offset, row.port_offset);
         const dupClass = dup ? 'ring-2 ring-rose-500' : '';
@@ -856,23 +1212,180 @@
     }
 
     // --- Batch push ---
-    function syncPushBtnLabel(){ pushBatchBtn.textContent = dryRun.checked ? 'Test configuration for all' : 'Push configuration for all'; }
-    dryRun.addEventListener('change', syncPushBtnLabel);
     syncPushBtnLabel();
+
+    function renderPhaseStatus(statusMap){
+      batchPhaseStatus.innerHTML = '';
+      if (!statusMap || typeof statusMap !== 'object' || !Object.keys(statusMap).length){
+        hide(batchPhaseStatus);
+        return;
+      }
+
+      const labelMap = {
+        site_stage: 'Site Deployment · Stage/Test converted config',
+        site_push: 'Site Deployment · Push converted config',
+        apply_temporary_config: 'LCM Step 1 · Stage temporary config',
+        finalize_assignments: 'LCM Step 2 · Finalize assignments',
+        remove_temporary_config: 'LCM Step 3 · Deploy the final Juniper config'
+      };
+
+      Object.entries(statusMap).forEach(([key, info]) => {
+        const label = labelMap[key] || key;
+        const ok = Boolean(info?.ok);
+        const skipped = Boolean(info?.skipped);
+        const failures = Array.isArray(info?.failures) ? info.failures : [];
+        const message = info?.message ? escapeHtml(String(info.message)) : '';
+        const total = typeof info?.total === 'number' ? info.total : undefined;
+        const successes = typeof info?.successes === 'number' ? info.successes : undefined;
+        const payloads = Array.isArray(info?.payloads) ? info.payloads : [];
+        const scope = (typeof info?.scope === 'string' && info.scope.toLowerCase() === 'site') ? 'site' : 'device';
+
+        const card = document.createElement('div');
+        const hasFailures = failures.length > 0;
+        const baseClass = skipped || (!ok && !hasFailures)
+          ? 'status-info dark:bg-slate-800/60'
+          : ok
+            ? 'status-success dark:bg-emerald-900/40'
+            : 'status-error dark:bg-rose-950';
+        card.className = `rounded-lg border p-4 text-sm ${baseClass}`;
+
+        const meta = [];
+        if (typeof successes === 'number' && typeof total === 'number'){
+          meta.push(`${successes}/${total} ${scope}${total === 1 ? '' : 's'} processed`);
+        }
+
+        const header = document.createElement('div');
+        header.className = 'font-semibold mb-1 flex items-center justify-between gap-2';
+        header.innerHTML = `<span>${escapeHtml(label)}</span>` + (meta.length ? `<span class="text-xs font-normal text-slate-600 dark:text-slate-300">${escapeHtml(meta.join(' • '))}</span>` : '');
+        card.appendChild(header);
+
+        if (message){
+          const msgEl = document.createElement('div');
+          msgEl.className = 'mb-2';
+          msgEl.innerHTML = message;
+          card.appendChild(msgEl);
+        }
+
+        if (failures.length){
+          const list = document.createElement('ul');
+          list.className = 'space-y-1 text-xs';
+          failures.forEach(f => {
+            const site = f?.site_id ? `Site ${escapeHtml(String(f.site_id))}` : '';
+            let device = '';
+            if (f?.device_id){
+              device = `Device ${escapeHtml(String(f.device_id))}`;
+            } else if (Array.isArray(f?.device_ids) && f.device_ids.length){
+              const ids = f.device_ids.map(d => escapeHtml(String(d))).join(', ');
+              device = `Device(s) ${ids}`;
+            }
+            const statusText = typeof f?.status === 'number' ? ` (HTTP ${f.status})` : '';
+            const context = [site, device].filter(Boolean).join(' • ');
+            const detail = f?.message ? escapeHtml(String(f.message)) : 'Unknown error';
+            const line = document.createElement('li');
+            line.innerHTML = `${context ? `${context}: ` : ''}${detail}${statusText}`;
+            list.appendChild(line);
+          });
+          card.appendChild(list);
+        }
+
+        if (payloads.length){
+          const details = document.createElement('details');
+          details.className = 'mt-3';
+          const summaryLabel = key === 'apply_temporary_config'
+            ? 'Temporary config payloads for review'
+            : 'Request payloads';
+          details.innerHTML = `<summary class="cursor-pointer text-xs text-slate-600 dark:text-slate-300">${escapeHtml(summaryLabel)}</summary>`;
+
+          const payloadWrap = document.createElement('div');
+          payloadWrap.className = 'mt-2 space-y-3';
+
+          payloads.forEach(item => {
+            const site = item?.site_id ? `Site ${escapeHtml(String(item.site_id))}` : '';
+            let device = '';
+            if (item?.device_id){
+              device = `Device ${escapeHtml(String(item.device_id))}`;
+            } else if (Array.isArray(item?.device_ids) && item.device_ids.length){
+              const ids = item.device_ids.map(d => escapeHtml(String(d))).join(', ');
+              device = `Device(s) ${ids}`;
+            }
+            const headerParts = [site, device].filter(Boolean).join(' • ');
+
+            const block = document.createElement('div');
+            block.className = 'rounded-lg border dark:border-slate-700 bg-white/70 dark:bg-slate-900/50 p-2';
+            block.innerHTML = headerParts
+              ? `<div class="text-xs font-medium mb-1 text-slate-600 dark:text-slate-300">${headerParts}</div>`
+              : '';
+
+            const addPayloadSection = (label, payload) => {
+              const labelEl = document.createElement('div');
+              labelEl.className = 'text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1';
+              labelEl.textContent = label;
+              const payloadPre = document.createElement('pre');
+              payloadPre.className = 'text-xs p-2 bg-white dark:bg-slate-900/60 border dark:border-slate-700 rounded overflow-auto max-h-80';
+              payloadPre.textContent = JSON.stringify(payload ?? {}, null, 2);
+              block.appendChild(labelEl);
+              block.appendChild(payloadPre);
+            };
+
+            if (key === 'apply_temporary_config'){
+              const sitePayload = item?.site_payload ?? item?.payload ?? {};
+              const devicePayload = item?.device_payload ?? {};
+              addPayloadSection('Site-level config (networks + port profiles)', sitePayload);
+              addPayloadSection('Device port configuration', devicePayload);
+            } else if (key === 'finalize_assignments'){
+              const sitePayload = item?.payload ?? {};
+              addPayloadSection('Site-level payload', sitePayload);
+              const devicePayloads = item?.device_payloads ?? {};
+              const deviceEntries = Object.entries(devicePayloads);
+              if (deviceEntries.length){
+                deviceEntries.forEach(([deviceId, payload]) => {
+                  const label = `Device ${deviceId} payload`;
+                  addPayloadSection(label, payload ?? {});
+                });
+              }
+            } else {
+              addPayloadSection('Request payload', item?.payload ?? {});
+            }
+            payloadWrap.appendChild(block);
+          });
+
+          details.appendChild(payloadWrap);
+          card.appendChild(details);
+        }
+
+        batchPhaseStatus.appendChild(card);
+      });
+
+      show(batchPhaseStatus);
+    }
 
     pushBatchBtn.addEventListener('click', async () => {
       batchOutput.innerHTML = '';
       batchStatus.textContent = '';
+      renderPhaseStatus({});
 
-      for (const r of rows){
-        if (!r.site_id || !r.device_id){
-          alert('Each row must have a Site and a Device selected.');
+      const siteAutomationActive = siteAutomationCheckboxes.some(cb => cb && cb.checked);
+      const lcmStep3Only = Boolean(removeTempConfig?.checked) && !applyTempConfig?.checked && !finalizeAssignments?.checked;
+      if (!lcmStep3Only){
+        for (const r of rows){
+          if (!r.site_id || !r.device_id){
+            alert('Each row must have a Site and a Device selected.');
+            return;
+          }
+        }
+      } else {
+        const cleanupSiteId = (lcmCleanupSite?.value || '').trim();
+        const cleanupDevices = getSelectedLcmCleanupDevices();
+        if (!cleanupSiteId || !cleanupDevices.length){
+          alert('Select a cleanup site and at least one switch for LCM Step 3.');
           return;
         }
       }
       if (pushBatchBtn.disabled) return;
 
-      const payloadRows = rows.map(r => ({
+      const previewOnly = isPreviewOnly();
+
+      const payloadRows = lcmStep3Only ? [] : rows.map(r => ({
         site_id: r.site_id,
         device_id: r.device_id,
         input_json: convertedItems[r.idx].json,
@@ -885,23 +1398,48 @@
 
       const form = new FormData();
       form.append('rows', JSON.stringify(payloadRows));
-      form.append('dry_run', dryRun.checked ? 'true' : 'false');
       form.append('tz', tz.value.trim());
       const mo = (modelOverride.value || '').trim();
       if (mo) form.append('model_override', mo);
+      form.append('apply_temp_config', applyTempConfig?.checked ? 'true' : 'false');
+      form.append('finalize_assignments', finalizeAssignments?.checked ? 'true' : 'false');
+      form.append('remove_temp_config', removeTempConfig?.checked ? 'true' : 'false');
+      form.append('preserve_legacy_vlans', preserveLegacyVlans?.checked ? 'true' : 'false');
+      const extraLegacyVlans = (preserveLegacyVlansExtra?.value || '').trim();
+      if (extraLegacyVlans) form.append('preserve_legacy_vlans_extra', extraLegacyVlans);
+      if (lcmStep3Only){
+        const cleanupSiteId = (lcmCleanupSite?.value || '').trim();
+        const cleanupDevices = getSelectedLcmCleanupDevices();
+        if (cleanupSiteId) form.append('lcm_cleanup_site_id', cleanupSiteId);
+        if (cleanupDevices.length) form.append('lcm_cleanup_device_ids', JSON.stringify(cleanupDevices));
+      }
+      form.append('stage_site_deployment', siteStage?.checked ? 'true' : 'false');
+      form.append('push_site_deployment', sitePush?.checked ? 'true' : 'false');
 
       pushBatchBtn.disabled = true;
-      pushBatchBtn.textContent = dryRun.checked ? 'Testing…' : 'Applying…';
+      pushBatchBtn.textContent = previewOnly ? 'Staging…' : 'Applying…';
 
       try {
         const res = await fetch('/api/push_batch', { method: 'POST', body: form });
         const data = await res.json();
+        if (!res.ok){
+          throw new Error(data?.error || `Request failed with status ${res.status}`);
+        }
 
         const okCount = (data.results || []).filter(r => r.ok).length;
         const total = (data.results || []).length;
-        batchStatus.textContent = `${okCount}/${total} ${dryRun.checked ? 'tests' : 'pushes'} succeeded.`;
+        const lcmActive = lcmAutomationCheckboxes.some(cb => cb && cb.checked);
+        if (siteAutomationActive){
+          const label = previewOnly ? 'stage/test run' : 'push';
+          batchStatus.textContent = `${okCount}/${total} ${label}${total === 1 ? '' : 's'} succeeded.`;
+        } else if (lcmActive){
+          batchStatus.textContent = `${okCount}/${total} configs ready for Lifecycle automation.`;
+        } else {
+          batchStatus.textContent = `${okCount}/${total} rows processed.`;
+        }
 
         renderBatchResults(data.results || []);
+        renderPhaseStatus(data.phase_status || {});
 
       } catch (e){
         batchOutput.innerHTML = `
@@ -909,6 +1447,8 @@
             <div class="font-medium">Unexpected error</div>
             <div class="text-sm mt-1">${escapeHtml(String(e))}</div>
           </div>`;
+        batchStatus.textContent = '';
+        renderPhaseStatus({});
       } finally {
         pushBatchBtn.disabled = false;
         syncPushBtnLabel();
@@ -917,6 +1457,17 @@
 
     function renderBatchResults(results){
       batchOutput.innerHTML = '';
+      const showSiteOutputs = siteAutomationCheckboxes.some(cb => cb && cb.checked);
+      if (!showSiteOutputs){
+        if (results.length){
+          batchOutput.innerHTML = `
+            <div class="rounded-lg border border-slate-200 bg-white p-3 text-sm dark:border-slate-700 dark:bg-slate-900/60">
+              <div class="font-medium text-slate-700 dark:text-slate-200">Site Deployment automation not selected</div>
+              <div class="mt-1 text-slate-600 dark:text-slate-300">Review the Lifecycle automation status cards above for the Mist payloads generated during this run.</div>
+            </div>`;
+        }
+        return;
+      }
       results.forEach((r, i) => {
         const fileLabel = convertedItems[rows[r.row_index]?.idx || 0]?.source_file || `Row ${i+1}`;
         const statusBadge = r.ok
@@ -968,12 +1519,48 @@
       });
     }
 
+    siteAutomationCheckboxes.forEach(cb => {
+      cb?.addEventListener('change', () => {
+        if (!cb) return;
+        if (cb === siteStage && cb.checked && sitePush){
+          sitePush.checked = false;
+        }
+        if (cb === sitePush && cb.checked && siteStage){
+          siteStage.checked = false;
+        }
+        updateAutomationLocks();
+      });
+    });
+
+    lcmAutomationCheckboxes.forEach(cb => {
+      cb?.addEventListener('change', () => {
+        updateAutomationLocks();
+      });
+    });
+    lcmStep3Toggle?.addEventListener('click', () => {
+      const shouldExpand = lcmStep3Body?.classList.contains('hidden');
+      setLcmStep3Expanded(Boolean(shouldExpand));
+    });
+    preserveLegacyVlans?.addEventListener('change', syncLegacyVlanExtras);
+    removeTempConfig?.addEventListener('change', syncLcmCleanupVisibility);
+    lcmCleanupSite?.addEventListener('change', async () => {
+      lcmCleanupSelectedIds = new Set();
+      if (lcmCleanupSite?.value) {
+        await renderLcmCleanupDeviceList(lcmCleanupSite.value);
+      } else if (lcmCleanupDevices) {
+        lcmCleanupDevices.textContent = 'Select a site to list switches.';
+      }
+    });
+
     // --- Init ---
     window.addEventListener('load', async () => {
       await fetchSites();
-      dryRun.checked = true;
-      pushBatchBtn.textContent = 'Test configuration for all';
+      syncPushBtnLabel();
+      updateAutomationLocks();
+      syncLegacyVlanExtras();
+      setLcmStep3Expanded(false);
     });
+
   </script>
 </body>
 </html>

@@ -10,7 +10,12 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
-from audit_actions import AP_RENAME_ACTION_ID, CLEAR_DNS_OVERRIDE_ACTION_ID
+from audit_actions import (
+    AP_RENAME_ACTION_ID,
+    CLEAR_DNS_OVERRIDE_ACTION_ID,
+    ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
+    SET_SITE_VARIABLES_ACTION_ID,
+)
 
 
 @dataclass
@@ -111,14 +116,55 @@ DEFAULT_REQUIRED_SITE_VARIABLES: Tuple[str, ...] = (
 )
 
 
-def _load_site_variable_list(var_name: str, default: Sequence[str]) -> Tuple[str, ...]:
+def _parse_site_variable_tokens(tokens: Sequence[str], fallback: Sequence[str]) -> Tuple[Tuple[str, ...], Dict[str, str]]:
+    required: List[str] = []
+    defaults: Dict[str, str] = {}
+    seen: Set[str] = set()
+
+    def _add_required(key: str) -> None:
+        normalized = key.strip()
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        required.append(normalized)
+
+    for token in tokens:
+        if not isinstance(token, str):
+            continue
+        text = token.strip()
+        if not text:
+            continue
+        if "=" in text:
+            key, value = text.split("=", 1)
+        elif ":" in text:
+            key, value = text.split(":", 1)
+        else:
+            key, value = text, None
+        _add_required(key)
+        if value is not None and str(value).strip():
+            defaults[key.strip()] = str(value).strip()
+
+    if not required:
+        for item in fallback:
+            if isinstance(item, str):
+                _add_required(item)
+
+    return tuple(required), defaults
+
+
+def load_site_variable_config(
+    var_name: str = "MIST_SITE_VARIABLES",
+    default: Sequence[str] = DEFAULT_REQUIRED_SITE_VARIABLES,
+) -> Tuple[Tuple[str, ...], Dict[str, str]]:
     raw = os.getenv(var_name)
-    if raw is None:
-        return tuple(default)
-    # Split on commas and strip whitespace while filtering empty entries
-    values = [item.strip() for item in raw.split(",")]
-    filtered = [value for value in values if value]
-    return tuple(filtered or default)
+    tokens = [item.strip() for item in raw.split(",")] if raw is not None else []
+    required, defaults = _parse_site_variable_tokens(tokens, default)
+    return (required or tuple(default)), defaults
+
+
+def _load_site_variable_list(var_name: str, default: Sequence[str]) -> Tuple[str, ...]:
+    required, _ = load_site_variable_config(var_name, default)
+    return required
 
 
 def _load_version_list_from_env(var_name: str) -> Tuple[str, ...]:
@@ -136,22 +182,48 @@ class RequiredSiteVariablesCheck(ComplianceCheck):
     severity = "error"
 
     def __init__(self, required_keys: Optional[Sequence[str]] = None) -> None:
-        default_keys = _load_site_variable_list("MIST_SITE_VARIABLES", DEFAULT_REQUIRED_SITE_VARIABLES)
+        default_keys, default_values = load_site_variable_config("MIST_SITE_VARIABLES", DEFAULT_REQUIRED_SITE_VARIABLES)
         if required_keys is None:
             self.required_keys: Tuple[str, ...] = tuple(default_keys)
         else:
             self.required_keys = tuple(required_keys)
+        self.variable_defaults: Dict[str, str] = default_values
 
     def run(self, context: SiteContext) -> List[Finding]:
         findings: List[Finding] = []
         variables = _collect_site_variables(context)
         missing = [key for key in self.required_keys if key not in variables or variables.get(key) in (None, "")]
+        actions_by_key: Dict[str, Dict[str, Any]] = {}
         for key in missing:
+            if key not in self.variable_defaults:
+                continue
+            value = self.variable_defaults.get(key)
+            if value in (None, ""):
+                continue
+            precheck_messages = [
+                f"Will set {key} using environment defaults."
+            ]
+            actions_by_key[key] = {
+                "id": SET_SITE_VARIABLES_ACTION_ID,
+                "label": "Set required site variables",
+                "button_label": "1 Click Fix Now",
+                "site_ids": [context.site_id],
+                "metadata": {
+                    "variables": {key: value},
+                    "prechecks": {
+                        "can_run": True,
+                        "messages": precheck_messages,
+                    },
+                },
+            }
+        for key in missing:
+            action = actions_by_key.get(key)
             findings.append(
                 Finding(
                     site_id=context.site_id,
                     site_name=context.site_name,
                     message=f"Site variable '{key}' is not defined.",
+                    actions=[action] if action else None,
                 )
             )
         return findings
@@ -1722,6 +1794,97 @@ class FirmwareManagementCheck(ComplianceCheck):
         return findings
 
 
+class CloudManagementCheck(ComplianceCheck):
+    id = "cloud_management"
+    name = "Cloud Management"
+    description = "Ensure switches are managed by Juniper Mist cloud."
+    severity = "warning"
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        findings: List[Finding] = []
+        for device in context.devices:
+            if not isinstance(device, dict):
+                continue
+            if not _is_switch(device):
+                continue
+            disable_auto_config = device.get("disable_auto_config")
+            if disable_auto_config is not True:
+                continue
+
+            device_id = str(device.get("id")) if device.get("id") is not None else None
+            device_name = _normalize_site_name(device) or device_id or "device"
+            actions: Optional[List[Dict[str, Any]]] = None
+            if device_id:
+                actions = [
+                    {
+                        "id": ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
+                        "label": "Enable cloud management",
+                        "button_label": "1 Click Fix Now",
+                        "site_ids": [context.site_id],
+                        "devices": [
+                            {
+                                "site_id": context.site_id,
+                                "device_id": device_id,
+                            }
+                        ],
+                        "metadata": {
+                            "device_id": device_id,
+                            "device_name": device_name,
+                        },
+                    }
+                ]
+            findings.append(
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    device_id=device_id,
+                    device_name=device_name,
+                    message=(
+                        f"Switch '{device_name}' configuration is currently locally managed "
+                        "and not managed by Juniper Mist cloud."
+                    ),
+                    details={"disable_auto_config": disable_auto_config},
+                    actions=actions,
+                )
+            )
+        return findings
+
+
+class SpareSwitchPresenceCheck(ComplianceCheck):
+    id = "spare_switch_presence"
+    name = "Spare switch presence"
+    description = "Ensure each site has at least one spare switch available."
+    severity = "warning"
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        findings: List[Finding] = []
+
+        switches = [device for device in context.devices if isinstance(device, dict) and _is_switch(device)]
+        if not switches:
+            return findings
+
+        spare_count = 0
+        for device in switches:
+            role = device.get("role")
+            if isinstance(role, str) and role.strip().lower() == "spare":
+                spare_count += 1
+
+        if spare_count == 0:
+            findings.append(
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    message="Site does not have a switch with role 'spare'.",
+                    details={
+                        "total_switches": len(switches),
+                        "spare_switches": spare_count,
+                    },
+                )
+            )
+
+        return findings
+
+
 class DeviceNamingConventionCheck(ComplianceCheck):
     id = "device_naming_convention"
     name = "Device naming convention"
@@ -2054,13 +2217,25 @@ class SiteAuditRunner:
                         break
             failing_site_ids = sorted({finding.site_id for finding in check_findings})
             actions = check.suggest_actions(contexts, check_findings) or []
+            findings_payload: List[Dict[str, Any]] = []
+            site_level_findings: List[Dict[str, Any]] = []
+            device_level_findings: List[Dict[str, Any]] = []
+            for finding in check_findings:
+                payload = finding.as_dict(check.severity)
+                findings_payload.append(payload)
+                if finding.device_id or finding.device_name:
+                    device_level_findings.append(payload)
+                else:
+                    site_level_findings.append(payload)
             results.append(
                 {
                     "id": check.id,
                     "name": check.name,
                     "description": check.description,
                     "severity": check.severity,
-                    "findings": [finding.as_dict(check.severity) for finding in check_findings],
+                    "findings": findings_payload,
+                    "site_level_findings": site_level_findings,
+                    "device_level_findings": device_level_findings,
                     "failing_sites": failing_site_ids,
                     "passing_sites": max(total_sites - len(failing_site_ids), 0),
                     "actions": actions,
@@ -2082,6 +2257,8 @@ DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
     SwitchTemplateConfigurationCheck(),
     ConfigurationOverridesCheck(),
     FirmwareManagementCheck(),
+    CloudManagementCheck(),
+    SpareSwitchPresenceCheck(),
     DeviceNamingConventionCheck(),
     DeviceDocumentationCheck(),
 )
