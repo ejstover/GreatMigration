@@ -111,26 +111,28 @@
               <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and choose which site + switches should receive the final Juniper configuration.</p>
             </div>
           </div>
-          <label class="tooltip relative flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
-            <span class="flex items-start gap-3">
-              <input id="remove_temp_config" type="checkbox" class="mt-1 h-4 w-4" />
-              <span>
-                <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 3 · Deploy</span>
-                <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Deploy the final Juniper config</span>
-                <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and select the site + switches that should receive the final Juniper configuration.</span>
-              </span>
-            </span>
-            <div class="space-y-2 text-xs text-slate-600 dark:text-slate-300">
-              <span class="inline-flex items-start gap-2 rounded-md bg-white/60 px-2 py-1 text-xs text-slate-700 shadow-sm ring-1 ring-slate-200 dark:bg-slate-900/60 dark:text-slate-200 dark:ring-slate-700">
-                <input id="preserve_legacy_vlans" type="checkbox" class="mt-0.5 h-4 w-4" checked />
-                <span>Preserve legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default) and their port profiles during cleanup.</span>
-              </span>
-              <label class="flex flex-col gap-1">
-                <span class="font-semibold text-slate-700 dark:text-slate-200">Additional VLANs to preserve (optional)</span>
-                <input id="preserve_legacy_vlans_extra" type="text" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="e.g. 42,100-110" />
-                <span>Enter ad-hoc VLAN IDs or ranges to keep alongside the defaults for this run.</span>
+          <div class="tooltip relative flex flex-col gap-4 rounded-xl border border-slate-200 bg-slate-50/60 p-4 shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/40">
+            <div class="flex items-start justify-between gap-4">
+              <label class="flex items-start gap-3">
+                <input id="remove_temp_config" type="checkbox" class="mt-1 h-4 w-4" />
+                <span>
+                  <span class="block text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">LCM Step 3 · Deploy</span>
+                  <span class="block text-sm font-medium text-slate-800 dark:text-slate-100">Deploy the final Juniper config</span>
+                  <span class="mt-1 block text-xs text-slate-600 dark:text-slate-300">Clear the staged lifecycle settings and select the site + switches that should receive the final Juniper configuration.</span>
+                </span>
               </label>
-              <div id="lcm_cleanup_options" class="hidden space-y-2 text-xs text-slate-600 dark:text-slate-300">
+              <div class="flex items-center gap-2">
+                <span class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
+                <button id="lcm_step3_toggle" type="button" class="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800" aria-expanded="false">
+                  <span class="sr-only">Toggle LCM Step 3 details</span>
+                  <svg class="h-4 w-4 transition-transform" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.25 8.27a.75.75 0 01-.02-1.06z" clip-rule="evenodd" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div id="lcm_step3_body" class="hidden space-y-4 text-xs text-slate-600 dark:text-slate-300">
+              <div id="lcm_cleanup_options" class="space-y-3">
                 <label class="flex flex-col gap-1">
                   <span class="font-semibold text-slate-700 dark:text-slate-200">Cleanup site</span>
                   <select id="lcm_cleanup_site" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
@@ -145,10 +147,20 @@
                   </div>
                 </div>
               </div>
+              <div class="space-y-2 rounded-lg border border-slate-200 bg-white/70 p-3 shadow-sm dark:border-slate-700 dark:bg-slate-900/50">
+                <label class="inline-flex items-start gap-2 text-xs text-slate-700 dark:text-slate-200">
+                  <input id="preserve_legacy_vlans" type="checkbox" class="mt-0.5 h-4 w-4" checked />
+                  <span>Preserve legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default) and their port profiles during cleanup.</span>
+                </label>
+                <label class="flex flex-col gap-1">
+                  <span class="font-semibold text-slate-700 dark:text-slate-200">Additional VLANs to preserve (optional)</span>
+                  <input id="preserve_legacy_vlans_extra" type="text" class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="e.g. 42,100-110" />
+                  <span>Enter ad-hoc VLAN IDs or ranges to keep alongside the defaults for this run.</span>
+                </label>
+              </div>
             </div>
-            <span class="absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-700 dark:bg-sky-900 dark:text-sky-200">?</span>
             <span class="tip">Resets the temporary lifecycle payload on Mist while preserving legacy VLANs ({{LEGACY_VLAN_DEFAULTS}} by default, plus any extra IDs you list). Select the site and switches that should receive the final Juniper configuration.</span>
-          </label>
+          </div>
         </div>
       </section>
 
@@ -369,6 +381,8 @@
     const lcmCleanupOptions = document.getElementById('lcm_cleanup_options');
     const lcmCleanupSite = document.getElementById('lcm_cleanup_site');
     const lcmCleanupDevices = document.getElementById('lcm_cleanup_devices');
+    const lcmStep3Toggle = document.getElementById('lcm_step3_toggle');
+    const lcmStep3Body = document.getElementById('lcm_step3_body');
     const siteStage = document.getElementById('site_stage');
     const sitePush = document.getElementById('site_push');
 
@@ -411,6 +425,16 @@
       const enabled = Boolean(preserveLegacyVlans?.checked);
       preserveLegacyVlansExtra.disabled = !enabled;
       preserveLegacyVlansExtra.classList.toggle('opacity-60', !enabled);
+    }
+
+    function setLcmStep3Expanded(expanded){
+      if (!lcmStep3Body) return;
+      lcmStep3Body.classList.toggle('hidden', !expanded);
+      if (lcmStep3Toggle){
+        lcmStep3Toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        const icon = lcmStep3Toggle.querySelector('svg');
+        if (icon) icon.classList.toggle('rotate-180', expanded);
+      }
     }
 
     function updateAutomationLocks(){
@@ -946,25 +970,10 @@
 
     function syncLcmCleanupVisibility(){
       if (!lcmCleanupOptions) return;
-      const shouldShow = Boolean(removeTempConfig?.checked);
-      lcmCleanupOptions.classList.toggle('hidden', !shouldShow);
-      if (batchSection){
-        if (shouldShow){
-          show(batchSection);
-        } else if (!convertedItems.length){
-          hide(batchSection);
-        }
-      }
-      if (!shouldShow){
-        lcmCleanupSelectedIds = new Set();
-        if (lcmCleanupSite) lcmCleanupSite.value = '';
-        if (lcmCleanupDevices) lcmCleanupDevices.textContent = 'Select a site to list switches.';
-      } else {
-        renderLcmCleanupSiteOptions();
-        const siteId = lcmCleanupSite?.value || '';
-        if (siteId) {
-          renderLcmCleanupDeviceList(siteId);
-        }
+      renderLcmCleanupSiteOptions();
+      const siteId = lcmCleanupSite?.value || '';
+      if (siteId) {
+        renderLcmCleanupDeviceList(siteId);
       }
     }
 
@@ -1518,6 +1527,10 @@
         updateAutomationLocks();
       });
     });
+    lcmStep3Toggle?.addEventListener('click', () => {
+      const shouldExpand = lcmStep3Body?.classList.contains('hidden');
+      setLcmStep3Expanded(Boolean(shouldExpand));
+    });
     preserveLegacyVlans?.addEventListener('change', syncLegacyVlanExtras);
     removeTempConfig?.addEventListener('change', syncLcmCleanupVisibility);
     lcmCleanupSite?.addEventListener('change', async () => {
@@ -1535,6 +1548,7 @@
       syncPushBtnLabel();
       updateAutomationLocks();
       syncLegacyVlanExtras();
+      setLcmStep3Expanded(false);
     });
 
   </script>
