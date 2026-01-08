@@ -3992,6 +3992,135 @@ def _derive_port_config_from_config_cmd(
     return filtered
 
 
+def _derive_port_config_from_port_profiles(
+    base_url: str,
+    token: str,
+    site_id: str,
+    device_id: str,
+) -> Dict[str, Any]:
+    headers = _mist_headers(token)
+
+    device_info = _mist_get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/devices/{device_id}",
+        optional=True,
+    )
+    if not isinstance(device_info, Mapping):
+        return {}
+
+    port_config = device_info.get("port_config")
+    if not isinstance(port_config, Mapping):
+        return {}
+
+    derived_settings = _mist_get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/setting/derived",
+        optional=True,
+    )
+
+    switch_section = (
+        derived_settings.get("switch")
+        if isinstance(derived_settings, Mapping)
+        and isinstance(derived_settings.get("switch"), Mapping)
+        else {}
+    )
+
+    port_usages = derived_settings.get("port_usages") if isinstance(derived_settings, Mapping) else {}
+    if not isinstance(port_usages, Mapping):
+        port_usages = switch_section.get("port_usages") if isinstance(switch_section, Mapping) else {}
+    if not isinstance(port_usages, Mapping):
+        port_usages = {}
+
+    networks_raw = (
+        derived_settings.get("networks")
+        if isinstance(derived_settings, Mapping)
+        else None
+    )
+    if not networks_raw:
+        networks_raw = (
+            derived_settings.get("vlans")
+            if isinstance(derived_settings, Mapping)
+            else None
+        )
+    if not networks_raw and isinstance(switch_section, Mapping):
+        networks_raw = switch_section.get("networks") or switch_section.get("vlans")
+
+    network_map = _normalize_network_map(networks_raw, sanitize=False)
+    vlan_by_name: Dict[str, Optional[int]] = {}
+    for name, data in network_map.items():
+        if not isinstance(name, str) or not isinstance(data, Mapping):
+            continue
+        vlan_by_name[name] = _int_or_none(data.get("vlan_id") or data.get("id") or data.get("vlan"))
+
+    def _vlan_for_network(name: Optional[str]) -> Optional[int]:
+        if not name:
+            return None
+        return vlan_by_name.get(str(name))
+
+    def _vlan_list_for_networks(names: Any) -> List[int]:
+        values: List[int] = []
+        if isinstance(names, (list, tuple, set)):
+            for item in names:
+                vlan_id = _vlan_for_network(str(item))
+                if vlan_id is not None:
+                    values.append(vlan_id)
+        return values
+
+    rules = pm.RULES_DOC.get("rules", []) if isinstance(pm.RULES_DOC, Mapping) else []
+
+    derived_config: Dict[str, Dict[str, Any]] = {}
+    for port_id, entry in port_config.items():
+        if not isinstance(port_id, str) or not port_id.strip():
+            continue
+        if not isinstance(entry, Mapping):
+            continue
+        usage_name = str(entry.get("usage") or "").strip()
+        usage_config = port_usages.get(usage_name) if usage_name else None
+        if not isinstance(usage_config, Mapping):
+            usage_config = {}
+
+        port_network = usage_config.get("port_network")
+        voip_network = usage_config.get("voip_network")
+        native_network = usage_config.get("native_network")
+        networks = usage_config.get("networks") or usage_config.get("dynamic_vlan_networks") or []
+
+        intf = {
+            "name": port_id,
+            "juniper_if": port_id,
+            "mode": usage_config.get("mode"),
+            "description": entry.get("description") or usage_config.get("description"),
+            "port_network": port_network,
+            "voip_network": voip_network,
+            "native_network": native_network,
+            "networks": networks,
+            "data_vlan": _vlan_for_network(port_network),
+            "voice_vlan": _vlan_for_network(voip_network),
+            "native_vlan": _vlan_for_network(native_network),
+            "allowed_vlans": _vlan_list_for_networks(networks),
+        }
+
+        chosen_usage: Optional[str] = None
+        for rule in rules:
+            if not isinstance(rule, Mapping):
+                continue
+            when = rule.get("when", {}) or {}
+            if not isinstance(when, Mapping):
+                continue
+            if pm.evaluate_rule(when, intf):
+                set_cfg = rule.get("set", {}) or {}
+                if isinstance(set_cfg, Mapping):
+                    chosen_usage = set_cfg.get("usage") or chosen_usage
+                break
+
+        derived_config[port_id] = {
+            "usage": chosen_usage or "blackhole",
+        }
+
+    return derived_config
+
+
 def _apply_temporary_config_for_rows(
     base_url: str,
     token: str,
@@ -4388,15 +4517,15 @@ def _remove_temporary_config_for_rows(
         if not site_id or not device_id:
             continue
         try:
-            port_config = _derive_port_config_from_config_cmd(base_url, token, site_id, device_id)
+            port_config = _derive_port_config_from_port_profiles(base_url, token, site_id, device_id)
             if port_config:
                 derived_payloads[key] = {"port_config": port_config}
             else:
-                derivation_warnings[key] = "No switchport details discovered in config_cmd output."
+                derivation_warnings[key] = "No switchport port_config details discovered from Mist."
         except MistAPIError as exc:
-            derivation_warnings[key] = f"Unable to fetch config_cmd for device: {exc}"
+            derivation_warnings[key] = f"Unable to fetch device details for port profile conversion: {exc}"
         except Exception as exc:  # pragma: no cover - network/parse failures reported to UI
-            derivation_warnings[key] = f"Unable to derive port configuration from config_cmd: {exc}"
+            derivation_warnings[key] = f"Unable to derive port configuration from port profile usage: {exc}"
 
     def _collect_site_cleanup_targets(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
         sites: Dict[str, Dict[str, Any]] = {}
