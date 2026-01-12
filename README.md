@@ -16,7 +16,7 @@ GreatMigration is a network automation toolkit designed to accelerate moves to J
   - [Quick start scripts](#quick-start-scripts)
   - [Manual setup](#manual-setup)
 - [Extras: LDAP, syslog, and logging](#extras-ldap-syslog-and-logging)
-- [Backend Python components (ELI15)](#backend-python-components-eli15)
+- [Backend Python components](#backend-python-components-eli15)
 - [Configuration reference](#configuration-reference)
 - [Firewall requirements](#firewall-requirements)
 - [Operational tips](#operational-tips)
@@ -237,7 +237,7 @@ Both scripts read and reuse values in `backend/.env`, so follow-up runs only pro
 
 ---
 
-## Backend Python components (ELI15)
+## Backend Python components
 
 Think of the backend as a set of small “helpers” that each do one job:
 
