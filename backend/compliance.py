@@ -112,12 +112,22 @@ DEFAULT_REQUIRED_SITE_VARIABLES: Tuple[str, ...] = (
 )
 
 COMPLIANCE_RULES_PATH = Path(__file__).resolve().parent / "compliance_rules.json"
+COMPLIANCE_RULES_SAMPLE_PATH = Path(__file__).resolve().parent / "compliance_rules.sample.json"
 
 
 def _load_compliance_rule_map() -> Dict[str, str]:
-    try:
-        data = json.loads(COMPLIANCE_RULES_PATH.read_text(encoding="utf-8"))
-    except Exception:
+    data = None
+    if COMPLIANCE_RULES_PATH.exists():
+        try:
+            data = json.loads(COMPLIANCE_RULES_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            data = None
+    if data is None and COMPLIANCE_RULES_SAMPLE_PATH.exists():
+        try:
+            data = json.loads(COMPLIANCE_RULES_SAMPLE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            data = None
+    if data is None:
         return {}
 
     if not isinstance(data, dict):

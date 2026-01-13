@@ -217,8 +217,11 @@ README_URL = "https://github.com/jacob-hopkins/GreatMigration#readme"
 # Where to send users when they click the help icon
 HELP_URL = os.getenv("HELP_URL", README_URL)
 RULES_PATH = Path(__file__).resolve().parent / "port_rules.json"
+RULES_SAMPLE_PATH = Path(__file__).resolve().parent / "port_rules.sample.json"
 REPLACEMENTS_PATH = Path(__file__).resolve().parent / "replacement_rules.json"
+REPLACEMENTS_SAMPLE_PATH = Path(__file__).resolve().parent / "replacement_rules.sample.json"
 COMPLIANCE_RULES_PATH = Path(__file__).resolve().parent / "compliance_rules.json"
+COMPLIANCE_RULES_SAMPLE_PATH = Path(__file__).resolve().parent / "compliance_rules.sample.json"
 COMPLIANCE_ACTIONS_PATH = Path(__file__).resolve().parent / "compliance_actions.json"
 NETBOX_DT_URL = os.getenv(
     "NETBOX_DT_URL",
@@ -572,6 +575,25 @@ def _coerce_epoch_seconds(value: Any) -> Optional[float]:
     return candidate
 
 
+def _load_json_doc(
+    path: Path,
+    *,
+    sample_path: Optional[Path] = None,
+    default: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return default or {}
+    if sample_path and sample_path.exists():
+        try:
+            return json.loads(sample_path.read_text(encoding="utf-8"))
+        except Exception:
+            return default or {}
+    return default or {}
+
+
 def _extract_last_seen_timestamp(device: Mapping[str, Any]) -> Optional[float]:
     keys = ("last_seen", "lastSeen")
     candidates: List[Any] = []
@@ -828,11 +850,10 @@ def _gather_site_contexts(
 @app.get("/api/rules")
 def api_get_rules():
     """Return current rule document."""
-    try:
-        data = json.loads(RULES_PATH.read_text(encoding="utf-8"))
-        return {"ok": True, "doc": data}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    data = _load_json_doc(RULES_PATH, sample_path=RULES_SAMPLE_PATH, default={"rules": []})
+    if not isinstance(data, dict):
+        data = {"rules": []}
+    return {"ok": True, "doc": data}
 
 
 @app.post("/api/rules")
@@ -855,7 +876,13 @@ def api_save_rules(request: Request, doc: Dict[str, Any] = Body(...)):
 def api_get_compliance_rules(request: Request):
     try:
         require_push_rights(current_user(request))
-        data = json.loads(COMPLIANCE_RULES_PATH.read_text(encoding="utf-8"))
+        data = _load_json_doc(
+            COMPLIANCE_RULES_PATH,
+            sample_path=COMPLIANCE_RULES_SAMPLE_PATH,
+            default={"rules": [], "logic_rules": []},
+        )
+        if not isinstance(data, dict):
+            data = {"rules": [], "logic_rules": []}
         return {"ok": True, "doc": data}
     except HTTPException as exc:
         raise exc
@@ -970,10 +997,7 @@ def api_save_compliance_rules(request: Request, doc: Dict[str, Any] = Body(...))
 
 @app.get("/api/replacements")
 def api_get_replacements():
-    try:
-        data = json.loads(REPLACEMENTS_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        data = {}
+    data = _load_json_doc(REPLACEMENTS_PATH, sample_path=REPLACEMENTS_SAMPLE_PATH, default={})
 
     if not isinstance(data, dict):
         data = {}
