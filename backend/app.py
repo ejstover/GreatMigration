@@ -934,6 +934,9 @@ def api_save_compliance_rules(request: Request, doc: Dict[str, Any] = Body(...))
             for item in logic_raw:
                 if not isinstance(item, dict):
                     continue
+                platform = str(item.get("platform", "")).strip().lower()
+                if not platform:
+                    platform = "mist"
                 scope = str(item.get("scope", "")).strip().lower()
                 if scope not in {"org", "site", "device"}:
                     scope = "site"
@@ -977,6 +980,7 @@ def api_save_compliance_rules(request: Request, doc: Dict[str, Any] = Body(...))
                     )
                 cleaned_logic.append(
                     {
+                        "platform": platform,
                         "scope": scope,
                         "name": name,
                         "action_id": action_id,

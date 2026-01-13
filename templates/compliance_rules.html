@@ -58,6 +58,7 @@
         <thead class="bg-slate-100 dark:bg-slate-800">
           <tr>
             <th class="p-2 text-left"></th>
+            <th class="p-2 text-left">Platform</th>
             <th class="p-2 text-left">Scope</th>
             <th class="p-2 text-left">Rule name</th>
             <th class="p-2 text-left">Action (API)</th>
@@ -109,6 +110,9 @@
     const saveBtns = document.querySelectorAll('.save_rules');
     const cancelBtns = document.querySelectorAll('.cancel_rules');
     const saveStatus = document.getElementById('save_status');
+    let platformOptions = [
+      {value: 'mist', label: 'Mist'},
+    ];
     const scopeOptions = [
       {value: 'org', label: 'Org'},
       {value: 'site', label: 'Site'},
@@ -166,12 +170,46 @@
       return cleaned;
     };
 
-    const getActionsForScope = (scope) => {
-      return actionsDoc.scopes?.[scope] || [];
+    const titleCase = (value) => {
+      return value.replace(/[-_]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
     };
 
-    const findAction = (scope, actionId) => {
-      return getActionsForScope(scope).find(action => action.id === actionId);
+    const derivePlatformOptions = () => {
+      const platforms = new Map();
+      Object.values(actionsDoc.scopes || {}).forEach(actions => {
+        if (!Array.isArray(actions)) {
+          return;
+        }
+        actions.forEach(action => {
+          const raw = String(action?.platform || '').trim().toLowerCase();
+          if (raw) {
+            platforms.set(raw, {value: raw, label: titleCase(raw)});
+          }
+        });
+      });
+      platformOptions = platforms.size
+        ? [...platforms.values()]
+        : [{value: 'mist', label: 'Mist'}];
+    };
+
+    const normalizePlatform = (value) => {
+      const cleaned = String(value || '').trim().toLowerCase();
+      if (platformOptions.some(opt => opt.value === cleaned)) {
+        return cleaned;
+      }
+      return platformOptions[0]?.value || 'mist';
+    };
+
+    const getActionsForScope = (platform, scope) => {
+      const actions = actionsDoc.scopes?.[scope] || [];
+      return actions.filter(action => {
+        const actionPlatform = String(action?.platform || '').trim().toLowerCase();
+        return actionPlatform ? actionPlatform === platform : true;
+      });
+    };
+
+    const findAction = (platform, scope, actionId) => {
+      return getActionsForScope(platform, scope).find(action => action.id === actionId);
     };
 
     const buildOptions = (options, selected, placeholder) => {
@@ -185,16 +223,16 @@
       return base + opts.join('');
     };
 
-    const updateActionSelect = (select, scope, currentValue) => {
-      const actions = getActionsForScope(scope);
+    const updateActionSelect = (select, platform, scope, currentValue) => {
+      const actions = getActionsForScope(platform, scope);
       select.innerHTML = buildOptions(actions, currentValue, 'Select an action');
       if (!select.value && actions.length) {
         select.value = actions[0].id;
       }
     };
 
-    const updateFieldSelect = (select, scope, actionId, currentValue) => {
-      const action = findAction(scope, actionId);
+    const updateFieldSelect = (select, platform, scope, actionId, currentValue) => {
+      const action = findAction(platform, scope, actionId);
       const fields = action?.fields?.map(field => ({value: field, label: field})) || [];
       select.innerHTML = buildOptions(fields, currentValue, 'Select a field');
       if (!select.value && fields.length) {
@@ -213,6 +251,7 @@
     };
 
     const normalizeRule = (rule) => {
+      const platform = normalizePlatform(rule.platform);
       const scope = scopeOptions.some(opt => opt.value === rule.scope) ? rule.scope : 'site';
       const name = ensureScopePrefix(rule.name || '', scope);
       let conditions = [];
@@ -232,6 +271,7 @@
         conditions = [normalizeCondition({join: 'and'})];
       }
       return {
+        platform,
         scope,
         name,
         action_id: rule.action_id || '',
@@ -256,8 +296,8 @@
       });
     };
 
-    const updateConditionFieldOptions = (container, scope, actionId) => {
-      const action = findAction(scope, actionId);
+    const updateConditionFieldOptions = (container, platform, scope, actionId) => {
+      const action = findAction(platform, scope, actionId);
       const fields = action?.fields?.map(field => ({value: field, label: field})) || [];
       container.querySelectorAll('.field').forEach(select => {
         const currentValue = select.value;
@@ -311,13 +351,19 @@
       rulesDoc.logic_rules.forEach((rule, idx)=>{
         const tr=document.createElement('tr');
         tr.dataset.idx=idx;
+        const platform = normalizePlatform(rule.platform);
         const scope = rule.scope;
-        const actions = getActionsForScope(scope);
+        const actions = getActionsForScope(platform, scope);
         const actionId = rule.action_id || (actions[0]?.id ?? '');
-        const action = findAction(scope, actionId);
+        const action = findAction(platform, scope, actionId);
         const fields = action?.fields?.map(field => ({value: field, label: field})) || [];
         tr.innerHTML = `
           <td class="p-2 drag-handle" draggable="true">☰</td>
+          <td class="p-2 align-top">
+            <select class="border rounded p-1 w-max whitespace-nowrap platform bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700 text-xs">
+              ${buildOptions(platformOptions, platform)}
+            </select>
+          </td>
           <td class="p-2 align-top">
             <select class="border rounded p-1 w-max whitespace-nowrap scope bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700 text-xs">
               ${buildOptions(scopeOptions, scope)}
@@ -336,6 +382,7 @@
             <button class="add-condition text-xs text-sky-600">+ condition</button>
           </td>
           <td class="p-2 align-top text-right"><button class="del text-red-500">✕</button></td>`;
+        const platformSelect = tr.querySelector('.platform');
         const scopeSelect = tr.querySelector('.scope');
         const nameInput = tr.querySelector('.rule-name');
         const actionSelect = tr.querySelector('.action');
@@ -351,11 +398,19 @@
           }
         };
 
+        const refreshActionsForSelection = () => {
+          updateActionSelect(actionSelect, platformSelect.value, scopeSelect.value, '');
+          updateConditionFieldOptions(conditionsContainer, platformSelect.value, scopeSelect.value, actionSelect.value);
+        };
+
+        platformSelect.addEventListener('change', () => {
+          refreshActionsForSelection();
+        });
+
         scopeSelect.addEventListener('change',()=>{
           const newScope = scopeSelect.value;
           nameInput.value = ensureScopePrefix(nameInput.value, newScope);
-          updateActionSelect(actionSelect, newScope, '');
-          updateConditionFieldOptions(conditionsContainer, newScope, actionSelect.value);
+          refreshActionsForSelection();
         });
 
         nameInput.addEventListener('focus', lockNamePrefix);
@@ -374,7 +429,7 @@
         });
 
         actionSelect.addEventListener('change',()=>{
-          updateConditionFieldOptions(conditionsContainer, scopeSelect.value, actionSelect.value);
+          updateConditionFieldOptions(conditionsContainer, platformSelect.value, scopeSelect.value, actionSelect.value);
         });
 
         const attachConditionDelete = (row) => {
@@ -408,10 +463,11 @@
 
     function syncRulesFromDOM(){
       rulesDoc.logic_rules = [...tbody.querySelectorAll('tr')].map(tr=>{
+        const platform = normalizePlatform(tr.querySelector('.platform').value.trim());
         const scope = tr.querySelector('.scope').value.trim();
         const name = ensureScopePrefix(tr.querySelector('.rule-name').value, scope);
         const actionId = tr.querySelector('.action').value.trim();
-        const action = findAction(scope, actionId);
+        const action = findAction(platform, scope, actionId);
         const conditions = [...tr.querySelectorAll('.condition-row')].map((row, idx) => {
           const join = idx === 0 ? 'and' : row.querySelector('.join').value.trim();
           const field = row.querySelector('.field').value.trim();
@@ -425,6 +481,7 @@
           };
         });
         return {
+          platform,
           scope,
           name,
           action_id: actionId,
@@ -447,6 +504,7 @@
     addRuleBtns.forEach(btn => btn.addEventListener('click',()=>{
       syncRulesFromDOM();
       rulesDoc.logic_rules.push({
+        platform: platformOptions[0]?.value || 'mist',
         scope: 'site',
         name: 'site - ',
         action_id: '',
@@ -491,6 +549,7 @@
         .then(d=>{
           if (d.ok) {
             actionsDoc = d.doc || {scopes: {}};
+            derivePlatformOptions();
           } else {
             saveStatus.textContent='Error: ' + (d.error || 'loading actions');
           }
