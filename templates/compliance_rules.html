@@ -263,7 +263,7 @@
 
     const createConditionRow = (condition, fields) => {
       const row = document.createElement('div');
-      row.className = 'condition-row flex flex-wrap items-center gap-2 mb-2';
+      row.className = 'condition-row flex flex-nowrap items-center gap-2 mb-2';
       const joinLabel = document.createElement('span');
       joinLabel.className = 'join-label text-xs';
       joinLabel.textContent = 'if';
@@ -272,15 +272,15 @@
       joinSelect.innerHTML = buildOptions(joinOptions, condition.join);
 
       const fieldSelect = document.createElement('select');
-      fieldSelect.className = 'field border rounded p-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700 text-xs';
+      fieldSelect.className = 'field border rounded p-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700 text-xs shrink-0';
       fieldSelect.innerHTML = buildOptions(fields, condition.field, 'Select a field');
 
       const operatorSelect = document.createElement('select');
-      operatorSelect.className = 'operator border rounded p-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700 text-xs';
+      operatorSelect.className = 'operator border rounded p-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700 text-xs shrink-0';
       operatorSelect.innerHTML = buildOptions(operatorOptions, condition.operator);
 
       const expectedInput = document.createElement('input');
-      expectedInput.className = 'expected border rounded p-1 flex-1 min-w-[10rem] bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700 text-xs';
+      expectedInput.className = 'expected border rounded p-1 w-40 min-w-[8rem] bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700 text-xs shrink-0';
       expectedInput.value = condition.expected_value || '';
       expectedInput.placeholder = 'true, 42, "string"';
 
