@@ -46,6 +46,7 @@ TZ        = "America/New_York"
 # Rules (first match wins) — kept compact & readable
 # -------------------------------
 RULES_PATH = Path(__file__).with_name("port_rules.json")
+RULES_SAMPLE_PATH = Path(__file__).with_name("port_rules.sample.json")
 
 
 def load_rules(path: Path = RULES_PATH) -> Dict[str, Any]:
@@ -54,7 +55,14 @@ def load_rules(path: Path = RULES_PATH) -> Dict[str, Any]:
         with path.open("r", encoding="utf-8") as fh:
             return json.load(fh)
     except Exception:
-        return {"rules": []}
+        pass
+    if RULES_SAMPLE_PATH.exists():
+        try:
+            with RULES_SAMPLE_PATH.open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            pass
+    return {"rules": []}
 
 
 RULES_DOC: Dict[str, Any] = load_rules()

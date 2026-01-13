@@ -19,3 +19,5 @@ backend/port_rules.json
 backend/device_map.json
 # Local hardware replacement rules
 backend/replacement_rules.json
+# Local compliance rules
+backend/compliance_rules.json
