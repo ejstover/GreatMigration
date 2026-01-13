@@ -282,23 +282,11 @@
       expectedInput.value = condition.expected_value || '';
       expectedInput.placeholder = 'true, 42, "string"';
 
-      const del = document.createElement('button');
-      del.textContent = '✕';
-      del.className = 'text-red-500 text-sm h-7 w-7 inline-flex items-center justify-center rounded shrink-0 hover:bg-red-900/20';
-      del.addEventListener('click', () => {
-        const parent = row.parentElement;
-        row.remove();
-        if (parent) {
-          updateConditionJoins(parent);
-        }
-      });
-
       row.appendChild(joinLabel);
       row.appendChild(joinSelect);
       row.appendChild(fieldSelect);
       row.appendChild(operatorSelect);
       row.appendChild(expectedInput);
-      row.appendChild(del);
       return row;
     };
 
