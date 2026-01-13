@@ -36,7 +36,7 @@
       </div>
     </header>
 
-    <div class="max-w-5xl mx-auto p-6">
+    <div class="max-w-7xl mx-auto p-6">
     <div class="mb-4 flex items-center justify-between">
       <h2 class="text-lg font-medium">Compliance Rules</h2>
       <div class="flex items-center gap-2">
@@ -46,8 +46,8 @@
       </div>
     </div>
     <p class="mb-4 text-sm text-slate-600 dark:text-slate-300">Define scoped compliance checks by selecting an action, field, operator, and expected value.</p>
-    <div class="overflow-x-auto">
-      <table class="min-w-full divide-y divide-slate-300 dark:divide-slate-700 text-sm">
+    <div>
+      <table class="w-full table-fixed divide-y divide-slate-300 dark:divide-slate-700 text-sm">
         <thead class="bg-slate-100 dark:bg-slate-800">
           <tr>
             <th class="p-2 text-left">Scope</th>
@@ -213,7 +213,7 @@
         const fields = action?.fields || [];
         tr.innerHTML = `
           <td class="p-2 align-top">
-            <select class="border rounded p-1 w-full min-w-[7rem] scope bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
+            <select class="border rounded p-1 w-full scope bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
               ${buildOptions(scopeOptions, scope)}
             </select>
           </td>
@@ -222,23 +222,23 @@
             <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Prefix: ${escapeHtml(scope)}-</p>
           </td>
           <td class="p-2 align-top">
-            <select class="border rounded p-1 w-full min-w-[18rem] action bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
+            <select class="border rounded p-1 w-full action bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
               ${buildOptions(actions, actionId, 'Select an action')}
             </select>
             <p class="text-xs text-slate-500 dark:text-slate-400 mt-1 break-words action-path">${escapeHtml(action?.path || '')}</p>
           </td>
           <td class="p-2 align-top">
-            <select class="border rounded p-1 w-full min-w-[14rem] field bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
+            <select class="border rounded p-1 w-full field bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
               ${buildOptions(fields.map(field => ({value: field, label: field})), rule.field, 'Select a field')}
             </select>
           </td>
           <td class="p-2 align-top">
-            <select class="border rounded p-1 w-full min-w-[11rem] operator bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
+            <select class="border rounded p-1 w-full operator bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
               ${buildOptions(operatorOptions, rule.operator)}
             </select>
           </td>
           <td class="p-2 align-top">
-            <input class="border rounded p-1 w-full min-w-[12rem] expected bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${escapeHtml(rule.expected_value)}" placeholder="true, 42, \"string\"" />
+            <input class="border rounded p-1 w-full expected bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${escapeHtml(rule.expected_value)}" placeholder="true, 42, \"string\"" />
           </td>
           <td class="p-2 align-top"><button class="del text-red-500">✕</button></td>`;
         const scopeSelect = tr.querySelector('.scope');
