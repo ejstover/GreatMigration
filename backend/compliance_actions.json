@@ -3,6 +3,7 @@
     "org": [
       {
         "id": "org-sites",
+        "platform": "mist",
         "path": "/api/v1/orgs/{orgId}/sites",
         "fields": [
           "created_time",
@@ -16,6 +17,7 @@
       },
       {
         "id": "org-devices",
+        "platform": "mist",
         "path": "/api/v1/orgs/{orgId}/devices",
         "fields": [
           "id",
@@ -34,6 +36,7 @@
     "site": [
       {
         "id": "site-devices",
+        "platform": "mist",
         "path": "/api/v1/sites/{siteId}/devices",
         "fields": [
           "created_time",
@@ -51,6 +54,7 @@
       },
       {
         "id": "site-device-details",
+        "platform": "mist",
         "path": "/api/v1/sites/{siteId}/devices/{deviceId}",
         "fields": [
           "additional_config_cmds",
@@ -96,6 +100,7 @@
     "device": [
       {
         "id": "device-details",
+        "platform": "mist",
         "path": "/api/v1/sites/{siteId}/devices/{deviceId}",
         "fields": [
           "additional_config_cmds",
