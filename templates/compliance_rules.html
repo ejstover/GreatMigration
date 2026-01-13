@@ -228,20 +228,15 @@
 
     const updateConditionJoins = (container) => {
       const rows = [...container.querySelectorAll('.condition-row')];
-      const showDelete = rows.length > 1;
       rows.forEach((row, idx) => {
         const joinLabel = row.querySelector('.join-label');
         const joinSelect = row.querySelector('.join');
-        const deleteBtn = row.querySelector('.cond-delete');
         if (idx === 0) {
           joinLabel.classList.remove('hidden');
           joinSelect.classList.add('hidden');
         } else {
           joinLabel.classList.add('hidden');
           joinSelect.classList.remove('hidden');
-        }
-        if (deleteBtn) {
-          deleteBtn.classList.toggle('hidden', !showDelete);
         }
       });
     };
@@ -283,7 +278,7 @@
 
       const del = document.createElement('button');
       del.textContent = '✕';
-      del.className = 'cond-delete text-red-500 text-sm';
+      del.className = 'text-red-500 text-sm';
       del.addEventListener('click', () => {
         const parent = row.parentElement;
         row.remove();
