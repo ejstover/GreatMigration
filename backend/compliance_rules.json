@@ -35,5 +35,6 @@
       "value": "hubradiusserver,localradiusserver,siteDNS,hubDNSserver1,hubDNSserver2",
       "comment": "Comma-separated list of required site variables."
     }
-  ]
+  ],
+  "logic_rules": []
 }
