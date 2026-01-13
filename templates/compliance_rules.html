@@ -190,11 +190,6 @@
       }
     };
 
-    const updateActionPath = (el, scope, actionId) => {
-      const action = findAction(scope, actionId);
-      el.textContent = action?.path || '';
-    };
-
     const normalizeCondition = (condition) => {
       const join = joinOptions.some(opt => opt.value === condition.join) ? condition.join : 'and';
       return {
@@ -318,13 +313,11 @@
           </td>
           <td class="p-2 align-top">
             <input class="border rounded p-1 w-full rule-name bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700 text-xs" value="${escapeHtml(rule.name)}" />
-            <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">Prefix: ${escapeHtml(scope)}-</p>
           </td>
           <td class="p-2 align-top">
             <select class="border rounded p-1 w-full action bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700 text-xs">
               ${buildOptions(actions, actionId, 'Select an action')}
             </select>
-            <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1 break-words action-path">${escapeHtml(action?.path || '')}</p>
           </td>
           <td class="p-2 align-top">
             <div class="conditions"></div>
@@ -335,23 +328,41 @@
         const nameInput = tr.querySelector('.rule-name');
         const actionSelect = tr.querySelector('.action');
         const conditionsContainer = tr.querySelector('.conditions');
-        const actionPathEl = tr.querySelector('.action-path');
+        const lockNamePrefix = () => {
+          const enforced = ensureScopePrefix(nameInput.value, scopeSelect.value);
+          if (enforced !== nameInput.value) {
+            nameInput.value = enforced;
+          }
+          const prefixLength = `${scopeSelect.value}-`.length;
+          if ((nameInput.selectionStart ?? 0) < prefixLength) {
+            nameInput.setSelectionRange(prefixLength, prefixLength);
+          }
+        };
 
         scopeSelect.addEventListener('change',()=>{
           const newScope = scopeSelect.value;
           nameInput.value = ensureScopePrefix(nameInput.value, newScope);
           updateActionSelect(actionSelect, newScope, '');
           updateConditionFieldOptions(conditionsContainer, newScope, actionSelect.value);
-          updateActionPath(actionPathEl, newScope, actionSelect.value);
         });
 
-        nameInput.addEventListener('blur',()=>{
-          nameInput.value = ensureScopePrefix(nameInput.value, scopeSelect.value);
+        nameInput.addEventListener('focus', lockNamePrefix);
+        nameInput.addEventListener('blur', lockNamePrefix);
+        nameInput.addEventListener('input', lockNamePrefix);
+        nameInput.addEventListener('keydown', (event) => {
+          const prefixLength = `${scopeSelect.value}-`.length;
+          const selectionStart = nameInput.selectionStart ?? 0;
+          const selectionEnd = nameInput.selectionEnd ?? 0;
+          const atPrefixBoundary = selectionStart <= prefixLength && selectionEnd <= prefixLength;
+          if ((event.key === 'Backspace' && atPrefixBoundary) ||
+              (event.key === 'Delete' && selectionStart < prefixLength && selectionEnd <= prefixLength)) {
+            event.preventDefault();
+            lockNamePrefix();
+          }
         });
 
         actionSelect.addEventListener('change',()=>{
           updateConditionFieldOptions(conditionsContainer, scopeSelect.value, actionSelect.value);
-          updateActionPath(actionPathEl, scopeSelect.value, actionSelect.value);
         });
 
         const attachConditionDelete = (row) => {
