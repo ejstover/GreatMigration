@@ -902,7 +902,7 @@ def api_save_compliance_rules(request: Request, doc: Dict[str, Any] = Body(...))
                 )
 
         logic_raw = payload.get("logic_rules")
-        cleaned_logic: List[Dict[str, str]] = []
+        cleaned_logic: List[Dict[str, Any]] = []
         if isinstance(logic_raw, list):
             for item in logic_raw:
                 if not isinstance(item, dict):
@@ -914,9 +914,40 @@ def api_save_compliance_rules(request: Request, doc: Dict[str, Any] = Body(...))
                 action_id = str(item.get("action_id", "")).strip()
                 action_label = str(item.get("action_label", "")).strip()
                 action_path = str(item.get("action_path", "")).strip()
-                field = str(item.get("field", "")).strip()
-                operator = str(item.get("operator", "")).strip()
-                expected_value = str(item.get("expected_value", "")).strip()
+                conditions_raw = item.get("conditions")
+                cleaned_conditions: List[Dict[str, str]] = []
+                if isinstance(conditions_raw, list):
+                    for entry in conditions_raw:
+                        if not isinstance(entry, dict):
+                            continue
+                        join = str(entry.get("join", "and")).strip().lower()
+                        if join not in {"and", "or"}:
+                            join = "and"
+                        field = str(entry.get("field", "")).strip()
+                        operator = str(entry.get("operator", "")).strip()
+                        expected_value = str(entry.get("expected_value", "")).strip()
+                        cleaned_conditions.append(
+                            {
+                                "join": join,
+                                "field": field,
+                                "operator": operator,
+                                "expected_value": expected_value,
+                            }
+                        )
+                if not cleaned_conditions and any(
+                    key in item for key in ("field", "operator", "expected_value")
+                ):
+                    field = str(item.get("field", "")).strip()
+                    operator = str(item.get("operator", "")).strip()
+                    expected_value = str(item.get("expected_value", "")).strip()
+                    cleaned_conditions.append(
+                        {
+                            "join": "and",
+                            "field": field,
+                            "operator": operator,
+                            "expected_value": expected_value,
+                        }
+                    )
                 cleaned_logic.append(
                     {
                         "scope": scope,
@@ -924,9 +955,7 @@ def api_save_compliance_rules(request: Request, doc: Dict[str, Any] = Body(...))
                         "action_id": action_id,
                         "action_label": action_label,
                         "action_path": action_path,
-                        "field": field,
-                        "operator": operator,
-                        "expected_value": expected_value,
+                        "conditions": cleaned_conditions,
                     }
                 )
 

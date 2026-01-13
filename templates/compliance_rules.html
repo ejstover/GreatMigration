@@ -45,7 +45,7 @@
         <button id="cancel_rules" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
       </div>
     </div>
-    <p class="mb-4 text-sm text-slate-600 dark:text-slate-300">Define scoped compliance checks by selecting an action, field, operator, and expected value.</p>
+    <p class="mb-4 text-sm text-slate-600 dark:text-slate-300">Define scoped compliance checks by selecting an action and one or more conditions.</p>
     <div>
       <table class="w-full table-fixed divide-y divide-slate-300 dark:divide-slate-700 text-sm">
         <thead class="bg-slate-100 dark:bg-slate-800">
@@ -53,9 +53,7 @@
             <th class="p-2 text-left">Scope</th>
             <th class="p-2 text-left">Rule name</th>
             <th class="p-2 text-left">Action (API)</th>
-            <th class="p-2 text-left">Field</th>
-            <th class="p-2 text-left">Operator</th>
-            <th class="p-2 text-left">Expected value</th>
+            <th class="p-2 text-left">Conditions</th>
             <th class="p-2"></th>
           </tr>
         </thead>
@@ -117,6 +115,10 @@
       {value: 'less_than', label: 'Less than'},
       {value: 'is_empty', label: 'Is empty'},
       {value: 'is_not_empty', label: 'Is not empty'},
+    ];
+    const joinOptions = [
+      {value: 'and', label: 'and'},
+      {value: 'or', label: 'or'},
     ];
     let rulesDoc = {rules: [], logic_rules: []};
     let legacyRules = [];
@@ -185,19 +187,113 @@
       el.textContent = action?.path || '';
     };
 
+    const normalizeCondition = (condition) => {
+      const join = joinOptions.some(opt => opt.value === condition.join) ? condition.join : 'and';
+      return {
+        join,
+        field: condition.field || '',
+        operator: condition.operator || 'equals',
+        expected_value: condition.expected_value || '',
+      };
+    };
+
     const normalizeRule = (rule) => {
       const scope = scopeOptions.some(opt => opt.value === rule.scope) ? rule.scope : 'site';
       const name = ensureScopePrefix(rule.name || '', scope);
+      let conditions = [];
+      if (Array.isArray(rule.conditions) && rule.conditions.length) {
+        conditions = rule.conditions.map(cond => normalizeCondition(cond || {}));
+      } else if ('field' in rule || 'operator' in rule || 'expected_value' in rule) {
+        conditions = [
+          normalizeCondition({
+            join: 'and',
+            field: rule.field || '',
+            operator: rule.operator || 'equals',
+            expected_value: rule.expected_value || '',
+          }),
+        ];
+      }
+      if (!conditions.length) {
+        conditions = [normalizeCondition({join: 'and'})];
+      }
       return {
         scope,
         name,
         action_id: rule.action_id || '',
         action_label: rule.action_label || '',
         action_path: rule.action_path || '',
-        field: rule.field || '',
-        operator: rule.operator || 'equals',
-        expected_value: rule.expected_value || '',
+        conditions,
       };
+    };
+
+    const updateConditionJoins = (container) => {
+      const rows = [...container.querySelectorAll('.condition-row')];
+      rows.forEach((row, idx) => {
+        const joinLabel = row.querySelector('.join-label');
+        const joinSelect = row.querySelector('.join');
+        if (idx === 0) {
+          joinLabel.classList.remove('hidden');
+          joinSelect.classList.add('hidden');
+        } else {
+          joinLabel.classList.add('hidden');
+          joinSelect.classList.remove('hidden');
+        }
+      });
+    };
+
+    const updateConditionFieldOptions = (container, scope, actionId) => {
+      const action = findAction(scope, actionId);
+      const fields = action?.fields?.map(field => ({value: field, label: field})) || [];
+      container.querySelectorAll('.field').forEach(select => {
+        const currentValue = select.value;
+        select.innerHTML = buildOptions(fields, currentValue, 'Select a field');
+        if (!select.value && fields.length) {
+          select.value = fields[0].value;
+        }
+      });
+    };
+
+    const createConditionRow = (condition, fields) => {
+      const row = document.createElement('div');
+      row.className = 'condition-row flex items-center gap-2 mb-2';
+      const joinLabel = document.createElement('span');
+      joinLabel.className = 'join-label text-xs uppercase text-slate-500 dark:text-slate-400';
+      joinLabel.textContent = 'if';
+      const joinSelect = document.createElement('select');
+      joinSelect.className = 'join border rounded p-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
+      joinSelect.innerHTML = buildOptions(joinOptions, condition.join);
+
+      const fieldSelect = document.createElement('select');
+      fieldSelect.className = 'field border rounded p-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
+      fieldSelect.innerHTML = buildOptions(fields, condition.field, 'Select a field');
+
+      const operatorSelect = document.createElement('select');
+      operatorSelect.className = 'operator border rounded p-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
+      operatorSelect.innerHTML = buildOptions(operatorOptions, condition.operator);
+
+      const expectedInput = document.createElement('input');
+      expectedInput.className = 'expected border rounded p-1 flex-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
+      expectedInput.value = condition.expected_value || '';
+      expectedInput.placeholder = 'true, 42, "string"';
+
+      const del = document.createElement('button');
+      del.textContent = '✕';
+      del.className = 'text-red-500 text-sm';
+      del.addEventListener('click', () => {
+        const parent = row.parentElement;
+        row.remove();
+        if (parent) {
+          updateConditionJoins(parent);
+        }
+      });
+
+      row.appendChild(joinLabel);
+      row.appendChild(joinSelect);
+      row.appendChild(fieldSelect);
+      row.appendChild(operatorSelect);
+      row.appendChild(expectedInput);
+      row.appendChild(del);
+      return row;
     };
 
     function renderRules(){
@@ -210,7 +306,7 @@
         const actions = getActionsForScope(scope);
         const actionId = rule.action_id || (actions[0]?.id ?? '');
         const action = findAction(scope, actionId);
-        const fields = action?.fields || [];
+        const fields = action?.fields?.map(field => ({value: field, label: field})) || [];
         tr.innerHTML = `
           <td class="p-2 align-top">
             <select class="border rounded p-1 w-full scope bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
@@ -228,32 +324,21 @@
             <p class="text-xs text-slate-500 dark:text-slate-400 mt-1 break-words action-path">${escapeHtml(action?.path || '')}</p>
           </td>
           <td class="p-2 align-top">
-            <select class="border rounded p-1 w-full field bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
-              ${buildOptions(fields.map(field => ({value: field, label: field})), rule.field, 'Select a field')}
-            </select>
-          </td>
-          <td class="p-2 align-top">
-            <select class="border rounded p-1 w-full operator bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
-              ${buildOptions(operatorOptions, rule.operator)}
-            </select>
-          </td>
-          <td class="p-2 align-top">
-            <input class="border rounded p-1 w-full expected bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${escapeHtml(rule.expected_value)}" placeholder="true, 42, \"string\"" />
+            <div class="conditions"></div>
+            <button class="add-condition text-xs text-sky-600">+ condition</button>
           </td>
           <td class="p-2 align-top"><button class="del text-red-500">✕</button></td>`;
         const scopeSelect = tr.querySelector('.scope');
         const nameInput = tr.querySelector('.rule-name');
         const actionSelect = tr.querySelector('.action');
-        const fieldSelect = tr.querySelector('.field');
-        const operatorSelect = tr.querySelector('.operator');
-        const expectedInput = tr.querySelector('.expected');
+        const conditionsContainer = tr.querySelector('.conditions');
         const actionPathEl = tr.querySelector('.action-path');
 
         scopeSelect.addEventListener('change',()=>{
           const newScope = scopeSelect.value;
           nameInput.value = ensureScopePrefix(nameInput.value, newScope);
           updateActionSelect(actionSelect, newScope, '');
-          updateFieldSelect(fieldSelect, newScope, actionSelect.value, '');
+          updateConditionFieldOptions(conditionsContainer, newScope, actionSelect.value);
           updateActionPath(actionPathEl, newScope, actionSelect.value);
         });
 
@@ -262,8 +347,19 @@
         });
 
         actionSelect.addEventListener('change',()=>{
-          updateFieldSelect(fieldSelect, scopeSelect.value, actionSelect.value, '');
+          updateConditionFieldOptions(conditionsContainer, scopeSelect.value, actionSelect.value);
           updateActionPath(actionPathEl, scopeSelect.value, actionSelect.value);
+        });
+
+        rule.conditions.forEach(condition => {
+          const row = createConditionRow(condition, fields);
+          conditionsContainer.appendChild(row);
+        });
+        updateConditionJoins(conditionsContainer);
+        tr.querySelector('.add-condition').addEventListener('click', () => {
+          const row = createConditionRow({join: 'and', field: '', operator: 'equals', expected_value: ''}, fields);
+          conditionsContainer.appendChild(row);
+          updateConditionJoins(conditionsContainer);
         });
 
         tr.querySelector('.del').addEventListener('click',()=>{ rulesDoc.logic_rules.splice(idx,1); renderRules(); });
@@ -277,18 +373,25 @@
         const name = ensureScopePrefix(tr.querySelector('.rule-name').value, scope);
         const actionId = tr.querySelector('.action').value.trim();
         const action = findAction(scope, actionId);
-        const field = tr.querySelector('.field').value.trim();
-        const operator = tr.querySelector('.operator').value.trim();
-        const expected_value = tr.querySelector('.expected').value.trim();
+        const conditions = [...tr.querySelectorAll('.condition-row')].map((row, idx) => {
+          const join = idx === 0 ? 'and' : row.querySelector('.join').value.trim();
+          const field = row.querySelector('.field').value.trim();
+          const operator = row.querySelector('.operator').value.trim();
+          const expected_value = row.querySelector('.expected').value.trim();
+          return {
+            join,
+            field,
+            operator,
+            expected_value,
+          };
+        });
         return {
           scope,
           name,
           action_id: actionId,
           action_label: action?.name || '',
           action_path: action?.path || '',
-          field,
-          operator,
-          expected_value,
+          conditions,
         };
       });
     }
@@ -301,9 +404,14 @@
         action_id: '',
         action_label: '',
         action_path: '',
-        field: '',
-        operator: 'equals',
-        expected_value: '',
+        conditions: [
+          {
+            join: 'and',
+            field: '',
+            operator: 'equals',
+            expected_value: '',
+          },
+        ],
       });
       renderRules();
       tbody.lastElementChild?.scrollIntoView({behavior:'smooth'});
