@@ -1,0 +1,142 @@
+{
+  "scopes": {
+    "org": [
+      {
+        "id": "org-sites",
+        "path": "/api/v1/orgs/{orgId}/sites",
+        "fields": [
+          "created_time",
+          "id",
+          "name",
+          "notes",
+          "org_id",
+          "timezone"
+        ],
+        "name": "GET /api/v1/orgs/{orgId}/sites"
+      },
+      {
+        "id": "org-devices",
+        "path": "/api/v1/orgs/{orgId}/devices",
+        "fields": [
+          "id",
+          "mac",
+          "managed",
+          "model",
+          "name",
+          "role",
+          "serial",
+          "site_id",
+          "type"
+        ],
+        "name": "GET /api/v1/orgs/{orgId}/devices"
+      }
+    ],
+    "site": [
+      {
+        "id": "site-devices",
+        "path": "/api/v1/sites/{siteId}/devices",
+        "fields": [
+          "created_time",
+          "deviceprofile_id",
+          "disable_auto_config",
+          "id",
+          "managed",
+          "modified_time",
+          "name",
+          "notes",
+          "role",
+          "type"
+        ],
+        "name": "GET /api/v1/sites/{siteId}/devices"
+      },
+      {
+        "id": "site-device-details",
+        "path": "/api/v1/sites/{siteId}/devices/{deviceId}",
+        "fields": [
+          "additional_config_cmds",
+          "created_time",
+          "deviceprofile_id",
+          "disable_auto_config",
+          "id",
+          "image1_url",
+          "ip_config.dns",
+          "ip_config.dns_suffix",
+          "ip_config.gateway",
+          "ip_config.ip",
+          "ip_config.netmask",
+          "ip_config.network",
+          "ip_config.type",
+          "managed",
+          "modified_time",
+          "name",
+          "notes",
+          "ntp_servers",
+          "org_id",
+          "other_ip_configs.guest.ip",
+          "other_ip_configs.guest.netmask",
+          "other_ip_configs.guest.type",
+          "port_config.ge-0/0/0.usage",
+          "port_config.ge-0/0/0.description",
+          "port_config.ge-0/0/1.dynamic_usage",
+          "port_config.ge-0/0/1.usage",
+          "radius_config.acct_interim_interval",
+          "radius_config.acct_servers",
+          "radius_config.auth_servers",
+          "radius_config.auth_servers_retries",
+          "radius_config.auth_servers_timeout",
+          "role",
+          "site_id",
+          "type",
+          "vars.RADIUS_IP1",
+          "vars.RADIUS_SECRET"
+        ],
+        "name": "GET /api/v1/sites/{siteId}/devices/{deviceId}"
+      }
+    ],
+    "device": [
+      {
+        "id": "device-details",
+        "path": "/api/v1/sites/{siteId}/devices/{deviceId}",
+        "fields": [
+          "additional_config_cmds",
+          "created_time",
+          "deviceprofile_id",
+          "disable_auto_config",
+          "id",
+          "image1_url",
+          "ip_config.dns",
+          "ip_config.dns_suffix",
+          "ip_config.gateway",
+          "ip_config.ip",
+          "ip_config.netmask",
+          "ip_config.network",
+          "ip_config.type",
+          "managed",
+          "modified_time",
+          "name",
+          "notes",
+          "ntp_servers",
+          "org_id",
+          "other_ip_configs.guest.ip",
+          "other_ip_configs.guest.netmask",
+          "other_ip_configs.guest.type",
+          "port_config.ge-0/0/0.usage",
+          "port_config.ge-0/0/0.description",
+          "port_config.ge-0/0/1.dynamic_usage",
+          "port_config.ge-0/0/1.usage",
+          "radius_config.acct_interim_interval",
+          "radius_config.acct_servers",
+          "radius_config.auth_servers",
+          "radius_config.auth_servers_retries",
+          "radius_config.auth_servers_timeout",
+          "role",
+          "site_id",
+          "type",
+          "vars.RADIUS_IP1",
+          "vars.RADIUS_SECRET"
+        ],
+        "name": "GET /api/v1/sites/{siteId}/devices/{deviceId}"
+      }
+    ]
+  }
+}

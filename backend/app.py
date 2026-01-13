@@ -219,6 +219,7 @@ HELP_URL = os.getenv("HELP_URL", README_URL)
 RULES_PATH = Path(__file__).resolve().parent / "port_rules.json"
 REPLACEMENTS_PATH = Path(__file__).resolve().parent / "replacement_rules.json"
 COMPLIANCE_RULES_PATH = Path(__file__).resolve().parent / "compliance_rules.json"
+COMPLIANCE_ACTIONS_PATH = Path(__file__).resolve().parent / "compliance_actions.json"
 NETBOX_DT_URL = os.getenv(
     "NETBOX_DT_URL",
     "https://api.github.com/repos/netbox-community/devicetype-library/contents/device-types",
@@ -862,6 +863,18 @@ def api_get_compliance_rules(request: Request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+@app.get("/api/compliance_actions")
+def api_get_compliance_actions(request: Request):
+    try:
+        require_push_rights(current_user(request))
+        data = json.loads(COMPLIANCE_ACTIONS_PATH.read_text(encoding="utf-8"))
+        return {"ok": True, "doc": data}
+    except HTTPException as exc:
+        raise exc
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
 @app.post("/api/compliance_rules")
 def api_save_compliance_rules(request: Request, doc: Dict[str, Any] = Body(...)):
     try:
@@ -888,7 +901,36 @@ def api_save_compliance_rules(request: Request, doc: Dict[str, Any] = Body(...))
                     }
                 )
 
-        cleaned_doc = {"rules": cleaned_rules}
+        logic_raw = payload.get("logic_rules")
+        cleaned_logic: List[Dict[str, str]] = []
+        if isinstance(logic_raw, list):
+            for item in logic_raw:
+                if not isinstance(item, dict):
+                    continue
+                scope = str(item.get("scope", "")).strip().lower()
+                if scope not in {"org", "site", "device"}:
+                    scope = "site"
+                name = str(item.get("name", "")).strip()
+                action_id = str(item.get("action_id", "")).strip()
+                action_label = str(item.get("action_label", "")).strip()
+                action_path = str(item.get("action_path", "")).strip()
+                field = str(item.get("field", "")).strip()
+                operator = str(item.get("operator", "")).strip()
+                expected_value = str(item.get("expected_value", "")).strip()
+                cleaned_logic.append(
+                    {
+                        "scope": scope,
+                        "name": name,
+                        "action_id": action_id,
+                        "action_label": action_label,
+                        "action_path": action_path,
+                        "field": field,
+                        "operator": operator,
+                        "expected_value": expected_value,
+                    }
+                )
+
+        cleaned_doc = {"rules": cleaned_rules, "logic_rules": cleaned_logic}
         COMPLIANCE_RULES_PATH.write_text(json.dumps(cleaned_doc, indent=2), encoding="utf-8")
         return {"ok": True}
     except HTTPException as exc:

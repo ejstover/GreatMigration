@@ -45,13 +45,17 @@
         <button id="cancel_rules" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
       </div>
     </div>
+    <p class="mb-4 text-sm text-slate-600 dark:text-slate-300">Define scoped compliance checks by selecting an action, field, operator, and expected value.</p>
     <div class="overflow-x-auto">
       <table class="min-w-full divide-y divide-slate-300 dark:divide-slate-700 text-sm">
         <thead class="bg-slate-100 dark:bg-slate-800">
           <tr>
-            <th class="p-2 text-left">Variable</th>
-            <th class="p-2 text-left">Value</th>
-            <th class="p-2 text-left">Comments</th>
+            <th class="p-2 text-left">Scope</th>
+            <th class="p-2 text-left">Rule name</th>
+            <th class="p-2 text-left">Action (API)</th>
+            <th class="p-2 text-left">Field</th>
+            <th class="p-2 text-left">Operator</th>
+            <th class="p-2 text-left">Expected value</th>
             <th class="p-2"></th>
           </tr>
         </thead>
@@ -99,36 +103,216 @@
     const saveBtns = document.querySelectorAll('.save_rules');
     const cancelBtns = document.querySelectorAll('.cancel_rules');
     const saveStatus = document.getElementById('save_status');
-    let rulesDoc = {rules: []};
+    const scopeOptions = [
+      {value: 'org', label: 'Org'},
+      {value: 'site', label: 'Site'},
+      {value: 'device', label: 'Device'},
+    ];
+    const operatorOptions = [
+      {value: 'equals', label: 'Equals'},
+      {value: 'not_equals', label: 'Not equals'},
+      {value: 'contains', label: 'Contains'},
+      {value: 'not_contains', label: 'Does not contain'},
+      {value: 'greater_than', label: 'Greater than'},
+      {value: 'less_than', label: 'Less than'},
+      {value: 'is_empty', label: 'Is empty'},
+      {value: 'is_not_empty', label: 'Is not empty'},
+    ];
+    let rulesDoc = {rules: [], logic_rules: []};
+    let legacyRules = [];
+    let actionsDoc = {scopes: {}};
+
+    const escapeHtml = (value) => {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    };
+
+    const ensureScopePrefix = (name, scope) => {
+      const prefix = `${scope}-`;
+      const cleaned = (name || '').trim();
+      if (!cleaned) {
+        return prefix;
+      }
+      if (cleaned.startsWith(prefix)) {
+        return cleaned;
+      }
+      const withoutPrefix = cleaned.replace(/^(org|site|device)-/, '');
+      return prefix + withoutPrefix;
+    };
+
+    const getActionsForScope = (scope) => {
+      return actionsDoc.scopes?.[scope] || [];
+    };
+
+    const findAction = (scope, actionId) => {
+      return getActionsForScope(scope).find(action => action.id === actionId);
+    };
+
+    const buildOptions = (options, selected, placeholder) => {
+      const base = placeholder ? `<option value="">${placeholder}</option>` : '';
+      const opts = options.map(option => {
+        const value = escapeHtml(option.value ?? option.id ?? '');
+        const label = escapeHtml(option.name ?? option.label ?? option.value ?? option.id ?? '');
+        const selectedAttr = value === selected ? 'selected' : '';
+        return `<option value="${value}" ${selectedAttr}>${label}</option>`;
+      });
+      return base + opts.join('');
+    };
+
+    const updateActionSelect = (select, scope, currentValue) => {
+      const actions = getActionsForScope(scope);
+      select.innerHTML = buildOptions(actions, currentValue, 'Select an action');
+      if (!select.value && actions.length) {
+        select.value = actions[0].id;
+      }
+    };
+
+    const updateFieldSelect = (select, scope, actionId, currentValue) => {
+      const action = findAction(scope, actionId);
+      const fields = action?.fields?.map(field => ({value: field, label: field})) || [];
+      select.innerHTML = buildOptions(fields, currentValue, 'Select a field');
+      if (!select.value && fields.length) {
+        select.value = fields[0].value;
+      }
+    };
+
+    const updateActionPath = (el, scope, actionId) => {
+      const action = findAction(scope, actionId);
+      el.textContent = action?.path || '';
+    };
+
+    const normalizeRule = (rule) => {
+      const scope = scopeOptions.some(opt => opt.value === rule.scope) ? rule.scope : 'site';
+      const name = ensureScopePrefix(rule.name || '', scope);
+      return {
+        scope,
+        name,
+        action_id: rule.action_id || '',
+        action_label: rule.action_label || '',
+        action_path: rule.action_path || '',
+        field: rule.field || '',
+        operator: rule.operator || 'equals',
+        expected_value: rule.expected_value || '',
+      };
+    };
 
     function renderRules(){
       tbody.innerHTML='';
-      rulesDoc.rules.forEach((rule, idx)=>{
+      rulesDoc.logic_rules = rulesDoc.logic_rules.map(normalizeRule);
+      rulesDoc.logic_rules.forEach((rule, idx)=>{
         const tr=document.createElement('tr');
         tr.dataset.idx=idx;
-        tr.innerHTML=`<td class="p-2"><input class="border rounded p-1 w-full name bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${rule.name||''}"/></td>
-          <td class="p-2"><input class="border rounded p-1 w-full value bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${rule.value||''}"/></td>
-          <td class="p-2"><input class="border rounded p-1 w-full comment bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${rule.comment||''}"/></td>
-          <td class="p-2"><button class="del text-red-500">✕</button></td>`;
-        tr.querySelector('.del').addEventListener('click',()=>{ rulesDoc.rules.splice(idx,1); renderRules(); });
+        const scope = rule.scope;
+        const actions = getActionsForScope(scope);
+        const actionId = rule.action_id || (actions[0]?.id ?? '');
+        const action = findAction(scope, actionId);
+        const fields = action?.fields || [];
+        tr.innerHTML = `
+          <td class="p-2 align-top">
+            <select class="border rounded p-1 w-full min-w-[7rem] scope bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
+              ${buildOptions(scopeOptions, scope)}
+            </select>
+          </td>
+          <td class="p-2 align-top">
+            <input class="border rounded p-1 w-full rule-name bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${escapeHtml(rule.name)}" />
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Prefix: ${escapeHtml(scope)}-</p>
+          </td>
+          <td class="p-2 align-top">
+            <select class="border rounded p-1 w-full min-w-[18rem] action bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
+              ${buildOptions(actions, actionId, 'Select an action')}
+            </select>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1 break-words action-path">${escapeHtml(action?.path || '')}</p>
+          </td>
+          <td class="p-2 align-top">
+            <select class="border rounded p-1 w-full min-w-[14rem] field bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
+              ${buildOptions(fields.map(field => ({value: field, label: field})), rule.field, 'Select a field')}
+            </select>
+          </td>
+          <td class="p-2 align-top">
+            <select class="border rounded p-1 w-full min-w-[11rem] operator bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
+              ${buildOptions(operatorOptions, rule.operator)}
+            </select>
+          </td>
+          <td class="p-2 align-top">
+            <input class="border rounded p-1 w-full min-w-[12rem] expected bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value="${escapeHtml(rule.expected_value)}" placeholder="true, 42, \"string\"" />
+          </td>
+          <td class="p-2 align-top"><button class="del text-red-500">✕</button></td>`;
+        const scopeSelect = tr.querySelector('.scope');
+        const nameInput = tr.querySelector('.rule-name');
+        const actionSelect = tr.querySelector('.action');
+        const fieldSelect = tr.querySelector('.field');
+        const operatorSelect = tr.querySelector('.operator');
+        const expectedInput = tr.querySelector('.expected');
+        const actionPathEl = tr.querySelector('.action-path');
+
+        scopeSelect.addEventListener('change',()=>{
+          const newScope = scopeSelect.value;
+          nameInput.value = ensureScopePrefix(nameInput.value, newScope);
+          updateActionSelect(actionSelect, newScope, '');
+          updateFieldSelect(fieldSelect, newScope, actionSelect.value, '');
+          updateActionPath(actionPathEl, newScope, actionSelect.value);
+        });
+
+        nameInput.addEventListener('blur',()=>{
+          nameInput.value = ensureScopePrefix(nameInput.value, scopeSelect.value);
+        });
+
+        actionSelect.addEventListener('change',()=>{
+          updateFieldSelect(fieldSelect, scopeSelect.value, actionSelect.value, '');
+          updateActionPath(actionPathEl, scopeSelect.value, actionSelect.value);
+        });
+
+        tr.querySelector('.del').addEventListener('click',()=>{ rulesDoc.logic_rules.splice(idx,1); renderRules(); });
         tbody.appendChild(tr);
       });
     }
 
     function syncRulesFromDOM(){
-      rulesDoc.rules = [...tbody.querySelectorAll('tr')].map(tr=>{
-        const name = tr.querySelector('.name').value.trim();
-        const value = tr.querySelector('.value').value.trim();
-        const comment = tr.querySelector('.comment').value.trim();
-        return {name, value, comment};
+      rulesDoc.logic_rules = [...tbody.querySelectorAll('tr')].map(tr=>{
+        const scope = tr.querySelector('.scope').value.trim();
+        const name = ensureScopePrefix(tr.querySelector('.rule-name').value, scope);
+        const actionId = tr.querySelector('.action').value.trim();
+        const action = findAction(scope, actionId);
+        const field = tr.querySelector('.field').value.trim();
+        const operator = tr.querySelector('.operator').value.trim();
+        const expected_value = tr.querySelector('.expected').value.trim();
+        return {
+          scope,
+          name,
+          action_id: actionId,
+          action_label: action?.name || '',
+          action_path: action?.path || '',
+          field,
+          operator,
+          expected_value,
+        };
       });
     }
 
-    addRuleBtns.forEach(btn => btn.addEventListener('click',()=>{ syncRulesFromDOM(); rulesDoc.rules.push({name:'', value:'', comment:''}); renderRules(); tbody.lastElementChild?.scrollIntoView({behavior:'smooth'}); }));
+    addRuleBtns.forEach(btn => btn.addEventListener('click',()=>{
+      syncRulesFromDOM();
+      rulesDoc.logic_rules.push({
+        scope: 'site',
+        name: 'site-',
+        action_id: '',
+        action_label: '',
+        action_path: '',
+        field: '',
+        operator: 'equals',
+        expected_value: '',
+      });
+      renderRules();
+      tbody.lastElementChild?.scrollIntoView({behavior:'smooth'});
+    }));
 
     saveBtns.forEach(btn => btn.addEventListener('click',()=>{
       syncRulesFromDOM();
-      fetch('/api/compliance_rules',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(rulesDoc)})
+      const payload = {rules: legacyRules, logic_rules: rulesDoc.logic_rules};
+      fetch('/api/compliance_rules',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
         .then(async r=>{ const txt=await r.text(); try { return JSON.parse(txt);} catch { throw new Error(txt);} })
         .then(resp=>{
           if(resp.ok){
@@ -141,8 +325,32 @@
 
     cancelBtns.forEach(btn => btn.addEventListener('click',()=>{ window.location.href='/audit'; }));
 
-    fetch('/api/compliance_rules').then(async r=>{ const txt=await r.text(); try { return JSON.parse(txt);} catch { throw new Error(txt);} })
-      .then(d=>{ if(d.ok) { rulesDoc=d.doc; renderRules(); } else { saveStatus.textContent='Error: ' + (d.error || 'loading rules'); } })
+    const loadActions = () => {
+      return fetch('/api/compliance_actions').then(async r=>{ const txt=await r.text(); try { return JSON.parse(txt);} catch { throw new Error(txt);} })
+        .then(d=>{
+          if (d.ok) {
+            actionsDoc = d.doc || {scopes: {}};
+          } else {
+            saveStatus.textContent='Error: ' + (d.error || 'loading actions');
+          }
+        });
+    };
+
+    const loadRules = () => {
+      return fetch('/api/compliance_rules').then(async r=>{ const txt=await r.text(); try { return JSON.parse(txt);} catch { throw new Error(txt);} })
+        .then(d=>{
+          if(d.ok) {
+            rulesDoc = d.doc || {rules: [], logic_rules: []};
+            legacyRules = Array.isArray(rulesDoc.rules) ? rulesDoc.rules : [];
+            rulesDoc.logic_rules = Array.isArray(rulesDoc.logic_rules) ? rulesDoc.logic_rules : [];
+          } else {
+            saveStatus.textContent='Error: ' + (d.error || 'loading rules');
+          }
+        });
+    };
+
+    Promise.all([loadActions(), loadRules()])
+      .then(()=>{ renderRules(); })
       .catch(err=>{ saveStatus.textContent='Error: ' + err.message; });
   </script>
 </body>
