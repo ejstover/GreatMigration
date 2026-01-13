@@ -141,31 +141,6 @@
         .replace(/'/g, '&#39;');
     };
 
-    const ensureScopePrefix = (name, scope) => {
-      const prefix = `${scope} - `;
-      const cleaned = (name || '').trim();
-      if (!cleaned) {
-        return prefix;
-      }
-      if (cleaned.toLowerCase().startsWith(prefix)) {
-        return cleaned;
-      }
-      const withoutPrefix = cleaned.replace(/^(org|site|device)\s*-\s*/i, '');
-      return prefix + withoutPrefix.trim();
-    };
-
-    const getNameSuffix = (name, scope) => {
-      const cleaned = (name || '').trim();
-      const prefixPattern = new RegExp(`^${scope}\\s*-\\s*`, 'i');
-      if (!cleaned) {
-        return '';
-      }
-      if (prefixPattern.test(cleaned)) {
-        return cleaned.replace(prefixPattern, '').trim();
-      }
-      return cleaned;
-    };
-
     const getActionsForScope = (scope) => {
       return actionsDoc.scopes?.[scope] || [];
     };
@@ -188,18 +163,12 @@
     const updateActionSelect = (select, scope, currentValue) => {
       const actions = getActionsForScope(scope);
       select.innerHTML = buildOptions(actions, currentValue, 'Select an action');
-      if (!select.value && actions.length) {
-        select.value = actions[0].id;
-      }
     };
 
     const updateFieldSelect = (select, scope, actionId, currentValue) => {
       const action = findAction(scope, actionId);
       const fields = action?.fields?.map(field => ({value: field, label: field})) || [];
       select.innerHTML = buildOptions(fields, currentValue, 'Select a field');
-      if (!select.value && fields.length) {
-        select.value = fields[0].value;
-      }
     };
 
     const normalizeCondition = (condition) => {
@@ -214,7 +183,7 @@
 
     const normalizeRule = (rule) => {
       const scope = scopeOptions.some(opt => opt.value === rule.scope) ? rule.scope : 'site';
-      const name = ensureScopePrefix(rule.name || '', scope);
+      const name = (rule.name || '').trim();
       let conditions = [];
       if (Array.isArray(rule.conditions) && rule.conditions.length) {
         conditions = rule.conditions.map(cond => normalizeCondition(cond || {}));
@@ -262,10 +231,17 @@
       container.querySelectorAll('.field').forEach(select => {
         const currentValue = select.value;
         select.innerHTML = buildOptions(fields, currentValue, 'Select a field');
-        if (!select.value && fields.length) {
-          select.value = fields[0].value;
-        }
       });
+    };
+
+    const syncExpectedInputState = (operatorSelect, expectedInput) => {
+      const operatorValue = operatorSelect.value;
+      const isEmptyOperator = operatorValue === 'is_empty' || operatorValue === 'is_not_empty';
+      expectedInput.disabled = isEmptyOperator;
+      expectedInput.placeholder = isEmptyOperator ? 'Not required' : 'true, 42, "string"';
+      if (isEmptyOperator) {
+        expectedInput.value = '';
+      }
     };
 
     const createConditionRow = (condition, fields) => {
@@ -302,6 +278,10 @@
       row.appendChild(operatorSelect);
       row.appendChild(expectedInput);
       row.appendChild(deleteBtn);
+      syncExpectedInputState(operatorSelect, expectedInput);
+      operatorSelect.addEventListener('change', () => {
+        syncExpectedInputState(operatorSelect, expectedInput);
+      });
       return row;
     };
 
@@ -313,7 +293,7 @@
         tr.dataset.idx=idx;
         const scope = rule.scope;
         const actions = getActionsForScope(scope);
-        const actionId = rule.action_id || (actions[0]?.id ?? '');
+        const actionId = rule.action_id || '';
         const action = findAction(scope, actionId);
         const fields = action?.fields?.map(field => ({value: field, label: field})) || [];
         tr.innerHTML = `
@@ -340,37 +320,10 @@
         const nameInput = tr.querySelector('.rule-name');
         const actionSelect = tr.querySelector('.action');
         const conditionsContainer = tr.querySelector('.conditions');
-        const lockNamePrefix = () => {
-          const enforced = ensureScopePrefix(nameInput.value, scopeSelect.value);
-          if (enforced !== nameInput.value) {
-            nameInput.value = enforced;
-          }
-          const prefixLength = `${scopeSelect.value} - `.length;
-          if ((nameInput.selectionStart ?? 0) < prefixLength) {
-            nameInput.setSelectionRange(prefixLength, prefixLength);
-          }
-        };
-
         scopeSelect.addEventListener('change',()=>{
           const newScope = scopeSelect.value;
-          nameInput.value = ensureScopePrefix(nameInput.value, newScope);
           updateActionSelect(actionSelect, newScope, '');
           updateConditionFieldOptions(conditionsContainer, newScope, actionSelect.value);
-        });
-
-        nameInput.addEventListener('focus', lockNamePrefix);
-        nameInput.addEventListener('blur', lockNamePrefix);
-        nameInput.addEventListener('input', lockNamePrefix);
-        nameInput.addEventListener('keydown', (event) => {
-          const prefixLength = `${scopeSelect.value} - `.length;
-          const selectionStart = nameInput.selectionStart ?? 0;
-          const selectionEnd = nameInput.selectionEnd ?? 0;
-          const atPrefixBoundary = selectionStart <= prefixLength && selectionEnd <= prefixLength;
-          if ((event.key === 'Backspace' && atPrefixBoundary) ||
-              (event.key === 'Delete' && selectionStart < prefixLength && selectionEnd <= prefixLength)) {
-            event.preventDefault();
-            lockNamePrefix();
-          }
         });
 
         actionSelect.addEventListener('change',()=>{
@@ -409,14 +362,17 @@
     function syncRulesFromDOM(){
       rulesDoc.logic_rules = [...tbody.querySelectorAll('tr')].map(tr=>{
         const scope = tr.querySelector('.scope').value.trim();
-        const name = ensureScopePrefix(tr.querySelector('.rule-name').value, scope);
+        const name = tr.querySelector('.rule-name').value.trim();
         const actionId = tr.querySelector('.action').value.trim();
         const action = findAction(scope, actionId);
         const conditions = [...tr.querySelectorAll('.condition-row')].map((row, idx) => {
           const join = idx === 0 ? 'and' : row.querySelector('.join').value.trim();
           const field = row.querySelector('.field').value.trim();
           const operator = row.querySelector('.operator').value.trim();
-          const expected_value = row.querySelector('.expected').value.trim();
+          const expectedInput = row.querySelector('.expected');
+          const expected_value = operator === 'is_empty' || operator === 'is_not_empty'
+            ? ''
+            : expectedInput.value.trim();
           return {
             join,
             field,
@@ -448,7 +404,7 @@
       syncRulesFromDOM();
       rulesDoc.logic_rules.push({
         scope: 'site',
-        name: 'site - ',
+        name: '',
         action_id: '',
         action_label: '',
         action_path: '',
@@ -465,11 +421,41 @@
       tbody.lastElementChild?.scrollIntoView({behavior:'smooth'});
     }));
 
+    const validateRules = () => {
+      for (let ruleIndex = 0; ruleIndex < rulesDoc.logic_rules.length; ruleIndex += 1) {
+        const rule = rulesDoc.logic_rules[ruleIndex];
+        if (!rule.scope) {
+          return `Rule ${ruleIndex + 1}: select a scope.`;
+        }
+        if (!rule.name) {
+          return `Rule ${ruleIndex + 1}: enter a rule name.`;
+        }
+        if (!rule.action_id) {
+          return `Rule ${ruleIndex + 1}: select an action.`;
+        }
+        for (let condIndex = 0; condIndex < rule.conditions.length; condIndex += 1) {
+          const condition = rule.conditions[condIndex];
+          if (!condition.field) {
+            return `Rule ${ruleIndex + 1}, condition ${condIndex + 1}: select a field.`;
+          }
+          if (!condition.operator) {
+            return `Rule ${ruleIndex + 1}, condition ${condIndex + 1}: select an operator.`;
+          }
+          const operator = condition.operator;
+          const needsValue = operator !== 'is_empty' && operator !== 'is_not_empty';
+          if (needsValue && !condition.expected_value) {
+            return `Rule ${ruleIndex + 1}, condition ${condIndex + 1}: enter an expected value.`;
+          }
+        }
+      }
+      return '';
+    };
+
     saveBtns.forEach(btn => btn.addEventListener('click',()=>{
       syncRulesFromDOM();
-      const invalidRule = rulesDoc.logic_rules.find(rule => !getNameSuffix(rule.name, rule.scope));
-      if (invalidRule) {
-        saveStatus.textContent = `Rule names must follow "${invalidRule.scope} - name" format.`;
+      const validationMessage = validateRules();
+      if (validationMessage) {
+        saveStatus.textContent = validationMessage;
         return;
       }
       const payload = {rules: legacyRules, logic_rules: rulesDoc.logic_rules};
