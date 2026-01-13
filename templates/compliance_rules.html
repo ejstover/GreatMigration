@@ -255,7 +255,7 @@
 
     const createConditionRow = (condition, fields) => {
       const row = document.createElement('div');
-      row.className = 'condition-row flex items-center gap-2 mb-2';
+      row.className = 'condition-row flex flex-nowrap items-center gap-2 mb-2';
       const joinLabel = document.createElement('span');
       joinLabel.className = 'join-label text-xs uppercase text-slate-500 dark:text-slate-400';
       joinLabel.textContent = 'if';
@@ -272,7 +272,7 @@
       operatorSelect.innerHTML = buildOptions(operatorOptions, condition.operator);
 
       const expectedInput = document.createElement('input');
-      expectedInput.className = 'expected border rounded p-1 flex-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
+      expectedInput.className = 'expected border rounded p-1 flex-1 min-w-0 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
       expectedInput.value = condition.expected_value || '';
       expectedInput.placeholder = 'true, 42, "string"';
 
