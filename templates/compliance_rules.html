@@ -142,16 +142,28 @@
     };
 
     const ensureScopePrefix = (name, scope) => {
-      const prefix = `${scope}-`;
+      const prefix = `${scope} - `;
       const cleaned = (name || '').trim();
       if (!cleaned) {
         return prefix;
       }
-      if (cleaned.startsWith(prefix)) {
+      if (cleaned.toLowerCase().startsWith(prefix)) {
         return cleaned;
       }
-      const withoutPrefix = cleaned.replace(/^(org|site|device)-/, '');
-      return prefix + withoutPrefix;
+      const withoutPrefix = cleaned.replace(/^(org|site|device)\s*-\s*/i, '');
+      return prefix + withoutPrefix.trim();
+    };
+
+    const getNameSuffix = (name, scope) => {
+      const cleaned = (name || '').trim();
+      const prefixPattern = new RegExp(`^${scope}\\s*-\\s*`, 'i');
+      if (!cleaned) {
+        return '';
+      }
+      if (prefixPattern.test(cleaned)) {
+        return cleaned.replace(prefixPattern, '').trim();
+      }
+      return cleaned;
     };
 
     const getActionsForScope = (scope) => {
@@ -333,7 +345,7 @@
           if (enforced !== nameInput.value) {
             nameInput.value = enforced;
           }
-          const prefixLength = `${scopeSelect.value}-`.length;
+          const prefixLength = `${scopeSelect.value} - `.length;
           if ((nameInput.selectionStart ?? 0) < prefixLength) {
             nameInput.setSelectionRange(prefixLength, prefixLength);
           }
@@ -350,7 +362,7 @@
         nameInput.addEventListener('blur', lockNamePrefix);
         nameInput.addEventListener('input', lockNamePrefix);
         nameInput.addEventListener('keydown', (event) => {
-          const prefixLength = `${scopeSelect.value}-`.length;
+          const prefixLength = `${scopeSelect.value} - `.length;
           const selectionStart = nameInput.selectionStart ?? 0;
           const selectionEnd = nameInput.selectionEnd ?? 0;
           const atPrefixBoundary = selectionStart <= prefixLength && selectionEnd <= prefixLength;
@@ -436,7 +448,7 @@
       syncRulesFromDOM();
       rulesDoc.logic_rules.push({
         scope: 'site',
-        name: 'site-',
+        name: 'site - ',
         action_id: '',
         action_label: '',
         action_path: '',
@@ -455,6 +467,11 @@
 
     saveBtns.forEach(btn => btn.addEventListener('click',()=>{
       syncRulesFromDOM();
+      const invalidRule = rulesDoc.logic_rules.find(rule => !getNameSuffix(rule.name, rule.scope));
+      if (invalidRule) {
+        saveStatus.textContent = `Rule names must follow "${invalidRule.scope} - name" format.`;
+        return;
+      }
       const payload = {rules: legacyRules, logic_rules: rulesDoc.logic_rules};
       fetch('/api/compliance_rules',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
         .then(async r=>{ const txt=await r.text(); try { return JSON.parse(txt);} catch { throw new Error(txt);} })
