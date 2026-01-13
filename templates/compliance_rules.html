@@ -282,11 +282,17 @@
       expectedInput.value = condition.expected_value || '';
       expectedInput.placeholder = 'true, 42, "string"';
 
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'delete-condition text-red-400 hover:text-red-300 text-sm px-1';
+      deleteBtn.textContent = '✕';
+
       row.appendChild(joinLabel);
       row.appendChild(joinSelect);
       row.appendChild(fieldSelect);
       row.appendChild(operatorSelect);
       row.appendChild(expectedInput);
+      row.appendChild(deleteBtn);
       return row;
     };
 
@@ -321,7 +327,7 @@
             <div class="conditions"></div>
             <button class="add-condition text-xs text-sky-400 hover:text-sky-300">+ condition</button>
           </td>
-          <td class="p-2 align-top"><button class="del text-red-400 hover:text-red-300">✕</button></td>`;
+          <td class="p-2 align-top text-right"><button class="del text-red-400 hover:text-red-300">✕</button></td>`;
         const scopeSelect = tr.querySelector('.scope');
         const nameInput = tr.querySelector('.rule-name');
         const actionSelect = tr.querySelector('.action');
@@ -345,15 +351,28 @@
           updateActionPath(actionPathEl, scopeSelect.value, actionSelect.value);
         });
 
+        const attachConditionDelete = (row) => {
+          row.querySelector('.delete-condition').addEventListener('click', () => {
+            const rows = conditionsContainer.querySelectorAll('.condition-row');
+            if (rows.length <= 1) {
+              return;
+            }
+            row.remove();
+            updateConditionJoins(conditionsContainer);
+          });
+        };
+
         rule.conditions.forEach(condition => {
           const row = createConditionRow(condition, fields);
           conditionsContainer.appendChild(row);
+          attachConditionDelete(row);
         });
         updateConditionJoins(conditionsContainer);
         tr.querySelector('.add-condition').addEventListener('click', () => {
           const row = createConditionRow({join: 'and', field: '', operator: 'equals', expected_value: ''}, fields);
           conditionsContainer.appendChild(row);
           updateConditionJoins(conditionsContainer);
+          attachConditionDelete(row);
         });
 
         tr.querySelector('.del').addEventListener('click',()=>{ rulesDoc.logic_rules.splice(idx,1); renderRules(); });
