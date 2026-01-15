@@ -277,8 +277,22 @@ def _iter_platform_api_sources() -> List[Dict[str, str]]:
     return sources
 
 
-def _fetch_api_spec_doc(source: str) -> Any:
+def _normalize_api_source_url(source: str) -> str:
     cleaned = source.strip()
+    if not cleaned.lower().startswith(("http://", "https://")):
+        return cleaned
+    parsed = urlparse(cleaned)
+    if parsed.netloc.lower() == "github.com":
+        parts = parsed.path.strip("/").split("/")
+        if len(parts) >= 4 and parts[2] == "blob":
+            owner, repo, _, *rest = parts
+            raw_path = "/".join(rest)
+            return f"https://raw.githubusercontent.com/{owner}/{repo}/{raw_path}"
+    return cleaned
+
+
+def _fetch_api_spec_doc(source: str) -> Any:
+    cleaned = _normalize_api_source_url(source)
     if cleaned.lower().startswith(("http://", "https://")):
         response = requests.get(cleaned, timeout=15)
         response.raise_for_status()
