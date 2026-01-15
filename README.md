@@ -112,6 +112,7 @@ Both scripts read and reuse values in `backend/.env`, so follow-up runs only pro
     * Compliance tuning: edit `backend/compliance_rules.json` (or the Compliance Rules page)
      * Device catalog sources: `NETBOX_DT_URL`, `NETBOX_LOCAL_DT`
      * Logging: `SYSLOG_HOST`, `SYSLOG_PORT`
+     * Compliance rule builder API sources: `PLATFORM_API_SOURCES` or per-platform `*_API_SPEC`
 3. **Optional assets** – copy `backend/port_rules.sample.json` to `backend/port_rules.json` to maintain custom mappings outside version control.
 4. **Launch the API**
    ```bash

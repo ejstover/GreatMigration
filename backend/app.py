@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set
 from zoneinfo import ZoneInfo
 from time import perf_counter
+from urllib.parse import urlparse, parse_qs
 
 import requests
 from fastapi import FastAPI, UploadFile, File, Form, Request, Body, HTTPException
@@ -223,6 +224,270 @@ REPLACEMENTS_SAMPLE_PATH = Path(__file__).resolve().parent / "replacement_rules.
 COMPLIANCE_RULES_PATH = Path(__file__).resolve().parent / "compliance_rules.json"
 COMPLIANCE_RULES_SAMPLE_PATH = Path(__file__).resolve().parent / "compliance_rules.sample.json"
 COMPLIANCE_ACTIONS_PATH = Path(__file__).resolve().parent / "compliance_actions.json"
+
+COMPLIANCE_API_SOURCE_LIST_KEYS = (
+    "PLATFORM_API_SOURCES",
+    "PLATFORM_API_URLS",
+    "PLATFORM_API_SPECS",
+)
+COMPLIANCE_API_SOURCE_SUFFIXES = (
+    "_API_SOURCE",
+    "_API_SOURCE_URL",
+    "_API_SPEC",
+    "_API_SPEC_URL",
+    "_API_DOC",
+    "_API_DOC_URL",
+)
+
+
+def _split_env_list(value: str) -> List[str]:
+    items = []
+    for entry in re.split(r"[,\n;]+", value or ""):
+        cleaned = entry.strip()
+        if cleaned:
+            items.append(cleaned)
+    return items
+
+
+def _iter_platform_api_sources() -> List[Dict[str, str]]:
+    sources: List[Dict[str, str]] = []
+    for key in COMPLIANCE_API_SOURCE_LIST_KEYS:
+        raw = os.environ.get(key, "")
+        if not raw:
+            continue
+        parts = _split_env_list(raw)
+        if len(parts) < 2:
+            continue
+        for idx in range(0, len(parts) - 1, 2):
+            platform = parts[idx].strip()
+            source = parts[idx + 1].strip()
+            if platform and source:
+                sources.append({"platform": platform, "source": source})
+    for key, raw_value in os.environ.items():
+        if not raw_value:
+            continue
+        for suffix in COMPLIANCE_API_SOURCE_SUFFIXES:
+            if not key.endswith(suffix):
+                continue
+            platform = key[: -len(suffix)].strip("_")
+            if not platform:
+                continue
+            sources.append({"platform": platform, "source": raw_value})
+            break
+    return sources
+
+
+def _fetch_api_spec_doc(source: str) -> Any:
+    cleaned = source.strip()
+    if cleaned.lower().startswith(("http://", "https://")):
+        url = cleaned
+        if "postman.com" in cleaned and "format=json" not in cleaned:
+            url = f"{cleaned}{'&' if '?' in cleaned else '?'}format=json"
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        return response.json()
+    path = Path(cleaned)
+    if not path.is_absolute():
+        path = (Path(__file__).resolve().parent / path).resolve()
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _extract_action_path(request_url: Any) -> str:
+    if isinstance(request_url, dict):
+        raw = request_url.get("raw")
+        if isinstance(raw, str) and raw.strip():
+            parsed = urlparse(raw)
+            return parsed.path or ""
+        path_parts = request_url.get("path")
+        if isinstance(path_parts, list):
+            return "/" + "/".join(str(part).strip("/") for part in path_parts if part)
+        return ""
+    if isinstance(request_url, str):
+        parsed = urlparse(request_url)
+        return parsed.path or ""
+    return ""
+
+
+def _extract_query_fields(request_url: Any) -> List[str]:
+    keys: List[str] = []
+    if isinstance(request_url, dict):
+        query = request_url.get("query")
+        if isinstance(query, list):
+            for entry in query:
+                if not isinstance(entry, dict):
+                    continue
+                key = str(entry.get("key", "")).strip()
+                if key:
+                    keys.append(key)
+        raw = request_url.get("raw")
+        if isinstance(raw, str) and raw.strip():
+            parsed = urlparse(raw)
+            keys.extend(parse_qs(parsed.query).keys())
+    elif isinstance(request_url, str):
+        parsed = urlparse(request_url)
+        keys.extend(parse_qs(parsed.query).keys())
+    seen = set()
+    deduped: List[str] = []
+    for key in keys:
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+    return deduped
+
+
+def _infer_action_scope(path: str) -> str:
+    segments = [segment for segment in path.split("/") if segment]
+    if "sites" in segments:
+        if "devices" in segments:
+            devices_index = segments.index("devices")
+            if devices_index < len(segments) - 1:
+                return "device"
+        return "site"
+    if "orgs" in segments:
+        return "org"
+    if "devices" in segments:
+        return "device"
+    return "site"
+
+
+def _slugify_action_id(value: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
+    return cleaned or "action"
+
+
+def _collect_postman_actions(platform: str, doc: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    actions: List[Dict[str, Any]] = []
+
+    def _walk_items(items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            request = item.get("request")
+            if isinstance(request, dict):
+                name = str(item.get("name", "")).strip()
+                method = str(request.get("method", "GET")).upper()
+                url = request.get("url")
+                path = _extract_action_path(url)
+                fields = _extract_query_fields(url)
+                base_id = f"{platform}-{method}-{path or name}"
+                actions.append(
+                    {
+                        "id": _slugify_action_id(base_id),
+                        "platform": platform,
+                        "path": path,
+                        "fields": fields,
+                        "name": name or f"{method} {path}",
+                    }
+                )
+            nested = item.get("item")
+            if nested:
+                _walk_items(nested)
+
+    _walk_items(doc.get("item"))
+    return actions
+
+
+def _collect_openapi_actions(platform: str, doc: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    actions: List[Dict[str, Any]] = []
+    paths = doc.get("paths")
+    if not isinstance(paths, dict):
+        return actions
+
+    for path, path_item in paths.items():
+        if not isinstance(path_item, dict):
+            continue
+        path_parameters = []
+        if isinstance(path_item.get("parameters"), list):
+            path_parameters = path_item.get("parameters")
+        for method, operation in path_item.items():
+            if method.lower() not in {
+                "get",
+                "post",
+                "put",
+                "patch",
+                "delete",
+                "options",
+                "head",
+            }:
+                continue
+            if not isinstance(operation, dict):
+                continue
+            operation_id = str(operation.get("operationId", "")).strip()
+            summary = str(operation.get("summary", "")).strip()
+            name = operation_id or summary or f"{method.upper()} {path}"
+            parameters = []
+            for entry in path_parameters:
+                if isinstance(entry, dict):
+                    parameters.append(entry)
+            if isinstance(operation.get("parameters"), list):
+                for entry in operation.get("parameters", []):
+                    if isinstance(entry, dict):
+                        parameters.append(entry)
+            fields = []
+            for param in parameters:
+                if str(param.get("in", "")).strip().lower() != "query":
+                    continue
+                key = str(param.get("name", "")).strip()
+                if key:
+                    fields.append(key)
+            seen = set()
+            deduped_fields = []
+            for field in fields:
+                if field in seen:
+                    continue
+                seen.add(field)
+                deduped_fields.append(field)
+            scope = _infer_action_scope(path)
+            base_id = f"{platform}-{method.upper()}-{path}"
+            actions.append(
+                {
+                    "id": _slugify_action_id(base_id),
+                    "platform": platform,
+                    "path": path,
+                    "fields": deduped_fields,
+                    "name": name,
+                }
+            )
+    return actions
+
+
+def _build_compliance_actions_doc() -> Optional[Dict[str, Any]]:
+    sources = _iter_platform_api_sources()
+    if not sources:
+        return None
+    scopes: Dict[str, List[Dict[str, Any]]] = {"org": [], "site": [], "device": []}
+    seen_ids: Set[str] = set()
+    errors: List[str] = []
+    for entry in sources:
+        platform_raw = entry.get("platform", "")
+        source = entry.get("source", "")
+        platform = platform_raw.strip().lower().replace("_", " ")
+        if not platform or not source:
+            continue
+        try:
+            doc = _fetch_api_spec_doc(source)
+            actions: List[Dict[str, Any]] = []
+            if isinstance(doc, dict) and "item" in doc:
+                actions = _collect_postman_actions(platform, doc)
+            elif isinstance(doc, dict) and "paths" in doc:
+                actions = _collect_openapi_actions(platform, doc)
+            else:
+                raise ValueError("Unsupported API spec format")
+            for action in actions:
+                action_id = str(action.get("id", "")).strip()
+                if not action_id or action_id in seen_ids:
+                    continue
+                seen_ids.add(action_id)
+                scope = _infer_action_scope(str(action.get("path", "")))
+                scopes.setdefault(scope, []).append(action)
+        except Exception as exc:
+            errors.append(f"{platform_raw}: {exc}")
+    if not any(scopes.values()):
+        raise ValueError("No compliance actions loaded. " + "; ".join(errors))
+    return {"scopes": scopes, "errors": errors}
 NETBOX_DT_URL = os.getenv(
     "NETBOX_DT_URL",
     "https://api.github.com/repos/netbox-community/devicetype-library/contents/device-types",
@@ -894,7 +1159,9 @@ def api_get_compliance_rules(request: Request):
 def api_get_compliance_actions(request: Request):
     try:
         require_push_rights(current_user(request))
-        data = json.loads(COMPLIANCE_ACTIONS_PATH.read_text(encoding="utf-8"))
+        data = _build_compliance_actions_doc()
+        if data is None:
+            data = json.loads(COMPLIANCE_ACTIONS_PATH.read_text(encoding="utf-8"))
         return {"ok": True, "doc": data}
     except HTTPException as exc:
         raise exc
