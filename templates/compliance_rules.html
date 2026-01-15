@@ -376,6 +376,10 @@
         const nameInput = tr.querySelector('.rule-name');
         const actionSelect = tr.querySelector('.action');
         const conditionsContainer = tr.querySelector('.conditions');
+        const getCurrentFields = () => {
+          const selectedAction = findAction(platformSelect.value, scopeSelect.value, actionSelect.value);
+          return selectedAction?.fields?.map(field => ({value: field, label: field})) || [];
+        };
         const syncActionAndFields = () => {
           updateActionSelect(actionSelect, platformSelect.value, scopeSelect.value, actionSelect.value);
           updateConditionFieldOptions(conditionsContainer, platformSelect.value, scopeSelect.value, actionSelect.value);
@@ -416,7 +420,10 @@
         });
         updateConditionJoins(conditionsContainer);
         tr.querySelector('.add-condition').addEventListener('click', () => {
-          const row = createConditionRow({join: 'and', field: '', operator: 'equals', expected_value: ''}, fields);
+          const row = createConditionRow(
+            {join: 'and', field: '', operator: 'equals', expected_value: ''},
+            getCurrentFields(),
+          );
           conditionsContainer.appendChild(row);
           updateConditionJoins(conditionsContainer);
           attachConditionDelete(row);
