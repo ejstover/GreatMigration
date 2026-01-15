@@ -383,6 +383,8 @@ def _collect_postman_actions(platform: str, doc: Mapping[str, Any]) -> List[Dict
             if isinstance(request, dict):
                 name = str(item.get("name", "")).strip()
                 method = str(request.get("method", "GET")).upper()
+                if method != "GET":
+                    continue
                 url = request.get("url")
                 path = _extract_action_path(url)
                 fields = _extract_query_fields(url)
@@ -417,15 +419,7 @@ def _collect_openapi_actions(platform: str, doc: Mapping[str, Any]) -> List[Dict
         if isinstance(path_item.get("parameters"), list):
             path_parameters = path_item.get("parameters")
         for method, operation in path_item.items():
-            if method.lower() not in {
-                "get",
-                "post",
-                "put",
-                "patch",
-                "delete",
-                "options",
-                "head",
-            }:
+            if method.lower() != "get":
                 continue
             if not isinstance(operation, dict):
                 continue
