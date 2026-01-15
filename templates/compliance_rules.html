@@ -145,10 +145,6 @@
         .replace(/'/g, '&#39;');
     };
 
-    const getActionsForScope = (scope) => {
-      return actionsDoc.scopes?.[scope] || [];
-    };
-
     const derivePlatformOptions = () => {
       const platforms = new Map();
       Object.values(actionsDoc.scopes || {}).forEach(actions => {
@@ -165,6 +161,14 @@
       platformOptions = platforms.size
         ? [...platforms.values()]
         : [{value: 'mist', label: 'Mist'}];
+    };
+
+    const titleCase = (value) => {
+      return String(value || '')
+        .toLowerCase()
+        .split(' ')
+        .map(word => (word ? word[0].toUpperCase() + word.slice(1) : ''))
+        .join(' ');
     };
 
     const normalizePlatform = (value) => {
@@ -333,9 +337,9 @@
         tr.dataset.idx=idx;
         const platform = normalizePlatform(rule.platform);
         const scope = rule.scope;
-        const actions = getActionsForScope(scope);
+        const actions = getActionsForScope(platform, scope);
         const actionId = rule.action_id || '';
-        const action = findAction(scope, actionId);
+        const action = findAction(platform, scope, actionId);
         const fields = action?.fields?.map(field => ({value: field, label: field})) || [];
         tr.innerHTML = `
           <td class="p-2 drag-handle" draggable="true">☰</td>
@@ -367,10 +371,18 @@
         const nameInput = tr.querySelector('.rule-name');
         const actionSelect = tr.querySelector('.action');
         const conditionsContainer = tr.querySelector('.conditions');
+        const syncActionAndFields = () => {
+          updateActionSelect(actionSelect, platformSelect.value, scopeSelect.value, actionSelect.value);
+          updateConditionFieldOptions(conditionsContainer, platformSelect.value, scopeSelect.value, actionSelect.value);
+        };
+
+        platformSelect.addEventListener('change', () => {
+          syncActionAndFields();
+        });
+
         scopeSelect.addEventListener('change',()=>{
-          const newScope = scopeSelect.value;
-          updateActionSelect(actionSelect, newScope, '');
-          updateConditionFieldOptions(conditionsContainer, newScope, actionSelect.value);
+          actionSelect.value = '';
+          syncActionAndFields();
         });
 
         actionSelect.addEventListener('change',()=>{
