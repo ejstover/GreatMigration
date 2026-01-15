@@ -103,6 +103,79 @@ def _collect_site_variables(context: SiteContext) -> Dict[str, Any]:
     return merged
 
 
+def _load_compliance_rules_doc() -> Dict[str, Any]:
+    data = None
+    if COMPLIANCE_RULES_PATH.exists():
+        try:
+            data = json.loads(COMPLIANCE_RULES_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            data = None
+    if data is None and COMPLIANCE_RULES_SAMPLE_PATH.exists():
+        try:
+            data = json.loads(COMPLIANCE_RULES_SAMPLE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            data = None
+    return data if isinstance(data, dict) else {}
+
+
+def _normalize_logic_conditions(conditions: Iterable[Dict[str, Any]]) -> List[Dict[str, str]]:
+    cleaned: List[Dict[str, str]] = []
+    for entry in conditions:
+        if not isinstance(entry, dict):
+            continue
+        join = str(entry.get("join", "and")).strip().lower()
+        if join not in {"and", "or"}:
+            join = "and"
+        field = str(entry.get("field", "")).strip()
+        operator = str(entry.get("operator", "")).strip()
+        expected_value = str(entry.get("expected_value", "")).strip()
+        if not field or not operator:
+            continue
+        cleaned.append(
+            {
+                "join": join,
+                "field": field,
+                "operator": operator,
+                "expected_value": expected_value,
+            }
+        )
+    return cleaned
+
+
+def _load_logic_rules() -> List[Dict[str, Any]]:
+    doc = _load_compliance_rules_doc()
+    logic_raw = doc.get("logic_rules")
+    if not isinstance(logic_raw, list):
+        return []
+    cleaned_rules: List[Dict[str, Any]] = []
+    for item in logic_raw:
+        if not isinstance(item, dict):
+            continue
+        platform = str(item.get("platform", "")).strip().lower() or "mist"
+        scope = str(item.get("scope", "")).strip().lower()
+        if scope not in {"org", "site", "device"}:
+            scope = "site"
+        name = str(item.get("name", "")).strip()
+        action_id = str(item.get("action_id", "")).strip()
+        action_label = str(item.get("action_label", "")).strip()
+        action_path = str(item.get("action_path", "")).strip()
+        conditions = _normalize_logic_conditions(item.get("conditions") or [])
+        if not conditions:
+            continue
+        cleaned_rules.append(
+            {
+                "platform": platform,
+                "scope": scope,
+                "name": name,
+                "action_id": action_id,
+                "action_label": action_label,
+                "action_path": action_path,
+                "conditions": conditions,
+            }
+        )
+    return cleaned_rules
+
+
 DEFAULT_REQUIRED_SITE_VARIABLES: Tuple[str, ...] = (
     "hubradiusserver",
     "localradiusserver",
@@ -159,6 +232,118 @@ def _load_compliance_rule_value(rule_name: str) -> Optional[str]:
     if rule_name in rules:
         return rules[rule_name]
     return None
+
+
+def _parse_expected_value(value: str) -> Any:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return ""
+    try:
+        return ast.literal_eval(cleaned)
+    except Exception:
+        return cleaned
+
+
+def _extract_field_value(payload: Mapping[str, Any], field_path: str) -> Any:
+    if not field_path:
+        return None
+    if field_path in payload:
+        return payload.get(field_path)
+    current: Any = payload
+    for key in field_path.split("."):
+        if isinstance(current, Mapping) and key in current:
+            current = current[key]
+        else:
+            return None
+    return current
+
+
+def _is_empty_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    return False
+
+
+def _values_equal(actual: Any, expected: Any) -> bool:
+    if actual is None:
+        return expected is None or expected == ""
+    if isinstance(actual, (int, float, bool, str)) and isinstance(expected, (int, float, bool, str)):
+        return actual == expected
+    return str(actual) == str(expected)
+
+
+def _coerce_number(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _contains_value(actual: Any, expected: Any) -> bool:
+    if actual is None:
+        return False
+    if isinstance(actual, str):
+        return str(expected) in actual
+    if isinstance(actual, Mapping):
+        return str(expected) in {str(k) for k in actual.keys()}
+    if isinstance(actual, (list, tuple, set)):
+        return expected in actual or str(expected) in {str(item) for item in actual}
+    return str(expected) in str(actual)
+
+
+def _evaluate_conditions(conditions: Sequence[Mapping[str, str]], payload: Mapping[str, Any]) -> bool:
+    if not conditions:
+        return False
+    result: Optional[bool] = None
+    for idx, condition in enumerate(conditions):
+        operator = str(condition.get("operator", "")).strip()
+        field = str(condition.get("field", "")).strip()
+        expected_raw = str(condition.get("expected_value", "")).strip()
+        expected = _parse_expected_value(expected_raw)
+        actual = _extract_field_value(payload, field)
+        if operator == "equals":
+            passed = _values_equal(actual, expected)
+        elif operator == "not_equals":
+            passed = not _values_equal(actual, expected)
+        elif operator == "contains":
+            passed = _contains_value(actual, expected)
+        elif operator == "not_contains":
+            passed = not _contains_value(actual, expected)
+        elif operator == "greater_than":
+            actual_num = _coerce_number(actual)
+            expected_num = _coerce_number(expected)
+            passed = actual_num is not None and expected_num is not None and actual_num > expected_num
+        elif operator == "less_than":
+            actual_num = _coerce_number(actual)
+            expected_num = _coerce_number(expected)
+            passed = actual_num is not None and expected_num is not None and actual_num < expected_num
+        elif operator == "is_empty":
+            passed = _is_empty_value(actual)
+        elif operator == "is_not_empty":
+            passed = not _is_empty_value(actual)
+        else:
+            passed = False
+        if result is None:
+            result = passed
+        else:
+            join = str(condition.get("join", "and")).strip().lower()
+            if join == "or":
+                result = result or passed
+            else:
+                result = result and passed
+        if result is False and idx < len(conditions) - 1:
+            continue
+    return bool(result)
 
 
 def _load_site_variable_list(var_name: str, default: Sequence[str]) -> Tuple[str, ...]:
@@ -2071,6 +2256,75 @@ class DeviceDocumentationCheck(ComplianceCheck):
         return findings
 
 
+class LogicRuleComplianceCheck(ComplianceCheck):
+    """Evaluate user-defined compliance rules from compliance_rules.json."""
+
+    def __init__(self, rule: Mapping[str, Any], index: int):
+        self.rule = dict(rule)
+        self.id = f"logic_rule_{index}"
+        name = str(rule.get("name") or "").strip()
+        self.name = name or f"Custom Rule {index}"
+        action_label = str(rule.get("action_label") or "").strip()
+        action_path = str(rule.get("action_path") or "").strip()
+        self.description = action_label or action_path or "Custom compliance rule"
+
+    def _iter_targets(self, context: SiteContext) -> Iterable[Tuple[Mapping[str, Any], Optional[str], Optional[str]]]:
+        scope = str(self.rule.get("scope") or "").strip().lower()
+        action_path = str(self.rule.get("action_path") or "")
+        if scope == "device" or "/devices" in action_path:
+            devices = context.devices if isinstance(context.devices, Sequence) else []
+            for device in devices:
+                if not isinstance(device, Mapping):
+                    continue
+                device_id = device.get("id")
+                device_name = device.get("name") or device.get("device_name")
+                yield device, str(device_id) if device_id is not None else None, (
+                    str(device_name) if device_name is not None else None
+                )
+        else:
+            merged: Dict[str, Any] = {}
+            if isinstance(context.site, Mapping):
+                merged.update(context.site)
+            if isinstance(context.setting, Mapping):
+                merged.update(context.setting)
+            yield merged, None, None
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        findings: List[Finding] = []
+        conditions = self.rule.get("conditions") or []
+        if not isinstance(conditions, Sequence):
+            return findings
+        for payload, device_id, device_name in self._iter_targets(context):
+            if not isinstance(payload, Mapping):
+                continue
+            if not _evaluate_conditions(conditions, payload):
+                continue
+            fields = {str(cond.get("field") or "") for cond in conditions if isinstance(cond, Mapping)}
+            matched_fields = {
+                field: _extract_field_value(payload, field) for field in fields if field
+            }
+            message = self.name
+            if self.description:
+                message = f"{message}: {self.description}"
+            findings.append(
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    device_id=device_id,
+                    device_name=device_name,
+                    message=message,
+                    details={
+                        "action_id": self.rule.get("action_id"),
+                        "action_label": self.rule.get("action_label"),
+                        "action_path": self.rule.get("action_path"),
+                        "scope": self.rule.get("scope"),
+                        "matched_fields": matched_fields,
+                    },
+                )
+            )
+        return findings
+
+
 class SiteAuditRunner:
     """Runs a suite of compliance checks across one or more sites."""
 
@@ -2141,6 +2395,13 @@ class SiteAuditRunner:
 
 
 def build_default_runner() -> SiteAuditRunner:
+    logic_rules = _load_logic_rules()
+    if logic_rules:
+        checks = [
+            LogicRuleComplianceCheck(rule, index + 1)
+            for index, rule in enumerate(logic_rules)
+        ]
+        return SiteAuditRunner(checks)
     checks: Sequence[ComplianceCheck] = (
         RequiredSiteVariablesCheck(),
         SwitchTemplateConfigurationCheck(),
