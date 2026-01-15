@@ -280,12 +280,12 @@ def _iter_platform_api_sources() -> List[Dict[str, str]]:
 def _fetch_api_spec_doc(source: str) -> Any:
     cleaned = source.strip()
     if cleaned.lower().startswith(("http://", "https://")):
-        url = cleaned
-        if "postman.com" in cleaned and "format=json" not in cleaned:
-            url = f"{cleaned}{'&' if '?' in cleaned else '?'}format=json"
-        response = requests.get(url, timeout=15)
+        response = requests.get(cleaned, timeout=15)
         response.raise_for_status()
-        return response.json()
+        try:
+            return response.json()
+        except ValueError:
+            return json.loads(response.text)
     path = Path(cleaned)
     if not path.is_absolute():
         path = (Path(__file__).resolve().parent / path).resolve()
