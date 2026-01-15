@@ -195,7 +195,12 @@
       const base = placeholder ? `<option value="">${placeholder}</option>` : '';
       const opts = options.map(option => {
         const value = escapeHtml(option.value ?? option.id ?? '');
-        const label = escapeHtml(option.name ?? option.label ?? option.value ?? option.id ?? '');
+        const optionName = option.name ?? option.label ?? option.value ?? option.id ?? '';
+        const rulesName = option.compliance_rules_name;
+        const labelText = rulesName && optionName
+          ? `${rulesName} (${optionName})`
+          : (rulesName || optionName);
+        const label = escapeHtml(labelText);
         const selectedAttr = value === selected ? 'selected' : '';
         return `<option value="${value}" ${selectedAttr}>${label}</option>`;
       });
@@ -387,6 +392,10 @@
 
         actionSelect.addEventListener('change',()=>{
           updateConditionFieldOptions(conditionsContainer, platformSelect.value, scopeSelect.value, actionSelect.value);
+          const selectedAction = findAction(platformSelect.value, scopeSelect.value, actionSelect.value);
+          if (selectedAction && !nameInput.value.trim()) {
+            nameInput.value = selectedAction.compliance_rules_name || selectedAction.name || '';
+          }
         });
 
         const attachConditionDelete = (row) => {

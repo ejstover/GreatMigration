@@ -13,6 +13,7 @@
           "org_id",
           "timezone"
         ],
+        "compliance_rules_name": "List organization sites",
         "name": "GET /api/v1/orgs/{orgId}/sites"
       },
       {
@@ -30,6 +31,7 @@
           "site_id",
           "type"
         ],
+        "compliance_rules_name": "List organization devices",
         "name": "GET /api/v1/orgs/{orgId}/devices"
       }
     ],
@@ -50,6 +52,7 @@
           "role",
           "type"
         ],
+        "compliance_rules_name": "List site devices",
         "name": "GET /api/v1/sites/{siteId}/devices"
       },
       {
@@ -94,6 +97,7 @@
           "vars.RADIUS_IP1",
           "vars.RADIUS_SECRET"
         ],
+        "compliance_rules_name": "Get site device details",
         "name": "GET /api/v1/sites/{siteId}/devices/{deviceId}"
       }
     ],
@@ -140,6 +144,7 @@
           "vars.RADIUS_IP1",
           "vars.RADIUS_SECRET"
         ],
+        "compliance_rules_name": "Get device details",
         "name": "GET /api/v1/sites/{siteId}/devices/{deviceId}"
       }
     ]
