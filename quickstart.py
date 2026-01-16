@@ -168,6 +168,7 @@ def ensure_env_file(project_dir: Path) -> int | None:
         else:
             lines.extend([
                 "LDAP_SERVER_URL=",
+                "LDAP_SERVER_URLS=",
                 "LDAP_SEARCH_BASE=",
                 "LDAP_BIND_TEMPLATE=",
                 "PUSH_GROUP_DN=",

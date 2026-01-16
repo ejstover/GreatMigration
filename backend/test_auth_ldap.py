@@ -191,3 +191,18 @@ def test_is_member_of_group_escapes_filter_characters(monkeypatch):
         "))"
     )
     assert conn.search_calls == [("DC=example,DC=com", expected_filter)]
+
+
+def test_parse_server_urls_accepts_semicolons_and_newlines():
+    import importlib
+
+    auth_ldap = importlib.reload(importlib.import_module("auth_ldap"))
+
+    raw = "ldaps://dc01.example.com:636\nldaps://dc02.example.com:636; ldaps://dc03.example.com:636 "
+    result = auth_ldap._parse_server_urls(raw)
+
+    assert result == [
+        "ldaps://dc01.example.com:636",
+        "ldaps://dc02.example.com:636",
+        "ldaps://dc03.example.com:636",
+    ]

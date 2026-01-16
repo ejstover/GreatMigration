@@ -29,6 +29,17 @@ def _parse_search_bases(raw: Optional[str]) -> List[str]:
     return bases or []
 
 
+def _parse_server_urls(raw: Optional[str]) -> List[str]:
+    """Return a list of LDAP server URLs, supporting semicolon/newline separated input."""
+    if not raw:
+        return []
+
+    cleaned = raw.replace("\n", ";")
+    urls = [part.strip() for part in cleaned.split(";") if part.strip()]
+    return urls or []
+
+
+LDAP_SERVER_URLS = _parse_server_urls(os.getenv("LDAP_SERVER_URLS") or LDAP_SERVER_URL)
 LDAP_SEARCH_BASES = _parse_search_bases(os.getenv("LDAP_SEARCH_BASES") or LDAP_SEARCH_BASE)
 LDAP_BIND_TEMPLATE = os.getenv("LDAP_BIND_TEMPLATE", "{username}@testdomain.local")
 PUSH_GROUP_DN = os.getenv("PUSH_GROUP_DN")  # CN=NetAuto-Push,OU=Groups,...
@@ -45,21 +56,43 @@ router = APIRouter()
 
 action_logger = get_user_logger()
 
-def _server() -> Server:
-    use_ssl = LDAP_SERVER_URL.lower().startswith("ldaps://")
-    return Server(LDAP_SERVER_URL, use_ssl=use_ssl, get_info=ALL, connect_timeout=8)
+def _server(url: str) -> Server:
+    use_ssl = url.lower().startswith("ldaps://")
+    return Server(url, use_ssl=use_ssl, get_info=ALL, connect_timeout=8)
+
+
+def _iter_server_urls() -> List[str]:
+    urls = LDAP_SERVER_URLS or []
+    if not urls and LDAP_SERVER_URL:
+        urls = [LDAP_SERVER_URL]
+    return urls
 
 def _bind_as(username: str, password: str) -> Connection:
     """Bind as the user. username is raw (e.g., 'alice'), we render per template."""
     user_bind = LDAP_BIND_TEMPLATE.format(username=username)
-    conn = Connection(_server(), user=user_bind, password=password, auto_bind=True)
-    return conn
+    last_error = None
+    for url in _iter_server_urls():
+        try:
+            return Connection(_server(url), user=user_bind, password=password, auto_bind=True)
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise RuntimeError("No LDAP server URLs configured.")
 
 def _bind_service() -> Optional[Connection]:
     """Bind as service account for searches, if configured."""
     if not LDAP_SERVICE_DN or not LDAP_SERVICE_PASSWORD:
         return None
-    return Connection(_server(), user=LDAP_SERVICE_DN, password=LDAP_SERVICE_PASSWORD, auto_bind=True)
+    last_error = None
+    for url in _iter_server_urls():
+        try:
+            return Connection(_server(url), user=LDAP_SERVICE_DN, password=LDAP_SERVICE_PASSWORD, auto_bind=True)
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise RuntimeError("No LDAP server URLs configured.")
 
 def _iter_search_bases() -> List[str]:
     bases = LDAP_SEARCH_BASES or []

@@ -140,6 +140,7 @@ function Ensure-Env {
       }
     } else {
       $lines += "LDAP_SERVER_URL="
+      $lines += "LDAP_SERVER_URLS="
       $lines += "LDAP_SEARCH_BASE="
       $lines += "LDAP_BIND_TEMPLATE="
       $lines += "PUSH_GROUP_DN="
