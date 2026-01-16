@@ -14,8 +14,8 @@ from logging_utils import get_user_logger
 SESSION_SECRET = os.getenv("SESSION_SECRET")
 if not SESSION_SECRET:
     SESSION_SECRET = secrets.token_urlsafe(32)
-LDAP_SERVER_URL = os.getenv("LDAP_SERVER_URL", "ldaps://dc01.testdomain.local:636")
-LDAP_SEARCH_BASE = os.getenv("LDAP_SEARCH_BASE", "DC=testdomain,DC=local")
+LDAP_SERVER_URL = os.getenv("LDAP_SERVER_URL", "")
+LDAP_SEARCH_BASE = os.getenv("LDAP_SEARCH_BASE", "")
 
 
 def _parse_search_bases(raw: Optional[str]) -> List[str]:
@@ -41,7 +41,7 @@ def _parse_server_urls(raw: Optional[str]) -> List[str]:
 
 LDAP_SERVER_URLS = _parse_server_urls(os.getenv("LDAP_SERVER_URLS") or LDAP_SERVER_URL)
 LDAP_SEARCH_BASES = _parse_search_bases(os.getenv("LDAP_SEARCH_BASES") or LDAP_SEARCH_BASE)
-LDAP_BIND_TEMPLATE = os.getenv("LDAP_BIND_TEMPLATE", "{username}@testdomain.local")
+LDAP_BIND_TEMPLATE = os.getenv("LDAP_BIND_TEMPLATE", "{username}")
 PUSH_GROUP_DN = os.getenv("PUSH_GROUP_DN")  # CN=NetAuto-Push,OU=Groups,...
 READONLY_GROUP_DNS = _parse_search_bases(os.getenv("READONLY_GROUP_DN"))
 
@@ -168,7 +168,10 @@ def _is_member_of_group(user_dn: str, group_dn: str, search_conn: Connection) ->
 
 def _html_login(error: Optional[str] = None) -> str:
     msg = f'<p class="text-sm text-rose-600 dark:text-rose-400 mt-2">{error}</p>' if error else ''
-    hint = 'user@testdomain.local' if '{username}@' in LDAP_BIND_TEMPLATE else 'TESTDOMAIN\\user'
+    if "{username}" in LDAP_BIND_TEMPLATE:
+        hint = LDAP_BIND_TEMPLATE.format(username="user")
+    else:
+        hint = LDAP_BIND_TEMPLATE or "user@example.com"
     return f"""
 <!doctype html>
 <html>
