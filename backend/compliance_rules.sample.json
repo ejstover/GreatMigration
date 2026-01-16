@@ -1,40 +1,304 @@
 {
-  "rules": [
+  "rules": [],
+  "logic_rules": [
     {
-      "name": "SWITCH_NAME_REGEX_PATTERN",
-      "value": "^(NA|LA|EU|AP)[A-Z]{3}(?:MDFSPARE|MDF(AS|CS|WS)\\d+|IDF\\d+(AS|CS|WS)\\d+)$",
-      "comment": "Switch naming convention pattern."
+      "name": "Site variable missing: hubradiusserver",
+      "scope": "site",
+      "conditions": [
+        {
+          "field": "site_variables.hubradiusserver",
+          "operator": "is_empty",
+          "expected_value": ""
+        }
+      ]
     },
     {
-      "name": "AP_NAME_REGEX_PATTERN",
-      "value": "^(NA|LA|EU|AP)[A-Z]{3}(?:MDF|IDF\\d+)AP\\d+$",
-      "comment": "Access point naming convention pattern."
+      "name": "Site variable missing: localradiusserver",
+      "scope": "site",
+      "conditions": [
+        {
+          "field": "site_variables.localradiusserver",
+          "operator": "is_empty",
+          "expected_value": ""
+        }
+      ]
     },
     {
-      "name": "SW_NUM_IMG",
-      "value": "2",
-      "comment": "Minimum images required for switches."
+      "name": "Site variable missing: siteDNS",
+      "scope": "site",
+      "conditions": [
+        {
+          "field": "site_variables.siteDNS",
+          "operator": "is_empty",
+          "expected_value": ""
+        }
+      ]
     },
     {
-      "name": "AP_NUM_IMG",
-      "value": "2",
-      "comment": "Minimum images required for access points."
+      "name": "Site variable missing: hubDNSserver1",
+      "scope": "site",
+      "conditions": [
+        {
+          "field": "site_variables.hubDNSserver1",
+          "operator": "is_empty",
+          "expected_value": ""
+        }
+      ]
     },
     {
-      "name": "STD_SW_VER",
-      "value": "23.4R2-S4.11,24.4R1-S2.15",
-      "comment": "Comma-separated list of approved switch firmware versions."
+      "name": "Site variable missing: hubDNSserver2",
+      "scope": "site",
+      "conditions": [
+        {
+          "field": "site_variables.hubDNSserver2",
+          "operator": "is_empty",
+          "expected_value": ""
+        }
+      ]
     },
     {
-      "name": "STD_AP_VER",
-      "value": "0.12.27452",
-      "comment": "Comma-separated list of approved access point firmware versions."
+      "name": "Non-lab site missing production template",
+      "scope": "site",
+      "conditions": [
+        {
+          "field": "site_name",
+          "operator": "not_contains",
+          "expected_value": "LAB"
+        },
+        {
+          "field": "template_names",
+          "operator": "is_not_empty",
+          "expected_value": "",
+          "join": "and"
+        },
+        {
+          "field": "template_names",
+          "operator": "not_contains",
+          "expected_value": "Prod - Standard Template",
+          "join": "and"
+        }
+      ]
     },
     {
-      "name": "MIST_SITE_VARIABLES",
-      "value": "hubradiusserver,localradiusserver,siteDNS,hubDNSserver1,hubDNSserver2",
-      "comment": "Comma-separated list of required site variables."
+      "name": "Lab site missing approved template",
+      "scope": "site",
+      "conditions": [
+        {
+          "field": "site_name",
+          "operator": "contains",
+          "expected_value": "LAB"
+        },
+        {
+          "field": "template_names",
+          "operator": "is_not_empty",
+          "expected_value": "",
+          "join": "and"
+        },
+        {
+          "field": "template_names",
+          "operator": "not_contains",
+          "expected_value": "Prod - Standard Template",
+          "join": "and"
+        },
+        {
+          "field": "template_names",
+          "operator": "not_contains",
+          "expected_value": "Test - Standard Template",
+          "join": "and"
+        }
+      ]
+    },
+    {
+      "name": "Non-lab site has extra templates applied",
+      "scope": "site",
+      "conditions": [
+        {
+          "field": "site_name",
+          "operator": "not_contains",
+          "expected_value": "LAB"
+        },
+        {
+          "field": "template_names",
+          "operator": "contains",
+          "expected_value": "Prod - Standard Template",
+          "join": "and"
+        },
+        {
+          "field": "template_name_count",
+          "operator": "greater_than",
+          "expected_value": "1",
+          "join": "and"
+        }
+      ]
+    },
+    {
+      "name": "Switch firmware missing",
+      "scope": "device",
+      "conditions": [
+        {
+          "field": "is_switch",
+          "operator": "equals",
+          "expected_value": "True"
+        },
+        {
+          "field": "firmware_version",
+          "operator": "is_empty",
+          "expected_value": "",
+          "join": "and"
+        }
+      ]
+    },
+    {
+      "name": "Switch firmware not approved",
+      "scope": "device",
+      "conditions": [
+        {
+          "field": "is_switch",
+          "operator": "equals",
+          "expected_value": "True"
+        },
+        {
+          "field": "firmware_version",
+          "operator": "is_not_empty",
+          "expected_value": "",
+          "join": "and"
+        },
+        {
+          "field": "firmware_version",
+          "operator": "not_contains",
+          "expected_value": "['23.4R2-S4.11', '24.4R1-S2.15']",
+          "join": "and"
+        }
+      ]
+    },
+    {
+      "name": "Access point firmware missing",
+      "scope": "device",
+      "conditions": [
+        {
+          "field": "is_access_point",
+          "operator": "equals",
+          "expected_value": "True"
+        },
+        {
+          "field": "firmware_version",
+          "operator": "is_empty",
+          "expected_value": "",
+          "join": "and"
+        }
+      ]
+    },
+    {
+      "name": "Access point firmware not approved",
+      "scope": "device",
+      "conditions": [
+        {
+          "field": "is_access_point",
+          "operator": "equals",
+          "expected_value": "True"
+        },
+        {
+          "field": "firmware_version",
+          "operator": "is_not_empty",
+          "expected_value": "",
+          "join": "and"
+        },
+        {
+          "field": "firmware_version",
+          "operator": "not_contains",
+          "expected_value": "['0.12.27452']",
+          "join": "and"
+        }
+      ]
+    },
+    {
+      "name": "Switch naming convention mismatch",
+      "scope": "device",
+      "conditions": [
+        {
+          "field": "is_switch",
+          "operator": "equals",
+          "expected_value": "True"
+        },
+        {
+          "field": "device_name",
+          "operator": "not_matches",
+          "expected_value": "^(NA|LA|EU|AP)[A-Z]{3}(?:MDFSPARE|MDF(AS|CS|WS)\\d+|IDF\\d+(AS|CS|WS)\\d+)$",
+          "join": "and"
+        }
+      ]
+    },
+    {
+      "name": "Access point naming convention mismatch",
+      "scope": "device",
+      "conditions": [
+        {
+          "field": "is_access_point",
+          "operator": "equals",
+          "expected_value": "True"
+        },
+        {
+          "field": "device_name",
+          "operator": "not_matches",
+          "expected_value": "^(NA|LA|EU|AP)[A-Z]{3}(?:MDF|IDF\\d+)AP\\d+$",
+          "join": "and"
+        }
+      ]
+    },
+    {
+      "name": "Device missing floorplan assignment",
+      "scope": "device",
+      "conditions": [
+        {
+          "field": "map_id",
+          "operator": "is_empty",
+          "expected_value": ""
+        }
+      ]
+    },
+    {
+      "name": "Device missing required images",
+      "scope": "device",
+      "conditions": [
+        {
+          "field": "image_count",
+          "operator": "less_than",
+          "expected_value": "2"
+        }
+      ]
+    },
+    {
+      "name": "Site configuration overrides detected",
+      "scope": "site",
+      "conditions": [
+        {
+          "field": "site_override_count",
+          "operator": "greater_than",
+          "expected_value": "0"
+        }
+      ]
+    },
+    {
+      "name": "Device configuration overrides detected",
+      "scope": "device",
+      "conditions": [
+        {
+          "field": "device_override_count",
+          "operator": "greater_than",
+          "expected_value": "0"
+        }
+      ]
+    },
+    {
+      "name": "Device port override detected",
+      "scope": "device",
+      "conditions": [
+        {
+          "field": "port_override_count",
+          "operator": "greater_than",
+          "expected_value": "0"
+        }
+      ]
     }
-  ],
-  "logic_rules": []
+  ]
 }
