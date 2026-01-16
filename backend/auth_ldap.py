@@ -14,8 +14,8 @@ from logging_utils import get_user_logger
 SESSION_SECRET = os.getenv("SESSION_SECRET")
 if not SESSION_SECRET:
     SESSION_SECRET = secrets.token_urlsafe(32)
-LDAP_SERVER_URL = os.getenv("LDAP_SERVER_URL", "ldaps://dc01.testdomain.local:636")
-LDAP_SEARCH_BASE = os.getenv("LDAP_SEARCH_BASE", "DC=testdomain,DC=local")
+LDAP_SERVER_URL = os.getenv("LDAP_SERVER_URL", "")
+LDAP_SEARCH_BASE = os.getenv("LDAP_SEARCH_BASE", "")
 
 
 def _parse_search_bases(raw: Optional[str]) -> List[str]:
@@ -29,8 +29,19 @@ def _parse_search_bases(raw: Optional[str]) -> List[str]:
     return bases or []
 
 
+def _parse_server_urls(raw: Optional[str]) -> List[str]:
+    """Return a list of LDAP server URLs, supporting semicolon/newline separated input."""
+    if not raw:
+        return []
+
+    cleaned = raw.replace("\n", ";")
+    urls = [part.strip() for part in cleaned.split(";") if part.strip()]
+    return urls or []
+
+
+LDAP_SERVER_URLS = _parse_server_urls(os.getenv("LDAP_SERVER_URLS") or LDAP_SERVER_URL)
 LDAP_SEARCH_BASES = _parse_search_bases(os.getenv("LDAP_SEARCH_BASES") or LDAP_SEARCH_BASE)
-LDAP_BIND_TEMPLATE = os.getenv("LDAP_BIND_TEMPLATE", "{username}@testdomain.local")
+LDAP_BIND_TEMPLATE = os.getenv("LDAP_BIND_TEMPLATE", "{username}")
 PUSH_GROUP_DN = os.getenv("PUSH_GROUP_DN")  # CN=NetAuto-Push,OU=Groups,...
 READONLY_GROUP_DNS = _parse_search_bases(os.getenv("READONLY_GROUP_DN"))
 
@@ -45,21 +56,43 @@ router = APIRouter()
 
 action_logger = get_user_logger()
 
-def _server() -> Server:
-    use_ssl = LDAP_SERVER_URL.lower().startswith("ldaps://")
-    return Server(LDAP_SERVER_URL, use_ssl=use_ssl, get_info=ALL, connect_timeout=8)
+def _server(url: str) -> Server:
+    use_ssl = url.lower().startswith("ldaps://")
+    return Server(url, use_ssl=use_ssl, get_info=ALL, connect_timeout=8)
+
+
+def _iter_server_urls() -> List[str]:
+    urls = LDAP_SERVER_URLS or []
+    if not urls and LDAP_SERVER_URL:
+        urls = [LDAP_SERVER_URL]
+    return urls
 
 def _bind_as(username: str, password: str) -> Connection:
     """Bind as the user. username is raw (e.g., 'alice'), we render per template."""
     user_bind = LDAP_BIND_TEMPLATE.format(username=username)
-    conn = Connection(_server(), user=user_bind, password=password, auto_bind=True)
-    return conn
+    last_error = None
+    for url in _iter_server_urls():
+        try:
+            return Connection(_server(url), user=user_bind, password=password, auto_bind=True)
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise RuntimeError("No LDAP server URLs configured.")
 
 def _bind_service() -> Optional[Connection]:
     """Bind as service account for searches, if configured."""
     if not LDAP_SERVICE_DN or not LDAP_SERVICE_PASSWORD:
         return None
-    return Connection(_server(), user=LDAP_SERVICE_DN, password=LDAP_SERVICE_PASSWORD, auto_bind=True)
+    last_error = None
+    for url in _iter_server_urls():
+        try:
+            return Connection(_server(url), user=LDAP_SERVICE_DN, password=LDAP_SERVICE_PASSWORD, auto_bind=True)
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise RuntimeError("No LDAP server URLs configured.")
 
 def _iter_search_bases() -> List[str]:
     bases = LDAP_SEARCH_BASES or []
@@ -135,7 +168,10 @@ def _is_member_of_group(user_dn: str, group_dn: str, search_conn: Connection) ->
 
 def _html_login(error: Optional[str] = None) -> str:
     msg = f'<p class="text-sm text-rose-600 dark:text-rose-400 mt-2">{error}</p>' if error else ''
-    hint = 'user@testdomain.local' if '{username}@' in LDAP_BIND_TEMPLATE else 'TESTDOMAIN\\user'
+    if "{username}" in LDAP_BIND_TEMPLATE:
+        hint = LDAP_BIND_TEMPLATE.format(username="user")
+    else:
+        hint = LDAP_BIND_TEMPLATE or "user@example.com"
     return f"""
 <!doctype html>
 <html>

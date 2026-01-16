@@ -207,7 +207,7 @@ Both scripts read and reuse values in `backend/.env`, so follow-up runs only pro
      * `SESSION_SECRET`
      * `AUTH_METHOD` (`local` or `ldap`)
      * For local auth: `LOCAL_USERS` and optional `LOCAL_PUSH_USERS`
-     * For LDAP auth: `LDAP_SERVER_URL`, `LDAP_SEARCH_BASE`/`LDAP_SEARCH_BASES`, `LDAP_BIND_TEMPLATE`, `LDAP_SERVICE_DN`, `LDAP_SERVICE_PASSWORD`, plus `PUSH_GROUP_DN` and optional `READONLY_GROUP_DN`
+     * For LDAP auth: `LDAP_SERVER_URL`/`LDAP_SERVER_URLS`, `LDAP_SEARCH_BASE`/`LDAP_SEARCH_BASES`, `LDAP_BIND_TEMPLATE`, `LDAP_SERVICE_DN`, `LDAP_SERVICE_PASSWORD`, plus `PUSH_GROUP_DN` and optional `READONLY_GROUP_DN`
      * Optional defaults: `MIST_BASE_URL`, `MIST_ORG_ID`, `SWITCH_TEMPLATE_ID`, `API_PORT`, `HELP_URL`
      * Compliance tuning: `SWITCH_NAME_REGEX_PATTERN`, `AP_NAME_REGEX_PATTERN`, `MIST_SITE_VARIABLES`, `SW_NUM_IMG`, `AP_NUM_IMG`
      * Device catalog sources: `NETBOX_DT_URL`, `NETBOX_LOCAL_DT`
@@ -261,6 +261,7 @@ Think of the backend as a set of small “helpers” that each do one job:
 * **Authentication & authorization**
   * `AUTH_METHOD=local` uses users listed in `LOCAL_USERS` (`username:password`). Include comma-separated pairs and flag push-enabled accounts in `LOCAL_PUSH_USERS`.
   * `AUTH_METHOD=ldap` supports read-only (`READONLY_GROUP_DN`) and push-enabled (`PUSH_GROUP_DN`) directory groups. Multiple values can be separated by semicolons or newlines.
+  * Use `LDAP_SERVER_URLS` (semicolon/newline separated) to specify multiple LDAP servers; `LDAP_SERVER_URL` remains supported for single-server setups.
 * **Mist connectivity**
   * `MIST_BASE_URL` defaults to `https://api.ac2.mist.com`. Change it if your org lives in another Mist region.
   * `MIST_ORG_ID`, `SWITCH_TEMPLATE_ID`, and `API_PORT` can be pre-filled to streamline onboarding.
@@ -286,7 +287,7 @@ Allow the following flows if your environment restricts outbound traffic:
 | Outbound  | TCP 22  | Managed switches | Allow the automation engine to initiate SSH sessions when executing configuration pushes or validation steps. |
 | Outbound† | TCP 389 / 636 | LDAP / Active Directory servers | Needed only when `AUTH_METHOD=ldap`. |
 
-†Use the secure port declared in `LDAP_SERVER_URL` (e.g., 636 for LDAPS).
+†Use the secure port declared in `LDAP_SERVER_URL` or `LDAP_SERVER_URLS` (e.g., 636 for LDAPS).
 
 ---
 
