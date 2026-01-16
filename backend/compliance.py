@@ -292,6 +292,11 @@ def _coerce_number(value: Any) -> Optional[float]:
 def _contains_value(actual: Any, expected: Any) -> bool:
     if actual is None:
         return False
+    if isinstance(expected, (list, tuple, set)):
+        if isinstance(actual, (list, tuple, set)):
+            actual_values = {str(item) for item in actual}
+            return any(str(item) in actual_values for item in expected)
+        return actual in expected or str(actual) in {str(item) for item in expected}
     if isinstance(actual, str):
         return str(expected) in actual
     if isinstance(actual, Mapping):
@@ -319,6 +324,22 @@ def _evaluate_conditions(conditions: Sequence[Mapping[str, str]], payload: Mappi
             passed = _contains_value(actual, expected)
         elif operator == "not_contains":
             passed = not _contains_value(actual, expected)
+        elif operator == "matches":
+            if actual is None:
+                passed = False
+            else:
+                try:
+                    passed = bool(re.fullmatch(str(expected), str(actual)))
+                except re.error:
+                    passed = False
+        elif operator == "not_matches":
+            if actual is None:
+                passed = False
+            else:
+                try:
+                    passed = not bool(re.fullmatch(str(expected), str(actual)))
+                except re.error:
+                    passed = False
         elif operator == "greater_than":
             actual_num = _coerce_number(actual)
             expected_num = _coerce_number(expected)
@@ -344,6 +365,50 @@ def _evaluate_conditions(conditions: Sequence[Mapping[str, str]], payload: Mappi
         if result is False and idx < len(conditions) - 1:
             continue
     return bool(result)
+
+
+def _build_site_payload(context: SiteContext) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    if isinstance(context.site, Mapping):
+        payload.update(context.site)
+    if isinstance(context.setting, Mapping):
+        payload.update(context.setting)
+    if context.site_name:
+        payload.setdefault("site_name", context.site_name)
+    site_variables = _collect_site_variables(context)
+    payload["site_variables"] = site_variables
+    template_names = sorted(_collect_template_names(context))
+    payload["template_names"] = template_names
+    payload["template_name_count"] = len(template_names)
+    site_override_paths = sorted(_collect_override_paths(context.setting))
+    payload["site_override_paths"] = site_override_paths
+    payload["site_override_count"] = len(site_override_paths)
+    return payload
+
+
+def _build_device_payload(context: SiteContext, device: Mapping[str, Any]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = dict(device)
+    if context.site_name:
+        payload.setdefault("site_name", context.site_name)
+    device_name = (
+        device.get("name")
+        or device.get("hostname")
+        or device.get("device_name")
+        or device.get("mac")
+        or device.get("id")
+    )
+    if isinstance(device_name, str) and device_name.strip():
+        payload.setdefault("device_name", device_name.strip())
+    payload["is_switch"] = _is_switch(device)
+    payload["is_access_point"] = _is_access_point(device)
+    payload["firmware_version"] = _extract_firmware_version(device) or ""
+    payload["image_count"] = len(_collect_device_images(dict(device)))
+    device_override_paths = sorted(_collect_override_paths(device))
+    payload["device_override_paths"] = device_override_paths
+    payload["device_override_count"] = len(device_override_paths)
+    port_overrides = _collect_port_overrides(dict(device))
+    payload["port_override_count"] = len(port_overrides)
+    return payload
 
 
 def _load_site_variable_list(var_name: str, default: Sequence[str]) -> Tuple[str, ...]:
@@ -2277,17 +2342,19 @@ class LogicRuleComplianceCheck(ComplianceCheck):
                 if not isinstance(device, Mapping):
                     continue
                 device_id = device.get("id")
-                device_name = device.get("name") or device.get("device_name")
-                yield device, str(device_id) if device_id is not None else None, (
-                    str(device_name) if device_name is not None else None
+                device_name = (
+                    device.get("name")
+                    or device.get("hostname")
+                    or device.get("device_name")
+                    or device.get("mac")
+                    or device.get("id")
+                )
+                payload = _build_device_payload(context, device)
+                yield payload, str(device_id) if device_id is not None else None, (
+                    str(device_name).strip() if device_name is not None else None
                 )
         else:
-            merged: Dict[str, Any] = {}
-            if isinstance(context.site, Mapping):
-                merged.update(context.site)
-            if isinstance(context.setting, Mapping):
-                merged.update(context.setting)
-            yield merged, None, None
+            yield _build_site_payload(context), None, None
 
     def run(self, context: SiteContext) -> List[Finding]:
         findings: List[Finding] = []
@@ -2396,18 +2463,8 @@ class SiteAuditRunner:
 
 def build_default_runner() -> SiteAuditRunner:
     logic_rules = _load_logic_rules()
-    if logic_rules:
-        checks = [
-            LogicRuleComplianceCheck(rule, index + 1)
-            for index, rule in enumerate(logic_rules)
-        ]
-        return SiteAuditRunner(checks)
-    checks: Sequence[ComplianceCheck] = (
-        RequiredSiteVariablesCheck(),
-        SwitchTemplateConfigurationCheck(),
-        ConfigurationOverridesCheck(),
-        FirmwareManagementCheck(),
-        DeviceNamingConventionCheck(),
-        DeviceDocumentationCheck(),
-    )
+    checks = [
+        LogicRuleComplianceCheck(rule, index + 1)
+        for index, rule in enumerate(logic_rules)
+    ]
     return SiteAuditRunner(checks)
