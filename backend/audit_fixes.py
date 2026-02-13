@@ -593,7 +593,14 @@ def _execute_set_spare_switch_role_action(
         role_payload = {"role": "spare"}
 
         proposed_spare_name = _propose_spare_switch_name(current_name)
-        if not proposed_spare_name:
+        current_name_compliant = bool(
+            current_name
+            and (
+                SWITCH_LLDPNAME_PATTERN is None
+                or SWITCH_LLDPNAME_PATTERN.fullmatch(current_name) is not None
+            )
+        )
+        if not proposed_spare_name and not current_name_compliant:
             summary["failed"] += 1
             summary["errors"].append(
                 {
@@ -615,7 +622,7 @@ def _execute_set_spare_switch_role_action(
             continue
 
         rename_to: Optional[str] = None
-        if current_name != proposed_spare_name:
+        if proposed_spare_name and current_name != proposed_spare_name:
             rename_to = proposed_spare_name
 
         payload = dict(role_payload)
