@@ -81,6 +81,7 @@
     <div id="profile_status" class="text-sm text-red-600 dark:text-red-400 mt-2"></div>
     </div>
     </div>
+  <div id="mist_toast_stack" class="pointer-events-none fixed bottom-4 right-4 z-40 flex w-96 max-w-[calc(100vw-2rem)] flex-col gap-3"></div>
 
     <script>
       const menuBtn = document.getElementById('menu_btn');
@@ -99,6 +100,52 @@
 
     const userGreeting = document.getElementById('user_greeting');
     const logoutBtn = document.getElementById('logout_btn');
+    const mistToastStack = document.getElementById('mist_toast_stack');
+    let lastWebhookAlertId = 0;
+    let webhookAlertTimer = null;
+
+    function showMistToast(alert){
+      if (!mistToastStack || !alert) return;
+      const card = document.createElement('div');
+      card.className = 'pointer-events-auto relative rounded-xl border-l-4 border-emerald-500 bg-white px-4 py-3 shadow-lg dark:border-emerald-400 dark:bg-slate-800';
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'absolute right-3 top-2 text-xl leading-none text-slate-500 hover:text-slate-900 dark:hover:text-white';
+      closeBtn.setAttribute('aria-label', 'Dismiss notification');
+      closeBtn.textContent = '×';
+      const title = document.createElement('div');
+      title.className = 'pr-8 text-base font-semibold text-slate-900 dark:text-slate-100';
+      title.textContent = alert.device_name || alert.device_id || 'Mist event';
+      const body = document.createElement('div');
+      body.className = 'mt-1 pr-8 text-sm text-slate-600 dark:text-slate-300';
+      body.textContent = alert.message || `${alert.event || 'mist.event'} matched a recently configured device.`;
+      card.append(closeBtn, title, body);
+      mistToastStack.prepend(card);
+      const remove = () => card.remove();
+      closeBtn.addEventListener('click', remove);
+      while (mistToastStack.children.length > 5) mistToastStack.lastElementChild?.remove();
+      setTimeout(remove, 10000);
+    }
+
+    async function pollWebhookAlerts(){
+      try {
+        const res = await fetch(`/api/webhooks/mist/alerts?since_id=${lastWebhookAlertId}&limit=20`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const items = Array.isArray(data.items) ? data.items : [];
+        items.slice().reverse().forEach(item => {
+          const id = Number(item?.id || 0);
+          if (id > lastWebhookAlertId) lastWebhookAlertId = id;
+          showMistToast(item);
+        });
+      } catch (_) {}
+    }
+
+    function startWebhookAlerts(){
+      if (webhookAlertTimer) return;
+      pollWebhookAlerts();
+      webhookAlertTimer = setInterval(pollWebhookAlerts, 5000);
+    }
     fetch('/me').then(res => {
       if (!res.ok) throw new Error('not authed');
       return res.json();
@@ -107,6 +154,7 @@
       userGreeting.classList.remove('hidden');
       logoutBtn?.classList.remove('hidden');
       logoutBtn?.addEventListener('click', (e) => { e.preventDefault(); window.location.href = '/logout'; });
+      startWebhookAlerts();
     }).catch(() => { window.location.href = '/login'; });
 
     const tbody = document.getElementById('rules_tbody');

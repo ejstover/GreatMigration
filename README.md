@@ -234,6 +234,7 @@ Both scripts read and reuse values in `backend/.env`, so follow-up runs only pro
 * **LDAP integration (optional)** – set `AUTH_METHOD=ldap` and supply your server + group DNs in `backend/.env`. Users in `PUSH_GROUP_DN` can push changes; users in `READONLY_GROUP_DN` can still view reports without modifying Mist.
 * **Syslog export (optional)** – set `SYSLOG_HOST` and `SYSLOG_PORT` to forward user action logs to your syslog collector. If syslog is unreachable, file logging still continues locally.
 * **Local logging (default)** – user actions are written to daily log files in `backend/logs/` (one file per day) so you have an audit trail even without syslog.
+* **Webhook listener (optional)** – post Mist events to `POST /api/webhooks/mist`. Set `WEBHOOK_SHARED_SECRET` to require HMAC SHA-256 signatures via `X-Mist-Signature` (or `X-Webhook-Signature`). Use `GET /api/webhooks/mist/events` to inspect the latest received events while validating integrations. LCM Step 2 pushes now register device IDs in a short-lived cache so matching `device`/`audit` webhook topics can surface operator notifications.
 
 ---
 
@@ -264,6 +265,10 @@ Think of the backend as a set of small “helpers” that each do one job:
 * **Mist connectivity**
   * `MIST_BASE_URL` defaults to `https://api.ac2.mist.com`. Change it if your org lives in another Mist region.
   * `MIST_ORG_ID`, `SWITCH_TEMPLATE_ID`, and `API_PORT` can be pre-filled to streamline onboarding.
+  * `WEBHOOK_SHARED_SECRET` enables signature verification for incoming webhook events (HMAC SHA-256).
+  * `WEBHOOK_EVENT_BUFFER_SIZE` controls how many recent webhook events are kept in memory for quick troubleshooting (default `100`).
+  * `WEBHOOK_DEVICE_CACHE_TTL_SECONDS` controls how long Step 2 configured devices stay in the notification cache (default `1800`, i.e. 30 minutes).
+  * `WEBHOOK_ALERT_BUFFER_SIZE` controls how many matched webhook alerts are kept in memory for UI polling (default `200`).
 * **Compliance checks**
   * Override naming patterns via `SWITCH_NAME_REGEX_PATTERN` / `AP_NAME_REGEX_PATTERN`.
   * Adjust required site variables with `MIST_SITE_VARIABLES`. Use `key=value` entries (for example, `hubDNSserver1=10.0.0.53`) to supply environment defaults that the 1 Click Fix action can apply automatically when a site is missing values.

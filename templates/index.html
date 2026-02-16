@@ -52,7 +52,14 @@
       </div>
     </header>
 
-    <div class="max-w-7xl mx-auto p-6">
+    <aside id="mist_activity_panel" class="hidden xl:block fixed right-4 top-40 z-30 w-72 rounded-2xl border border-sky-200/60 bg-white/90 p-4 shadow-lg backdrop-blur dark:border-slate-700 dark:bg-slate-900/90">
+      <h2 class="text-xl font-semibold text-slate-800 dark:text-slate-100">Last 30 mins</h2>
+      <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Recently configured switches and matching Mist webhook events.</p>
+      <div id="mist_activity_list" class="mt-4 space-y-2 max-h-[24rem] overflow-auto text-sm"></div>
+    </aside>
+    <div id="mist_toast_stack" class="pointer-events-none fixed bottom-4 right-4 z-40 flex w-80 flex-col gap-2"></div>
+
+    <div class="max-w-7xl mx-auto p-6 xl:pr-80">
       <!-- SSH Retrieval -->
       <section class="mb-6">
         <div class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-6">
@@ -304,6 +311,86 @@
 
     const userGreeting = document.getElementById('user_greeting');
     const logoutBtn = document.getElementById('logout_btn');
+    const mistActivityList = document.getElementById('mist_activity_list');
+    const mistToastStack = document.getElementById('mist_toast_stack');
+    let lastWebhookAlertId = 0;
+
+    function relativeTimeFromEpoch(epochSeconds){
+      const delta = Math.max(0, Math.floor(Date.now() / 1000) - Number(epochSeconds || 0));
+      if (delta < 60) return `${delta}s ago`;
+      if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
+      return `${Math.floor(delta / 3600)}h ago`;
+    }
+
+    function showMistToast(alert){
+      if (!mistToastStack || !alert) return;
+      const card = document.createElement('div');
+      card.className = 'pointer-events-auto rounded-xl border-l-4 border-emerald-500 bg-white px-4 py-3 text-sm text-slate-900 shadow-lg dark:border-emerald-400 dark:bg-slate-800 dark:text-slate-100';
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'absolute right-3 top-2 text-xl leading-none text-slate-500 hover:text-slate-900 dark:hover:text-white';
+      closeBtn.setAttribute('aria-label', 'Dismiss notification');
+      closeBtn.textContent = '×';
+
+      const title = document.createElement('div');
+      title.className = 'pr-8 font-semibold';
+      title.textContent = alert.device_name || alert.device_id || 'Notification';
+
+      const body = document.createElement('div');
+      body.className = 'mt-1 pr-8 text-xs text-slate-600 dark:text-slate-300';
+      body.textContent = `${alert.event || 'mist.event'} • ${alert.message || 'Webhook event matched a recently configured device.'}`;
+
+      card.classList.add('relative');
+      card.appendChild(closeBtn);
+      card.appendChild(title);
+      card.appendChild(body);
+      mistToastStack.prepend(card);
+
+      const remove = () => card.remove();
+      closeBtn.addEventListener('click', remove);
+      while (mistToastStack.children.length > 5) mistToastStack.lastElementChild?.remove();
+      setTimeout(remove, 10000);
+    }
+
+    async function refreshMistActivityPanel(){
+      if (!mistActivityList) return;
+      try {
+        const [trackedResp, alertsResp] = await Promise.all([
+          fetch('/api/webhooks/mist/tracked_devices'),
+          fetch('/api/webhooks/mist/alerts?since_id=0&limit=10')
+        ]);
+        const trackedData = await trackedResp.json();
+        const alertsData = await alertsResp.json();
+        const tracked = Array.isArray(trackedData.items) ? trackedData.items : [];
+        const alerts = Array.isArray(alertsData.items) ? alertsData.items : [];
+        const byDevice = new Map();
+        tracked.forEach(item => {
+          if (!item?.device_id) return;
+          byDevice.set(item.device_id, { ...item, latestAlert: null });
+        });
+        alerts.forEach(item => {
+          const id = Number(item?.id || 0);
+          if (id > lastWebhookAlertId) {
+            lastWebhookAlertId = id;
+            showMistToast(item);
+          }
+          if (item?.device_id && byDevice.has(item.device_id) && !byDevice.get(item.device_id).latestAlert){
+            byDevice.get(item.device_id).latestAlert = item;
+          }
+        });
+        const rows = Array.from(byDevice.values());
+        if (!rows.length){
+          mistActivityList.innerHTML = '<div class="rounded-lg border border-dashed border-slate-300 p-3 text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">No recently configured devices in cache.</div>';
+          return;
+        }
+        mistActivityList.innerHTML = rows.map(row => {
+          const alertText = row.latestAlert ? `${row.latestAlert.event || 'event'} matched` : 'Waiting for webhook event';
+          return `<div class="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/60"><div class="font-medium text-slate-800 dark:text-slate-100">${row.device_name || row.device_id}</div><div class="mt-1 text-xs text-slate-500 dark:text-slate-400">${row.device_id}</div><div class="mt-1 text-xs text-sky-700 dark:text-sky-300">${alertText}</div><div class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">tracked ${relativeTimeFromEpoch(row.updated_at)}</div></div>`;
+        }).join('');
+      } catch (err) {
+        mistActivityList.innerHTML = '<div class="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 dark:border-rose-900 dark:bg-rose-950/60 dark:text-rose-200">Unable to load webhook activity.</div>';
+      }
+    }
 
     // --- Auth status ---
     fetch('/me').then(res => {
@@ -1559,6 +1646,8 @@
       updateAutomationLocks();
       syncLegacyVlanExtras();
       setLcmStep3Expanded(false);
+      await refreshMistActivityPanel();
+      setInterval(refreshMistActivityPanel, 10000);
     });
 
   </script>

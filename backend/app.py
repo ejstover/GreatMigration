@@ -4,14 +4,16 @@ import tempfile
 import re
 import math
 import hashlib
+import hmac
 from collections import defaultdict
+from collections import deque
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set, Tuple
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
-from time import perf_counter
+from time import perf_counter, time as epoch_time
 import copy
 
 import requests
@@ -104,6 +106,19 @@ def _format_vlan_id_set(vlans: Iterable[int]) -> str:
 APP_TITLE = "Switch Port Config Frontend"
 DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
 DEFAULT_TZ = "America/New_York"
+WEBHOOK_SHARED_SECRET = (os.getenv("WEBHOOK_SHARED_SECRET") or "").strip()
+try:
+    WEBHOOK_EVENT_BUFFER_SIZE = max(1, int((os.getenv("WEBHOOK_EVENT_BUFFER_SIZE") or "100").strip() or "100"))
+except ValueError:
+    WEBHOOK_EVENT_BUFFER_SIZE = 100
+try:
+    WEBHOOK_DEVICE_CACHE_TTL_SECONDS = max(60, int((os.getenv("WEBHOOK_DEVICE_CACHE_TTL_SECONDS") or "1800").strip() or "1800"))
+except ValueError:
+    WEBHOOK_DEVICE_CACHE_TTL_SECONDS = 1800
+try:
+    WEBHOOK_ALERT_BUFFER_SIZE = max(20, int((os.getenv("WEBHOOK_ALERT_BUFFER_SIZE") or "200").strip() or "200"))
+except ValueError:
+    WEBHOOK_ALERT_BUFFER_SIZE = 200
 DEFAULT_LEGACY_VLAN_IDS: Set[int] = {10} | set(range(500, 600))
 LEGACY_VLAN_IDS: Set[int] = _expand_vlan_id_set(os.getenv("LEGACY_VLANS"), base=DEFAULT_LEGACY_VLAN_IDS)
 EXCLUDE_VLAN_IDS: Set[int] = _expand_vlan_id_set(os.getenv("EXCLUDE_VLANS"))
@@ -227,6 +242,15 @@ class TimingEvent(BaseModel):
             raise ValueError("event must not be empty")
         normalized = re.sub(r"[^A-Za-z0-9_.-]", "_", cleaned.lower())
         return normalized[:64]
+
+
+class IncomingWebhookEnvelope(BaseModel):
+    source: str = "mist"
+    event: Optional[str] = None
+    org_id: Optional[str] = None
+    site_id: Optional[str] = None
+    device_id: Optional[str] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 def _page_label(key: str) -> str:
@@ -414,6 +438,11 @@ else:
 
 action_logger = get_user_logger()
 
+WEBHOOK_EVENTS: deque[Dict[str, Any]] = deque(maxlen=WEBHOOK_EVENT_BUFFER_SIZE)
+WEBHOOK_ALERTS: deque[Dict[str, Any]] = deque(maxlen=WEBHOOK_ALERT_BUFFER_SIZE)
+RECENTLY_CONFIGURED_DEVICES: Dict[str, Dict[str, Any]] = {}
+WEBHOOK_ALERT_SEQ = 0
+
 AUDIT_RUNNER: SiteAuditRunner = build_default_runner()
 
 
@@ -507,6 +536,186 @@ async def api_log_timing(request: Request, payload: TimingEvent):
     )
     return {"ok": True}
 
+
+def _signature_is_valid(body: bytes, signature: str, secret: str) -> bool:
+    if not secret:
+        return True
+    if not signature:
+        return False
+    token = signature.strip()
+    if token.lower().startswith("sha256="):
+        token = token.split("=", 1)[1].strip()
+    expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(token.lower(), expected.lower())
+
+
+def _extract_webhook_metadata(payload: Mapping[str, Any]) -> Dict[str, Optional[str]]:
+    event = payload.get("event") or payload.get("topic") or payload.get("type")
+    org_id = payload.get("org_id") or payload.get("orgId")
+    site_id = payload.get("site_id") or payload.get("siteId")
+    device_id = payload.get("device_id") or payload.get("deviceId")
+    return {
+        "event": str(event).strip() if event is not None else None,
+        "org_id": str(org_id).strip() if org_id is not None else None,
+        "site_id": str(site_id).strip() if site_id is not None else None,
+        "device_id": str(device_id).strip() if device_id is not None else None,
+    }
+
+
+def _cleanup_recently_configured_devices(now_ts: Optional[float] = None) -> None:
+    now = now_ts if now_ts is not None else epoch_time()
+    expired = [device_id for device_id, record in RECENTLY_CONFIGURED_DEVICES.items() if float(record.get("expires_at", 0)) <= now]
+    for device_id in expired:
+        RECENTLY_CONFIGURED_DEVICES.pop(device_id, None)
+
+
+def _register_recently_configured_device(*, site_id: str, device_id: str, device_name: str = "", now_ts: Optional[float] = None) -> None:
+    if not device_id:
+        return
+    now = now_ts if now_ts is not None else epoch_time()
+    _cleanup_recently_configured_devices(now)
+    RECENTLY_CONFIGURED_DEVICES[device_id] = {
+        "device_id": device_id,
+        "device_name": device_name or device_id,
+        "site_id": site_id,
+        "updated_at": now,
+        "expires_at": now + WEBHOOK_DEVICE_CACHE_TTL_SECONDS,
+    }
+
+
+def _topic_supports_alerts(topic: str) -> bool:
+    lowered = (topic or "").strip().lower()
+    if not lowered:
+        return False
+    return "device" in lowered or "audit" in lowered
+
+
+def _append_webhook_alert(*, event: str, device_id: str, device_name: str, site_id: str, payload: Mapping[str, Any]) -> None:
+    global WEBHOOK_ALERT_SEQ
+    WEBHOOK_ALERT_SEQ += 1
+    WEBHOOK_ALERTS.appendleft(
+        {
+            "id": WEBHOOK_ALERT_SEQ,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "event": event,
+            "device_id": device_id,
+            "device_name": device_name or device_id,
+            "site_id": site_id,
+            "message": f"{device_name or device_id} updated via {event}",
+            "payload": dict(payload),
+        }
+    )
+
+
+def _build_alerts_from_webhook(*, event_name: str, payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    _cleanup_recently_configured_devices()
+    if not _topic_supports_alerts(event_name):
+        return []
+    matched: List[Dict[str, Any]] = []
+    meta = _extract_webhook_metadata(payload)
+    candidate_ids: List[str] = []
+    for key in ("device_id", "deviceId", "id"):
+        value = payload.get(key)
+        if value is not None:
+            candidate_ids.append(str(value).strip())
+    if meta.get("device_id"):
+        candidate_ids.append(str(meta.get("device_id") or "").strip())
+
+    seen: set[str] = set()
+    for device_id in candidate_ids:
+        if not device_id or device_id in seen:
+            continue
+        seen.add(device_id)
+        tracked = RECENTLY_CONFIGURED_DEVICES.get(device_id)
+        if not tracked:
+            continue
+        _append_webhook_alert(
+            event=event_name,
+            device_id=device_id,
+            device_name=str(tracked.get("device_name") or device_id),
+            site_id=str(tracked.get("site_id") or meta.get("site_id") or ""),
+            payload=payload,
+        )
+        matched.append({"device_id": device_id, "device_name": str(tracked.get("device_name") or device_id)})
+
+    return matched
+
+
+@app.post("/api/webhooks/mist")
+async def api_mist_webhook_listener(request: Request):
+    body = await request.body()
+    signature = request.headers.get("x-mist-signature") or request.headers.get("x-webhook-signature") or ""
+    if WEBHOOK_SHARED_SECRET and not _signature_is_valid(body, signature, WEBHOOK_SHARED_SECRET):
+        action_logger.warning(
+            "webhook_receive source=mist status=invalid_signature client=%s",
+            request.client.host if request.client else "-",
+        )
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    payload: Dict[str, Any]
+    try:
+        parsed = json.loads(body.decode("utf-8") if body else "{}")
+        payload = parsed if isinstance(parsed, dict) else {"raw": parsed}
+    except Exception:
+        payload = {"raw": body.decode("utf-8", errors="replace")}
+
+    meta = _extract_webhook_metadata(payload)
+    envelope = IncomingWebhookEnvelope(
+        source="mist",
+        event=meta.get("event") or (request.headers.get("x-mist-event") or "").strip() or None,
+        org_id=meta.get("org_id"),
+        site_id=meta.get("site_id"),
+        device_id=meta.get("device_id"),
+        payload=payload,
+    )
+
+    record = {
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        **envelope.model_dump(),
+    }
+    WEBHOOK_EVENTS.appendleft(record)
+    matched = _build_alerts_from_webhook(event_name=envelope.event or "unknown", payload=payload)
+
+    action_logger.info(
+        "webhook_receive source=mist event=%s org_id=%s site_id=%s device_id=%s signature=%s matched=%s",
+        envelope.event or "unknown",
+        envelope.org_id or "",
+        envelope.site_id or "",
+        envelope.device_id or "",
+        "present" if signature else "missing",
+        len(matched),
+    )
+
+    return {"ok": True, "received": True, "event": envelope.event or "unknown", "matched": len(matched)}
+
+
+@app.get("/api/webhooks/mist/events")
+def api_mist_webhook_events(request: Request, limit: int = 20):
+    current_user(request)
+    limited = max(1, min(int(limit), WEBHOOK_EVENT_BUFFER_SIZE))
+    return {"ok": True, "items": list(WEBHOOK_EVENTS)[:limited]}
+
+
+@app.get("/api/webhooks/mist/tracked_devices")
+def api_mist_webhook_tracked_devices(request: Request):
+    current_user(request)
+    _cleanup_recently_configured_devices()
+    items = sorted(
+        RECENTLY_CONFIGURED_DEVICES.values(),
+        key=lambda item: float(item.get("updated_at") or 0),
+        reverse=True,
+    )
+    return {"ok": True, "ttl_seconds": WEBHOOK_DEVICE_CACHE_TTL_SECONDS, "items": items}
+
+
+@app.get("/api/webhooks/mist/alerts")
+def api_mist_webhook_alerts(request: Request, since_id: int = 0, limit: int = 20):
+    current_user(request)
+    limited = max(1, min(int(limit), WEBHOOK_ALERT_BUFFER_SIZE))
+    filtered = [item for item in WEBHOOK_ALERTS if int(item.get("id") or 0) > int(since_id)]
+    return {"ok": True, "items": filtered[:limited]}
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return _render_page("index.html", "config")
@@ -556,6 +765,20 @@ def _mist_headers(token: str) -> Dict[str, str]:
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
+
+
+def _resolve_device_name(base_url: str, token: str, site_id: str, device_id: str) -> str:
+    headers = _mist_headers(token)
+    try:
+        doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/devices/{device_id}", optional=True)
+        if isinstance(doc, Mapping):
+            for key in ("name", "hostname", "mac"):
+                value = doc.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    except Exception:
+        return device_id
+    return device_id
 
 
 def _mist_get_json(
@@ -4522,6 +4745,11 @@ def _finalize_assignments_for_rows(
                     "response": device_result.get("response"),
                     "request": copy.deepcopy(device_payload),
                 }
+                _register_recently_configured_device(
+                    site_id=site_id,
+                    device_id=device_id,
+                    device_name=_resolve_device_name(base_url, token, site_id, device_id),
+                )
             except MistAPIError as exc:
                 errors.append((f"Unable to push temporary port config: {exc}", exc.status_code))
                 record.setdefault("device_results", {})[device_id] = {
