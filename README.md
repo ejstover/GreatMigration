@@ -147,6 +147,7 @@ The hamburger menu (☰) in the top-left opens the main navigation. Each option 
 * **Port Profile Rules** – auto-tag ports with the right Mist port profile based on how the Cisco port looks.
   * **Use it:** add rules like “if it’s access VLAN 20 and description matches ‘PRINTER’, use the Printer profile,” then save/export the rules.
 * **Compliance Audit** – check Mist sites for missing variables, naming issues, and template drift; optionally fix with one click.
+* **Compliance Audit** now also validates Cisco SD-WAN branch router rules and enforces Mist `SDWAN_site_id` correlation to vManage site IDs.
   * **Use it:** pick a site, run the audit, drill into the findings, then click fix buttons if you have push rights.
 * **Help** – open your team’s runbook or documentation link.
   * **Use it:** set `HELP_URL` in `backend/.env` so the Help link opens the right page.
@@ -209,6 +210,7 @@ Both scripts read and reuse values in `backend/.env`, so follow-up runs only pro
      * For local auth: `LOCAL_USERS` and optional `LOCAL_PUSH_USERS`
      * For LDAP auth: `LDAP_SERVER_URL`, `LDAP_SEARCH_BASE`/`LDAP_SEARCH_BASES`, `LDAP_BIND_TEMPLATE`, `LDAP_SERVICE_DN`, `LDAP_SERVICE_PASSWORD`, plus `PUSH_GROUP_DN` and optional `READONLY_GROUP_DN`
      * Optional defaults: `MIST_BASE_URL`, `MIST_ORG_ID`, `SWITCH_TEMPLATE_ID`, `API_PORT`, `HELP_URL`
+     * Cisco SD-WAN: `SDWAN_API_URL`, `SDWAN_API_KEY` (required for compliance audit + site picker intersection), optional `SDWAN_VERIFY_SSL`, `SDWAN_TIMEOUT_SECONDS`
      * Compliance tuning: `SWITCH_NAME_REGEX_PATTERN`, `AP_NAME_REGEX_PATTERN`, `MIST_SITE_VARIABLES`, `SW_NUM_IMG`, `AP_NUM_IMG`
      * Device catalog sources: `NETBOX_DT_URL`, `NETBOX_LOCAL_DT`
      * Logging: `SYSLOG_HOST`, `SYSLOG_PORT`

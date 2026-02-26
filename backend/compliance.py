@@ -17,6 +17,7 @@ from audit_actions import (
     SET_SITE_VARIABLES_ACTION_ID,
     SET_SPARE_SWITCH_ROLE_ACTION_ID,
 )
+from sdwan_audit import check_mist_sdwan_site_id_value, run_all_sdwan_checks
 
 
 @dataclass
@@ -2251,6 +2252,60 @@ class DeviceDocumentationCheck(ComplianceCheck):
         return findings
 
 
+class MistSdwanSiteIdCheck(ComplianceCheck):
+    id = "mist_sdwan_site_id"
+    name = "Mist SD-WAN site ID"
+    description = "Ensure Mist variable SDWAN_site_id exists and is numeric."
+    severity = "error"
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        variables = _collect_site_variables(context)
+        result = check_mist_sdwan_site_id_value(variables.get("SDWAN_site_id"))
+        if result.get("pass"):
+            return []
+        return [
+            Finding(
+                site_id=context.site_id,
+                site_name=context.site_name,
+                message=result.get("description") or "Missing SDWAN_site_id.",
+                severity=result.get("severity") or self.severity,
+                details=result,
+            )
+        ]
+
+
+class CiscoSdwanDeviceAuditCheck(ComplianceCheck):
+    id = "cisco_sdwan_device_audit"
+    name = "Cisco SD-WAN Device Audit"
+    description = "Evaluate Cisco SD-WAN device compliance rules."
+    severity = "error"
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        findings: List[Finding] = []
+        devices = context.site.get("sdwan_devices", []) if isinstance(context.site, dict) else []
+        if not isinstance(devices, list):
+            return findings
+
+        for device in devices:
+            if not isinstance(device, dict):
+                continue
+            device_name = str(device.get("device_name") or "sdwan-device")
+            for result in run_all_sdwan_checks(device):
+                if result.get("pass"):
+                    continue
+                findings.append(
+                    Finding(
+                        site_id=context.site_id,
+                        site_name=context.site_name,
+                        device_name=device_name,
+                        message=f"{device_name}: {result.get('description')}",
+                        severity=str(result.get("severity") or self.severity),
+                        details=result,
+                    )
+                )
+        return findings
+
+
 class SiteAuditRunner:
     """Runs a suite of compliance checks across one or more sites."""
 
@@ -2334,6 +2389,7 @@ class SiteAuditRunner:
 
 DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
     RequiredSiteVariablesCheck(),
+    MistSdwanSiteIdCheck(),
     SwitchTemplateConfigurationCheck(),
     ConfigurationOverridesCheck(),
     FirmwareManagementCheck(),
@@ -2341,6 +2397,7 @@ DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
     SpareSwitchPresenceCheck(),
     DeviceNamingConventionCheck(),
     DeviceDocumentationCheck(),
+    CiscoSdwanDeviceAuditCheck(),
 )
 
 
