@@ -771,6 +771,7 @@
 
     // --- Sites/Devices ---
     async function fetchSites(){
+      const startedAt = performance.now();
       try {
         const res = await fetch('/api/sites');
         const data = await res.json();
@@ -778,10 +779,17 @@
         sitesCache = data.items || [];
         setSiteWarning(data.sdwan_warning || '');
         renderLcmCleanupSiteOptions();
+        logTiming('config_site_load_success', performance.now() - startedAt, {
+          total_sites: sitesCache.length,
+          excluded_count: Number(data.excluded_count) || 0
+        });
       } catch (e){
         sitesCache = [];
         setSiteWarning('');
         console.error('Failed to fetch sites', e);
+        logTiming('config_site_load_failure', performance.now() - startedAt, {
+          error: e && e.message ? e.message : String(e)
+        });
       }
     }
     async function fetchDevices(site_id){

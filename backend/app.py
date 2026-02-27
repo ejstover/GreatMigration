@@ -597,6 +597,7 @@ def _mist_get_json(
 def _list_sites(base_url: str, headers: Dict[str, str], org_id: Optional[str] = None) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     if org_id:
+        action_logger.info("action=sites_fetch scope=org org_id=%s base_url=%s", org_id, base_url)
         r = requests.get(f"{base_url}/orgs/{org_id}/sites", headers=headers, timeout=30)
         r.raise_for_status()
         for s in r.json() or []:
@@ -609,14 +610,30 @@ def _list_sites(base_url: str, headers: Dict[str, str], org_id: Optional[str] = 
                     "org_id": org_id,
                 }
             )
-        return sorted(items, key=lambda x: (x["name"] or "").lower())
+        sorted_items = sorted(items, key=lambda x: (x["name"] or "").lower())
+        action_logger.info(
+            "action=sites_fetch_complete scope=org org_id=%s site_count=%s",
+            org_id,
+            len(sorted_items),
+        )
+        return sorted_items
 
     org_ids = _discover_org_ids(base_url, headers)
+    action_logger.info(
+        "action=sites_fetch scope=all_orgs base_url=%s discovered_org_count=%s",
+        base_url,
+        len(org_ids),
+    )
     for oid in org_ids:
         try:
             r = requests.get(f"{base_url}/orgs/{oid}/sites", headers=headers, timeout=30)
             r.raise_for_status()
-        except Exception:
+        except Exception as exc:
+            action_logger.warning(
+                "action=sites_fetch_org_failed org_id=%s error=%s",
+                oid,
+                exc,
+            )
             continue
         for s in r.json() or []:
             if not isinstance(s, dict):
@@ -629,6 +646,7 @@ def _list_sites(base_url: str, headers: Dict[str, str], org_id: Optional[str] = 
                 }
             )
     items.sort(key=lambda x: (x["name"] or "").lower())
+    action_logger.info("action=sites_fetch_complete scope=all_orgs site_count=%s", len(items))
     return items
 
 
@@ -1485,6 +1503,11 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
     token = _load_mist_token()
     base_url = base_url.rstrip("/")
     headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
+    action_logger.info(
+        "action=api_sites_start base_url=%s org_id=%s",
+        base_url,
+        org_id or "all",
+    )
 
     try:
         items = _list_sites(base_url, headers, org_id=org_id)
@@ -1492,8 +1515,20 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
         try:
             vmanage_site_ids = _get_vmanage_site_ids()
             included, excluded = filter_mist_sites_by_sdwan_intersection(items, mist_sdwan_ids, sorted(vmanage_site_ids))
+            action_logger.info(
+                "action=api_sites_complete total_sites=%s matched_sdwan=%s included=%s excluded=%s",
+                len(items),
+                len(mist_sdwan_ids),
+                len(included),
+                len(excluded),
+            )
             return {"ok": True, "items": included, "excluded_count": len(excluded)}
         except SDWANConfigError as exc:
+            action_logger.warning(
+                "action=api_sites_sdwan_warning total_sites=%s warning=%s",
+                len(items),
+                exc,
+            )
             return {
                 "ok": True,
                 "items": items,
@@ -1510,8 +1545,17 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
                 err_payload = response.text
         else:
             err_payload = str(exc)
+        action_logger.error(
+            "action=api_sites_http_error status=%s error=%s",
+            status,
+            err_payload,
+        )
         return JSONResponse({"ok": False, "error": err_payload}, status_code=status)
     except Exception as e:
+        action_logger.exception(
+            "action=api_sites_unhandled_error error=%s",
+            e,
+        )
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
