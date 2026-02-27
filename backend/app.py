@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 from time import perf_counter
 import copy
+import uuid
 
 import requests
 from fastapi import FastAPI, UploadFile, File, Form, Request, Body, HTTPException
@@ -52,6 +53,15 @@ from translate_showtech import (
 import ssh_collect
 from fpdf import FPDF
 from compliance import SiteAuditRunner, SiteContext, build_default_runner
+from sdwan_audit import (
+    SDWANClient,
+    extract_sdwan_site_id,
+    fetch_configs_for_devices,
+    load_sdwan_config,
+    parse_device_config,
+    validate_sdwan_config,
+    evaluate_device_checks,
+)
 from audit_fixes import execute_audit_action
 from audit_actions import AP_RENAME_ACTION_ID
 from audit_history import load_site_history
@@ -566,7 +576,22 @@ def _mist_get_json(
     optional: bool = False,
 ) -> Any:
     url = f"{base_url}{path}"
+    started = perf_counter()
     response = requests.get(url, headers=headers, timeout=30)
+    elapsed_ms = int((perf_counter() - started) * 1000)
+    action_logger.info(
+        json.dumps(
+            {
+                "component": "mist",
+                "event": "http",
+                "method": "GET",
+                "url": url,
+                "status_code": response.status_code,
+                "elapsed_ms": elapsed_ms,
+            },
+            sort_keys=True,
+        )
+    )
     try:
         response.raise_for_status()
     except requests.HTTPError as exc:
@@ -982,6 +1007,153 @@ def _gather_site_contexts(
                 }
             )
     return contexts, errors
+
+
+def _collect_site_variables_for_sdwan(context: SiteContext) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    for container in (context.site, context.setting):
+        if not isinstance(container, dict):
+            continue
+        for key in ("variables", "vars", "site_vars", "site_variables"):
+            value = container.get(key)
+            if isinstance(value, dict):
+                merged.update({k: v for k, v in value.items() if isinstance(k, str)})
+    return merged
+
+
+def _run_sdwan_audit(contexts: Sequence[SiteContext], correlation_id: str) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    findings: List[Dict[str, Any]] = []
+    findings_by_site: Dict[str, int] = {}
+    correlated: List[Tuple[SiteContext, str]] = []
+
+    for context in contexts:
+        variables = _collect_site_variables_for_sdwan(context)
+        action_logger.info(json.dumps({
+            "component": "mist",
+            "event": "site_variables_retrieved",
+            "correlation_id": correlation_id,
+            "site_id": context.site_id,
+            "variable_keys": sorted(list(variables.keys())),
+        }, sort_keys=True))
+        site_id = extract_sdwan_site_id(variables)
+        action_logger.info(json.dumps({
+            "component": "mist",
+            "event": "sdwan_site_id_extracted",
+            "correlation_id": correlation_id,
+            "site_id": context.site_id,
+            "raw_value": variables.get("{{SDWAN_SiteID}}"),
+            "normalized_value": site_id,
+        }, sort_keys=True, default=str))
+        if not site_id:
+            findings.append({
+                "site_id": context.site_id,
+                "site_name": context.site_name,
+                "message": "No valid {{SDWAN_SiteID}} present for SDWAN correlation.",
+                "severity": "info",
+            })
+            findings_by_site[context.site_id] = findings_by_site.get(context.site_id, 0) + 1
+            continue
+        correlated.append((context, site_id))
+
+    if not correlated:
+        return findings, findings_by_site
+
+    config = load_sdwan_config()
+    config_errors = validate_sdwan_config(config)
+    if config_errors:
+        for context, _ in correlated:
+            findings.append({
+                "site_id": context.site_id,
+                "site_name": context.site_name,
+                "message": "SDWAN audit unavailable due to API error.",
+                "severity": "error",
+                "details": {"config_errors": config_errors},
+            })
+            findings_by_site[context.site_id] = findings_by_site.get(context.site_id, 0) + 1
+        return findings, findings_by_site
+
+    client = SDWANClient(config, action_logger, correlation_id)
+    try:
+        indexed, strategy = client.get_cedges_for_sites([site_id for _, site_id in correlated])
+    except Exception:
+        action_logger.exception("sdwan_inventory_error correlation_id=%s", correlation_id)
+        for context, _ in correlated:
+            findings.append({
+                "site_id": context.site_id,
+                "site_name": context.site_name,
+                "message": "SDWAN audit unavailable due to API error.",
+                "severity": "error",
+            })
+            findings_by_site[context.site_id] = findings_by_site.get(context.site_id, 0) + 1
+        return findings, findings_by_site
+
+    action_logger.info(json.dumps({
+        "component": "sdwan",
+        "event": "inventory_strategy_used",
+        "correlation_id": correlation_id,
+        "strategy": strategy,
+    }, sort_keys=True))
+
+    devices_to_fetch = []
+    device_site_map: Dict[str, Tuple[str, str, Dict[str, Any]]] = {}
+    for context, site_id in correlated:
+        devices = indexed.get(site_id, [])
+        if not devices:
+            findings.append({
+                "site_id": context.site_id,
+                "site_name": context.site_name,
+                "message": "No cEdges found in vManage for site-id.",
+                "severity": "info",
+                "details": {"sdwan_site_id": site_id},
+            })
+            findings_by_site[context.site_id] = findings_by_site.get(context.site_id, 0) + 1
+            continue
+        for device in devices:
+            devices_to_fetch.append(device)
+            device_site_map[device.system_ip] = (context.site_id, context.site_name, {"site-id": site_id})
+
+    if not devices_to_fetch:
+        return findings, findings_by_site
+
+    configs, success_count, failure_count = fetch_configs_for_devices(client, devices_to_fetch)
+    action_logger.info(json.dumps({
+        "component": "sdwan",
+        "event": "device_config_fetch_summary",
+        "correlation_id": correlation_id,
+        "successes": success_count,
+        "failures": failure_count,
+    }, sort_keys=True))
+
+    for device in devices_to_fetch:
+        site_id, site_name, row = device_site_map[device.system_ip]
+        payload = configs.get(device.system_ip)
+        if payload is None:
+            findings.append({
+                "site_id": site_id,
+                "site_name": site_name,
+                "device_id": device.system_ip,
+                "device_name": device.host_name,
+                "message": "SDWAN audit unavailable due to API error.",
+                "severity": "error",
+            })
+            findings_by_site[site_id] = findings_by_site.get(site_id, 0) + 1
+            continue
+        check_results = evaluate_device_checks(device, parse_device_config(payload), row)
+        for result in check_results:
+            if result.get("pass"):
+                continue
+            findings.append({
+                "site_id": site_id,
+                "site_name": site_name,
+                "device_id": device.system_ip,
+                "device_name": device.host_name,
+                "message": f"SDWAN check failed: {result['check_id']}",
+                "severity": result.get("severity") or "error",
+                "details": result,
+            })
+            findings_by_site[site_id] = findings_by_site.get(site_id, 0) + 1
+
+    return findings, findings_by_site
 
 
 @app.get("/api/rules")
@@ -1635,13 +1807,17 @@ def api_audit_run(
             tz = None
         started_at = datetime.now(tz) if tz else datetime.now()
         timer = perf_counter()
+        correlation_id = str(uuid.uuid4())
 
         contexts, errors = _gather_site_contexts(base_url, headers, unique_site_ids)
         audit_result = AUDIT_RUNNER.run(contexts)
+        sdwan_findings, sdwan_site_counts = _run_sdwan_audit(contexts, correlation_id)
         duration_ms = int((perf_counter() - timer) * 1000)
         finished_at = datetime.now(tz) if tz else datetime.now()
 
         site_findings = audit_result.get("site_findings", {}) or {}
+        for sid, count in sdwan_site_counts.items():
+            site_findings[sid] = site_findings.get(sid, 0) + count
         site_devices = audit_result.get("site_devices", {}) or {}
         history_records = load_site_history([ctx.site_name for ctx in contexts])
         history_by_name = {
@@ -1664,12 +1840,26 @@ def api_audit_run(
             )
             site_history[ctx.site_id] = history
 
+        checks = list(audit_result.get("checks", []))
+        checks.append({
+            "id": "sdwan_cedge_audit",
+            "name": "Cisco SD-WAN cEdge audit",
+            "description": "Optional vManage checks correlated by {{SDWAN_SiteID}}",
+            "severity": "warning",
+            "findings": sdwan_findings,
+            "site_level_findings": [f for f in sdwan_findings if not f.get("device_id")],
+            "device_level_findings": [f for f in sdwan_findings if f.get("device_id")],
+            "failing_sites": sorted({f.get("site_id") for f in sdwan_findings if f.get("site_id")}),
+            "passing_sites": max(len(contexts) - len({f.get("site_id") for f in sdwan_findings if f.get("site_id")}), 0),
+            "actions": [],
+        })
+
         summary = {
             "ok": True,
-            "checks": audit_result.get("checks", []),
+            "checks": checks,
             "total_sites": audit_result.get("total_sites", 0),
             "total_devices": audit_result.get("total_devices", 0),
-            "total_findings": audit_result.get("total_findings", 0),
+            "total_findings": audit_result.get("total_findings", 0) + len(sdwan_findings),
             "total_quick_fix_issues": audit_result.get("total_quick_fix_issues", 0),
             "errors": errors,
             "sites": summary_sites,
@@ -1678,6 +1868,7 @@ def api_audit_run(
             "started_at": started_at.isoformat(),
             "finished_at": finished_at.isoformat(),
             "duration_ms": duration_ms,
+            "correlation_id": correlation_id,
         }
 
         breakdown = ", ".join(f"{site['name']}:{site['issues']}" for site in summary_sites) or "none"
