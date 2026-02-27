@@ -157,7 +157,7 @@ def test_api_sites_filters_using_sdwan_siteid_variant(monkeypatch, app_module):
         if path == "/sites/site-a/setting":
             return {"vars": {"SDWAN_SiteID": "100"}}
         if path == "/sites/site-b/setting":
-            return {"variables": {"SDWAN_site_id": "200"}}
+            return {"variables": {"SDWAN_SiteID": "200"}}
         return None
 
     monkeypatch.setattr(app_module, "_mist_get_json", fake_get)
