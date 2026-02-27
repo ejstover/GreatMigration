@@ -61,12 +61,14 @@ def test_system_ip_equals_gig01_ip() -> None:
 
 def test_inventory_indexing_logic() -> None:
     rows = [
-        {"site-id": "100", "system-ip": "1.1.1.1", "host-name": "A"},
+        {"site-id": "100", "system-ip": "1.1.1.1", "host-name": "A", "latitude": 40.1, "longitude": -74.2},
         {"site-id": "200", "system-ip": "2.2.2.2", "host-name": "B"},
     ]
     indexed = index_devices_by_site_id(rows, ["100"])
     assert list(indexed.keys()) == ["100"]
     assert indexed["100"][0].system_ip == "1.1.1.1"
+    assert indexed["100"][0].latitude == 40.1
+    assert indexed["100"][0].longitude == -74.2
 
 
 def test_fallback_filtering_logic(monkeypatch: pytest.MonkeyPatch) -> None:

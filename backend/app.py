@@ -1110,7 +1110,16 @@ def _run_sdwan_audit(contexts: Sequence[SiteContext], correlation_id: str) -> Tu
             continue
         for device in devices:
             devices_to_fetch.append(device)
-            device_site_map[device.system_ip] = (context.site_id, context.site_name, {"site-id": site_id})
+            device_site_map[device.system_ip] = (
+                context.site_id,
+                context.site_name,
+                {
+                    "site-id": site_id,
+                    "latitude": getattr(device, "latitude", None),
+                    "longitude": getattr(device, "longitude", None),
+                    "device-group": getattr(device, "device_group", None),
+                },
+            )
 
     if not devices_to_fetch:
         return findings, findings_by_site
