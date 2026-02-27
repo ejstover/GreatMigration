@@ -1026,6 +1026,24 @@ def _run_sdwan_audit(contexts: Sequence[SiteContext], correlation_id: str) -> Tu
     findings_by_site: Dict[str, int] = {}
     correlated: List[Tuple[SiteContext, str]] = []
 
+    def _device_level_finding(
+        context: SiteContext,
+        message: str,
+        severity: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        finding: Dict[str, Any] = {
+            "site_id": context.site_id,
+            "site_name": context.site_name,
+            "device_id": f"sdwan-site-{context.site_id}",
+            "device_name": f"SDWAN routers ({context.site_name})",
+            "message": message,
+            "severity": severity,
+        }
+        if details:
+            finding["details"] = details
+        return finding
+
     for context in contexts:
         variables = _collect_site_variables_for_sdwan(context)
         action_logger.info(json.dumps({
@@ -1046,12 +1064,13 @@ def _run_sdwan_audit(contexts: Sequence[SiteContext], correlation_id: str) -> Tu
             "normalized_value": site_id,
         }, sort_keys=True, default=str))
         if not site_id:
-            findings.append({
-                "site_id": context.site_id,
-                "site_name": context.site_name,
-                "message": "No valid SDWAN_SiteID present for SDWAN correlation.",
-                "severity": "info",
-            })
+            findings.append(
+                _device_level_finding(
+                    context,
+                    "No valid SDWAN_SiteID present for SDWAN correlation.",
+                    "info",
+                )
+            )
             findings_by_site[context.site_id] = findings_by_site.get(context.site_id, 0) + 1
             continue
         correlated.append((context, site_id))
@@ -1063,13 +1082,14 @@ def _run_sdwan_audit(contexts: Sequence[SiteContext], correlation_id: str) -> Tu
     config_errors = validate_sdwan_config(config)
     if config_errors:
         for context, _ in correlated:
-            findings.append({
-                "site_id": context.site_id,
-                "site_name": context.site_name,
-                "message": "SDWAN audit unavailable due to API error.",
-                "severity": "error",
-                "details": {"config_errors": config_errors},
-            })
+            findings.append(
+                _device_level_finding(
+                    context,
+                    "SDWAN audit unavailable due to API error.",
+                    "error",
+                    details={"config_errors": config_errors},
+                )
+            )
             findings_by_site[context.site_id] = findings_by_site.get(context.site_id, 0) + 1
         return findings, findings_by_site
 
@@ -1079,12 +1099,13 @@ def _run_sdwan_audit(contexts: Sequence[SiteContext], correlation_id: str) -> Tu
     except Exception:
         action_logger.exception("sdwan_inventory_error correlation_id=%s", correlation_id)
         for context, _ in correlated:
-            findings.append({
-                "site_id": context.site_id,
-                "site_name": context.site_name,
-                "message": "SDWAN audit unavailable due to API error.",
-                "severity": "error",
-            })
+            findings.append(
+                _device_level_finding(
+                    context,
+                    "SDWAN audit unavailable due to API error.",
+                    "error",
+                )
+            )
             findings_by_site[context.site_id] = findings_by_site.get(context.site_id, 0) + 1
         return findings, findings_by_site
 
@@ -1100,13 +1121,14 @@ def _run_sdwan_audit(contexts: Sequence[SiteContext], correlation_id: str) -> Tu
     for context, site_id in correlated:
         devices = indexed.get(site_id, [])
         if not devices:
-            findings.append({
-                "site_id": context.site_id,
-                "site_name": context.site_name,
-                "message": "No cEdges found in vManage for site-id.",
-                "severity": "info",
-                "details": {"sdwan_site_id": site_id},
-            })
+            findings.append(
+                _device_level_finding(
+                    context,
+                    "No cEdges found in vManage for site-id.",
+                    "info",
+                    details={"sdwan_site_id": site_id},
+                )
+            )
             findings_by_site[context.site_id] = findings_by_site.get(context.site_id, 0) + 1
             continue
         for device in devices:

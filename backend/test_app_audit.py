@@ -621,3 +621,57 @@ def test_load_site_history_parses_breakdown(tmp_path):
     assert west_dict["runs"][0]["devices"] == 30
     assert history["Wahpeton"].issues_total == 1
     assert history["Unknown"].run_count == 0
+
+
+def test_run_sdwan_audit_uses_device_level_finding_when_site_id_missing(app_module):
+    contexts = [
+        app_module.SiteContext(
+            site_id="site-1",
+            site_name="HQ",
+            site={},
+            setting={"variables": {}},
+            templates=[],
+            devices=[],
+        )
+    ]
+
+    findings, by_site = app_module._run_sdwan_audit(contexts, "cid-1")
+
+    assert len(findings) == 1
+    assert findings[0]["device_id"] == "sdwan-site-site-1"
+    assert findings[0]["device_name"] == "SDWAN routers (HQ)"
+    assert findings[0]["message"] == "No valid SDWAN_SiteID present for SDWAN correlation."
+    assert by_site == {"site-1": 1}
+
+
+def test_run_sdwan_audit_uses_device_level_finding_when_no_cedges(monkeypatch, app_module):
+    contexts = [
+        app_module.SiteContext(
+            site_id="site-1",
+            site_name="HQ",
+            site={},
+            setting={"variables": {"SDWAN_SiteID": "44"}},
+            templates=[],
+            devices=[],
+        )
+    ]
+
+    class StubClient:
+        def __init__(self, config, logger, correlation_id):
+            pass
+
+        def get_cedges_for_sites(self, site_ids):
+            assert site_ids == ["44"]
+            return {"44": []}, "all"
+
+    monkeypatch.setattr(app_module, "load_sdwan_config", lambda: object())
+    monkeypatch.setattr(app_module, "validate_sdwan_config", lambda cfg: [])
+    monkeypatch.setattr(app_module, "SDWANClient", StubClient)
+
+    findings, by_site = app_module._run_sdwan_audit(contexts, "cid-1")
+
+    assert len(findings) == 1
+    assert findings[0]["device_id"] == "sdwan-site-site-1"
+    assert findings[0]["message"] == "No cEdges found in vManage for site-id."
+    assert findings[0]["details"] == {"sdwan_site_id": "44"}
+    assert by_site == {"site-1": 1}
