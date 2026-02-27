@@ -55,6 +55,8 @@ from compliance import SiteAuditRunner, SiteContext, build_default_runner
 from audit_fixes import execute_audit_action
 from audit_actions import AP_RENAME_ACTION_ID
 from audit_history import load_site_history
+from sdwan_client import SDWANClient, SDWANConfigError, load_sdwan_config_from_env
+from sdwan_audit import filter_mist_sites_by_sdwan_intersection, normalize_sdwan_devices
 
 def _expand_vlan_id_set(raw: Any, *, base: Optional[Iterable[int]] = None) -> Set[int]:
     vlan_ids: Set[int] = set(base or [])
@@ -159,6 +161,9 @@ PAGE_COPY: dict[str, dict[str, str]] = {
 }
 
 NAV_LINK_KEYS = ("hardware", "replacements", "config", "audit", "rules")
+
+SDWAN_SITE_CACHE_SECONDS = 300
+_SDWAN_SITE_ID_CACHE: Dict[str, Any] = {"expires_at": 0.0, "site_ids": set()}
 
 
 class SSHDeviceModel(BaseModel):
@@ -619,6 +624,77 @@ def _list_sites(base_url: str, headers: Dict[str, str], org_id: Optional[str] = 
     return items
 
 
+def _extract_sdwan_site_id(value: Any) -> str:
+    text = str(value).strip() if value is not None else ""
+    if text.isdigit():
+        return text
+    if text.endswith(".0"):
+        whole, _, fraction = text.partition(".")
+        if whole.isdigit() and set(fraction) <= {"0"}:
+            return whole
+    return ""
+
+
+def _extract_variable_maps(*containers: Any) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for key in ("variables", "vars", "site_vars", "site_variables"):
+            candidate = container.get(key)
+            if isinstance(candidate, dict):
+                merged.update(candidate)
+    return merged
+
+
+def _find_sdwan_site_id_in_variables(variables: Mapping[str, Any]) -> str:
+    if not isinstance(variables, Mapping):
+        return ""
+    for key, value in variables.items():
+        if not isinstance(key, str):
+            continue
+        normalized_key = key.replace("-", "_").strip().lower()
+        if normalized_key == "sdwan_site_id":
+            candidate = _extract_sdwan_site_id(value)
+            if candidate:
+                return candidate
+    return ""
+
+
+def _load_mist_site_sdwan_site_id(base_url: str, headers: Dict[str, str], site_id: str) -> str:
+    site_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}", optional=True)
+    setting_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/setting", optional=True)
+    derived_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/setting/derived", optional=True)
+    variables = _extract_variable_maps(site_doc, setting_doc, derived_doc)
+    return _find_sdwan_site_id_in_variables(variables)
+
+
+def _mist_site_sdwan_ids(base_url: str, headers: Dict[str, str], sites: Sequence[Dict[str, Any]]) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    for site in sites:
+        site_id = str(site.get("id") or "").strip()
+        if not site_id:
+            continue
+        sdwan_id = _load_mist_site_sdwan_site_id(base_url, headers, site_id)
+        if sdwan_id:
+            result[site_id] = sdwan_id
+    return result
+
+
+def _get_vmanage_site_ids() -> Set[str]:
+    now = perf_counter()
+    cached_ids = _SDWAN_SITE_ID_CACHE.get("site_ids")
+    cached_expiry = float(_SDWAN_SITE_ID_CACHE.get("expires_at") or 0)
+    if isinstance(cached_ids, set) and now < cached_expiry:
+        return set(cached_ids)
+
+    client = SDWANClient(load_sdwan_config_from_env())
+    site_ids = client.fetch_site_ids()
+    _SDWAN_SITE_ID_CACHE["site_ids"] = set(site_ids)
+    _SDWAN_SITE_ID_CACHE["expires_at"] = now + SDWAN_SITE_CACHE_SECONDS
+    return site_ids
+
+
 def _collect_candidate_org_ids(*sources: Iterable[Any]) -> List[str]:
     """Return a list of potential org IDs discovered in the given sources."""
 
@@ -952,12 +1028,23 @@ def _gather_site_contexts(
     base_url: str,
     headers: Dict[str, str],
     site_ids: Sequence[str],
+    sdwan_by_site_id: Optional[Mapping[str, List[Dict[str, Any]]]] = None,
 ) -> tuple[List[SiteContext], List[Dict[str, Any]]]:
     contexts: List[SiteContext] = []
     errors: List[Dict[str, Any]] = []
     for site_id in site_ids:
         try:
-            contexts.append(_fetch_site_context(base_url, headers, site_id))
+            context = _fetch_site_context(base_url, headers, site_id)
+            if isinstance(context.site, dict):
+                variables = _extract_variable_maps(context.site, context.setting)
+                sdwan_site_id = _find_sdwan_site_id_in_variables(variables)
+                if not sdwan_site_id:
+                    sdwan_site_id = _load_mist_site_sdwan_site_id(base_url, headers, site_id)
+                devices = []
+                if sdwan_by_site_id is not None and sdwan_site_id:
+                    devices = list(sdwan_by_site_id.get(sdwan_site_id, []))
+                context.site["sdwan_devices"] = devices
+            contexts.append(context)
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
             detail: Any = None
@@ -1418,7 +1505,19 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
 
     try:
         items = _list_sites(base_url, headers, org_id=org_id)
-        return {"ok": True, "items": items}
+        mist_sdwan_ids = _mist_site_sdwan_ids(base_url, headers, items)
+        vmanage_site_ids = _get_vmanage_site_ids()
+        included, excluded = filter_mist_sites_by_sdwan_intersection(items, mist_sdwan_ids, sorted(vmanage_site_ids))
+        return {
+            "ok": True,
+            "items": included,
+            "excluded_count": len(excluded),
+            "mist_total": len(items),
+            "mist_with_sdwan_site_id": len(mist_sdwan_ids),
+            "vmanage_site_id_count": len(vmanage_site_ids),
+        }
+    except SDWANConfigError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     except requests.HTTPError as exc:
         response = exc.response
         status = response.status_code if response is not None else 500
@@ -1636,7 +1735,19 @@ def api_audit_run(
         started_at = datetime.now(tz) if tz else datetime.now()
         timer = perf_counter()
 
-        contexts, errors = _gather_site_contexts(base_url, headers, unique_site_ids)
+        sdwan_by_site_id: Dict[str, List[Dict[str, Any]]] = {}
+        try:
+            client = SDWANClient(load_sdwan_config_from_env())
+            normalized_devices = normalize_sdwan_devices(client.fetch_device_inventory())
+            for device in normalized_devices:
+                site_key = _extract_sdwan_site_id(device.get("site_id"))
+                if not site_key:
+                    continue
+                sdwan_by_site_id.setdefault(site_key, []).append(device)
+        except SDWANConfigError as exc:
+            raise ValueError(str(exc))
+
+        contexts, errors = _gather_site_contexts(base_url, headers, unique_site_ids, sdwan_by_site_id)
         audit_result = AUDIT_RUNNER.run(contexts)
         duration_ms = int((perf_counter() - timer) * 1000)
         finished_at = datetime.now(tz) if tz else datetime.now()
