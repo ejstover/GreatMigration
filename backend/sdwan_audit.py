@@ -22,6 +22,8 @@ class DeviceSummary:
     host_name: str
     site_id: str
     device_group: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 @dataclass
@@ -187,11 +189,24 @@ def index_devices_by_site_id(rows: Sequence[Mapping[str, Any]], site_ids: Option
         system_ip = str(row.get("system-ip") or row.get("system_ip") or "").strip()
         if not system_ip:
             continue
+        lat_raw = row.get("latitude")
+        lon_raw = row.get("longitude")
+        try:
+            latitude = float(lat_raw) if lat_raw is not None else None
+        except (TypeError, ValueError):
+            latitude = None
+        try:
+            longitude = float(lon_raw) if lon_raw is not None else None
+        except (TypeError, ValueError):
+            longitude = None
+
         summary = DeviceSummary(
             system_ip=system_ip,
             host_name=str(row.get("host-name") or row.get("host_name") or "").strip() or system_ip,
             site_id=site_id,
             device_group=str(row.get("device-group") or row.get("device_group") or "").strip() or None,
+            latitude=latitude,
+            longitude=longitude,
         )
         result.setdefault(site_id, []).append(summary)
     return result
