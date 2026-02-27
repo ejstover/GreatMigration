@@ -251,6 +251,18 @@
       }
       setExportEnabled(false);
 
+      async function logClientEvent(eventName, metadata = {}) {
+        try {
+          await fetch('/api/log_timing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ event: eventName, duration_ms: 0, metadata })
+          });
+        } catch (err) {
+          console.warn('Failed to log client event', err);
+        }
+      }
+
       function createExportButton() {
         if (exportPdfBtn && exportPdfBtn.isConnected) {
           return exportPdfBtn;
@@ -1167,6 +1179,7 @@
       }
 
       async function loadSites() {
+        const startedAt = performance.now();
         try {
           showStatus('Loading sites…', 'info');
           const res = await fetch('/api/sites');
@@ -1183,6 +1196,11 @@
             name: site.name || site.id,
             org_id: site.org_id || ''
           })).filter(site => site.id) : [];
+          await logClientEvent('audit_site_load_success', {
+            total_sites: allSites.length,
+            excluded_count: Number(data.excluded_count) || 0,
+            duration_ms: Math.round(performance.now() - startedAt)
+          });
           allSites.sort((a, b) => a.name.localeCompare(b.name));
           renderSiteList();
           updateSelectionSummary();
@@ -1193,6 +1211,10 @@
           }
         } catch (err) {
           console.error(err);
+          await logClientEvent('audit_site_load_failure', {
+            error: err && err.message ? err.message : String(err),
+            duration_ms: Math.round(performance.now() - startedAt)
+          });
           showStatus(`Error loading sites: ${err.message || err}`, 'error');
         }
       }
