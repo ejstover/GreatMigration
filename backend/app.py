@@ -626,47 +626,7 @@ def _list_sites(base_url: str, headers: Dict[str, str], org_id: Optional[str] = 
 
 def _extract_sdwan_site_id(value: Any) -> str:
     text = str(value).strip() if value is not None else ""
-    if text.isdigit():
-        return text
-    if text.endswith(".0"):
-        whole, _, fraction = text.partition(".")
-        if whole.isdigit() and set(fraction) <= {"0"}:
-            return whole
-    return ""
-
-
-def _extract_variable_maps(*containers: Any) -> Dict[str, Any]:
-    merged: Dict[str, Any] = {}
-    for container in containers:
-        if not isinstance(container, dict):
-            continue
-        for key in ("variables", "vars", "site_vars", "site_variables"):
-            candidate = container.get(key)
-            if isinstance(candidate, dict):
-                merged.update(candidate)
-    return merged
-
-
-def _find_sdwan_site_id_in_variables(variables: Mapping[str, Any]) -> str:
-    if not isinstance(variables, Mapping):
-        return ""
-    for key, value in variables.items():
-        if not isinstance(key, str):
-            continue
-        normalized_key = key.replace("-", "_").strip().lower()
-        if normalized_key == "sdwan_site_id":
-            candidate = _extract_sdwan_site_id(value)
-            if candidate:
-                return candidate
-    return ""
-
-
-def _load_mist_site_sdwan_site_id(base_url: str, headers: Dict[str, str], site_id: str) -> str:
-    site_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}", optional=True)
-    setting_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/setting", optional=True)
-    derived_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/setting/derived", optional=True)
-    variables = _extract_variable_maps(site_doc, setting_doc, derived_doc)
-    return _find_sdwan_site_id_in_variables(variables)
+    return text if text.isdigit() else ""
 
 
 def _mist_site_sdwan_ids(base_url: str, headers: Dict[str, str], sites: Sequence[Dict[str, Any]]) -> Dict[str, str]:
@@ -675,7 +635,14 @@ def _mist_site_sdwan_ids(base_url: str, headers: Dict[str, str], sites: Sequence
         site_id = str(site.get("id") or "").strip()
         if not site_id:
             continue
-        sdwan_id = _load_mist_site_sdwan_site_id(base_url, headers, site_id)
+        setting_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/setting", optional=True)
+        variables: Dict[str, Any] = {}
+        if isinstance(setting_doc, dict):
+            for key in ("variables", "vars", "site_vars", "site_variables"):
+                candidate = setting_doc.get(key)
+                if isinstance(candidate, dict):
+                    variables.update(candidate)
+        sdwan_id = _extract_sdwan_site_id(variables.get("SDWAN_site_id"))
         if sdwan_id:
             result[site_id] = sdwan_id
     return result
@@ -1036,10 +1003,18 @@ def _gather_site_contexts(
         try:
             context = _fetch_site_context(base_url, headers, site_id)
             if isinstance(context.site, dict):
-                variables = _extract_variable_maps(context.site, context.setting)
-                sdwan_site_id = _find_sdwan_site_id_in_variables(variables)
-                if not sdwan_site_id:
-                    sdwan_site_id = _load_mist_site_sdwan_site_id(base_url, headers, site_id)
+                sdwan_site_id = ""
+                for container in (context.setting, context.site):
+                    if not isinstance(container, dict):
+                        continue
+                    for key in ("variables", "vars", "site_vars", "site_variables"):
+                        variables = container.get(key)
+                        if isinstance(variables, dict):
+                            sdwan_site_id = _extract_sdwan_site_id(variables.get("SDWAN_site_id"))
+                            if sdwan_site_id:
+                                break
+                    if sdwan_site_id:
+                        break
                 devices = []
                 if sdwan_by_site_id is not None and sdwan_site_id:
                     devices = list(sdwan_by_site_id.get(sdwan_site_id, []))
@@ -1508,14 +1483,7 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
         mist_sdwan_ids = _mist_site_sdwan_ids(base_url, headers, items)
         vmanage_site_ids = _get_vmanage_site_ids()
         included, excluded = filter_mist_sites_by_sdwan_intersection(items, mist_sdwan_ids, sorted(vmanage_site_ids))
-        return {
-            "ok": True,
-            "items": included,
-            "excluded_count": len(excluded),
-            "mist_total": len(items),
-            "mist_with_sdwan_site_id": len(mist_sdwan_ids),
-            "vmanage_site_id_count": len(vmanage_site_ids),
-        }
+        return {"ok": True, "items": included, "excluded_count": len(excluded)}
     except SDWANConfigError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     except requests.HTTPError as exc:
