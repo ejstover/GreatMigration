@@ -4,12 +4,14 @@ import tempfile
 import re
 import math
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set, Tuple
 from dataclasses import dataclass
+from threading import Lock
 from zoneinfo import ZoneInfo
 from time import perf_counter
 import copy
@@ -164,6 +166,12 @@ NAV_LINK_KEYS = ("hardware", "replacements", "config", "audit", "rules")
 
 SDWAN_SITE_CACHE_SECONDS = 300
 _SDWAN_SITE_ID_CACHE: Dict[str, Any] = {"expires_at": 0.0, "site_ids": set()}
+MIST_SITE_SDWAN_CACHE_SECONDS = 90
+MIST_SITE_SETTING_MAX_WORKERS = 6
+MIST_SITE_SETTING_FETCH_TIMEOUT_SECONDS = 4.0
+MIST_SITE_SETTING_POLL_INTERVAL_SECONDS = 0.05
+_MIST_SITE_SDWAN_ID_CACHE: Dict[str, Any] = {"expires_at": 0.0, "values": {}}
+_MIST_SITE_SDWAN_ID_CACHE_LOCK = Lock()
 
 
 class SSHDeviceModel(BaseModel):
