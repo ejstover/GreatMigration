@@ -1489,11 +1489,17 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
     try:
         items = _list_sites(base_url, headers, org_id=org_id)
         mist_sdwan_ids = _mist_site_sdwan_ids(base_url, headers, items)
-        vmanage_site_ids = _get_vmanage_site_ids()
-        included, excluded = filter_mist_sites_by_sdwan_intersection(items, mist_sdwan_ids, sorted(vmanage_site_ids))
-        return {"ok": True, "items": included, "excluded_count": len(excluded)}
-    except SDWANConfigError as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        try:
+            vmanage_site_ids = _get_vmanage_site_ids()
+            included, excluded = filter_mist_sites_by_sdwan_intersection(items, mist_sdwan_ids, sorted(vmanage_site_ids))
+            return {"ok": True, "items": included, "excluded_count": len(excluded)}
+        except SDWANConfigError as exc:
+            return {
+                "ok": True,
+                "items": items,
+                "excluded_count": 0,
+                "sdwan_warning": str(exc),
+            }
     except requests.HTTPError as exc:
         response = exc.response
         status = response.status_code if response is not None else 500

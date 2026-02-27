@@ -171,6 +171,25 @@ def test_api_sites_filters_using_sdwan_siteid_variant(monkeypatch, app_module):
     assert response["excluded_count"] == 1
 
 
+
+def test_api_sites_returns_mist_sites_when_sdwan_lookup_fails(monkeypatch, app_module):
+    sites = [{"id": "site-a", "name": "A"}, {"id": "site-b", "name": "B"}]
+
+    monkeypatch.setattr(app_module, "_list_sites", lambda *args, **kwargs: sites)
+    monkeypatch.setattr(app_module, "_mist_site_sdwan_ids", lambda *args, **kwargs: {"site-a": "100"})
+
+    def raise_sdwan_error():
+        raise app_module.SDWANConfigError("vManage credentials are missing")
+
+    monkeypatch.setattr(app_module, "_get_vmanage_site_ids", raise_sdwan_error)
+
+    response = app_module.api_sites(base_url="https://example.com/api/v1")
+
+    assert response["ok"] is True
+    assert response["items"] == sites
+    assert response["excluded_count"] == 0
+    assert response["sdwan_warning"] == "vManage credentials are missing"
+
 def test_fetch_site_context_filters_recent_last_seen(monkeypatch, app_module):
     now_ts = 1_700_000_000.0
     monkeypatch.setattr(app_module, "_current_timestamp", lambda: now_ts)

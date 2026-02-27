@@ -272,6 +272,7 @@
       </div>
 
       <!-- Rows -->
+      <div id="site_warning" class="hidden rounded-lg border p-3 mb-3 text-sm border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"></div>
       <div id="rows_warning" class="hidden rounded-lg border p-3 mb-3 status-error text-sm dark:bg-rose-950"></div>
       <div id="batch_rows" class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow divide-y dark:divide-slate-700"></div>
 
@@ -358,6 +359,7 @@
 
     const batchSection = document.getElementById('batch_section');
     const rowsWarning = document.getElementById('rows_warning');
+    const siteWarning = document.getElementById('site_warning');
     const batchRows = document.getElementById('batch_rows');
     const pushBatchBtn = document.getElementById('push_batch_btn');
     const batchStatus = document.getElementById('batch_status');
@@ -397,6 +399,17 @@
     // --- Utils ---
     function show(el){ el.classList.remove('hidden'); }
     function hide(el){ el.classList.add('hidden'); }
+    function setSiteWarning(message){
+      if (!siteWarning) return;
+      if (message){
+        siteWarning.textContent = message;
+        siteWarning.classList.remove('hidden');
+      } else {
+        siteWarning.textContent = '';
+        siteWarning.classList.add('hidden');
+      }
+    }
+
     function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
 
     function isPreviewOnly(){
@@ -763,9 +776,11 @@
         const data = await res.json();
         if (!data.ok) throw new Error(JSON.stringify(data.error));
         sitesCache = data.items || [];
+        setSiteWarning(data.sdwan_warning || '');
         renderLcmCleanupSiteOptions();
       } catch (e){
         sitesCache = [];
+        setSiteWarning('');
         console.error('Failed to fetch sites', e);
       }
     }
