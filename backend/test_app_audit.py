@@ -132,6 +132,45 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
     assert "template-1" in template_ids
 
 
+def test_mist_site_sdwan_ids_accepts_sdwan_siteid_key_variant(monkeypatch, app_module):
+    sites = [{"id": "site-1"}, {"id": "site-2"}]
+
+    responses: Dict[str, Any] = {
+        "/sites/site-1/setting": {"vars": {"SDWAN_SiteID": "100"}},
+        "/sites/site-2/setting": {"vars": {"SDWAN_SiteID": "site-200"}},
+    }
+
+    def fake_get(base_url: str, headers: Dict[str, str], path: str, optional: bool = False):
+        return responses.get(path)
+
+    monkeypatch.setattr(app_module, "_mist_get_json", fake_get)
+
+    sdwan_ids = app_module._mist_site_sdwan_ids("https://example.com/api/v1", {"Authorization": "token"}, sites)
+
+    assert sdwan_ids == {"site-1": "100"}
+
+
+def test_api_sites_filters_using_sdwan_siteid_variant(monkeypatch, app_module):
+    sites = [{"id": "site-a", "name": "A"}, {"id": "site-b", "name": "B"}]
+
+    def fake_get(base_url: str, headers: Dict[str, str], path: str, optional: bool = False):
+        if path == "/sites/site-a/setting":
+            return {"vars": {"SDWAN_SiteID": "100"}}
+        if path == "/sites/site-b/setting":
+            return {"variables": {"SDWAN_site_id": "200"}}
+        return None
+
+    monkeypatch.setattr(app_module, "_mist_get_json", fake_get)
+    monkeypatch.setattr(app_module, "_list_sites", lambda *args, **kwargs: sites)
+    monkeypatch.setattr(app_module, "_get_vmanage_site_ids", lambda: {"100"})
+
+    response = app_module.api_sites(base_url="https://example.com/api/v1")
+
+    assert response["ok"] is True
+    assert [site["id"] for site in response["items"]] == ["site-a"]
+    assert response["excluded_count"] == 1
+
+
 def test_fetch_site_context_filters_recent_last_seen(monkeypatch, app_module):
     now_ts = 1_700_000_000.0
     monkeypatch.setattr(app_module, "_current_timestamp", lambda: now_ts)

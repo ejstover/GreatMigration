@@ -630,6 +630,12 @@ def _extract_sdwan_site_id(value: Any) -> str:
 
 
 def _mist_site_sdwan_ids(base_url: str, headers: Dict[str, str], sites: Sequence[Dict[str, Any]]) -> Dict[str, str]:
+    sdwan_id_keys = (
+        "SDWAN_site_id",
+        "SDWAN_SiteID",
+        "sdwan_site_id",
+        "sdwanSiteId",
+    )
     result: Dict[str, str] = {}
     for site in sites:
         site_id = str(site.get("id") or "").strip()
@@ -642,7 +648,11 @@ def _mist_site_sdwan_ids(base_url: str, headers: Dict[str, str], sites: Sequence
                 candidate = setting_doc.get(key)
                 if isinstance(candidate, dict):
                     variables.update(candidate)
-        sdwan_id = _extract_sdwan_site_id(variables.get("SDWAN_site_id"))
+        sdwan_id = ""
+        for key in sdwan_id_keys:
+            sdwan_id = _extract_sdwan_site_id(variables.get(key))
+            if sdwan_id:
+                break
         if sdwan_id:
             result[site_id] = sdwan_id
     return result
