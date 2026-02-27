@@ -209,7 +209,7 @@ Both scripts read and reuse values in `backend/.env`, so follow-up runs only pro
      * For local auth: `LOCAL_USERS` and optional `LOCAL_PUSH_USERS`
      * For LDAP auth: `LDAP_SERVER_URL`, `LDAP_SEARCH_BASE`/`LDAP_SEARCH_BASES`, `LDAP_BIND_TEMPLATE`, `LDAP_SERVICE_DN`, `LDAP_SERVICE_PASSWORD`, plus `PUSH_GROUP_DN` and optional `READONLY_GROUP_DN`
      * Optional defaults: `MIST_BASE_URL`, `MIST_ORG_ID`, `SWITCH_TEMPLATE_ID`, `API_PORT`, `HELP_URL`
-     * SD-WAN audit (optional, only required when selected Mist sites have a valid `{{SDWAN_SiteID}}` variable): `SDWAN_API_URL`, `SDWAN_API_TOKEN`, `SDWAN_REQUEST_TIMEOUT` (default `15`), `SDWAN_MAX_CONCURRENCY` (default `5`), `SDWAN_VERBOSE_LOGGING` (default `true`), `SDWAN_VERIFY_SSL` (default `false`, helpful for self-signed vManage certs)
+     * SD-WAN audit (optional, only required when selected Mist sites have a valid `{{SDWAN_SiteID}}` variable): `SDWAN_API_URL`, `SDWAN_API_USERNAME`, `SDWAN_API_PASSWORD`, `SDWAN_REQUEST_TIMEOUT` (default `15`), `SDWAN_MAX_CONCURRENCY` (default `5`), `SDWAN_VERBOSE_LOGGING` (default `true`), `SDWAN_VERIFY_SSL` (default `false`, helpful for self-signed vManage certs)
      * Compliance tuning: `SWITCH_NAME_REGEX_PATTERN`, `AP_NAME_REGEX_PATTERN`, `MIST_SITE_VARIABLES`, `SW_NUM_IMG`, `AP_NUM_IMG`
      * Device catalog sources: `NETBOX_DT_URL`, `NETBOX_LOCAL_DT`
      * Logging: `SYSLOG_HOST`, `SYSLOG_PORT`
