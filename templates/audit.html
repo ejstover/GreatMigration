@@ -1177,6 +1177,7 @@
           if (!data.ok) {
             throw new Error(typeof data.error === 'string' ? data.error : 'Failed to load sites');
           }
+          const sdwanWarning = typeof data.sdwan_warning === 'string' ? data.sdwan_warning.trim() : '';
           allSites = Array.isArray(data.items) ? data.items.map(site => ({
             id: site.id,
             name: site.name || site.id,
@@ -1185,7 +1186,11 @@
           allSites.sort((a, b) => a.name.localeCompare(b.name));
           renderSiteList();
           updateSelectionSummary();
-          showStatus('Ready to run audit', 'success');
+          if (sdwanWarning) {
+            showStatus(`Ready to run audit. ${sdwanWarning}`, 'info');
+          } else {
+            showStatus('Ready to run audit', 'success');
+          }
         } catch (err) {
           console.error(err);
           showStatus(`Error loading sites: ${err.message || err}`, 'error');
