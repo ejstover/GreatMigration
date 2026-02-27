@@ -34,7 +34,7 @@ def test_mist_site_sdwan_ids_uses_concurrent_fetching(monkeypatch, app_module):
         try:
             time.sleep(0.05)
             site_id = path.split("/")[2]
-            return {"variables": {"SDWAN_site_id": site_id[-1]}}
+            return {"variables": {"SDWAN_SiteID": site_id[-1]}}
         finally:
             with lock:
                 active -= 1
@@ -57,12 +57,12 @@ def test_mist_site_sdwan_ids_returns_partial_results_when_some_sites_fail(monkey
     def fake_get(base_url, headers, path, optional=False):
         site_id = path.split("/")[2]
         if site_id == "site-fast":
-            return {"variables": {"SDWAN_site_id": "100"}}
+            return {"variables": {"SDWAN_SiteID": "100"}}
         if site_id == "site-error":
             raise RuntimeError("boom")
         if site_id == "site-slow":
             time.sleep(0.25)
-            return {"variables": {"SDWAN_site_id": "300"}}
+            return {"variables": {"SDWAN_SiteID": "300"}}
         return None
 
     monkeypatch.setattr(app_module, "_mist_get_json", fake_get)
