@@ -190,6 +190,21 @@ def test_api_sites_returns_mist_sites_when_sdwan_lookup_fails(monkeypatch, app_m
     assert response["excluded_count"] == 0
     assert response["sdwan_warning"] == "vManage credentials are missing"
 
+
+def test_api_sites_falls_back_to_mist_names_when_no_sdwan_intersection(monkeypatch, app_module):
+    sites = [{"id": "site-a", "name": "A"}, {"id": "site-b", "name": "B"}]
+
+    monkeypatch.setattr(app_module, "_list_sites", lambda *args, **kwargs: sites)
+    monkeypatch.setattr(app_module, "_mist_site_sdwan_ids", lambda *args, **kwargs: {"site-a": "100"})
+    monkeypatch.setattr(app_module, "_get_vmanage_site_ids", lambda: {"999"})
+
+    response = app_module.api_sites(base_url="https://example.com/api/v1")
+
+    assert response["ok"] is True
+    assert response["items"] == sites
+    assert response["excluded_count"] == 0
+    assert response["sdwan_warning"] == "No SD-WAN site ID intersections were found; using Juniper Mist site names."
+
 def test_fetch_site_context_filters_recent_last_seen(monkeypatch, app_module):
     now_ts = 1_700_000_000.0
     monkeypatch.setattr(app_module, "_current_timestamp", lambda: now_ts)

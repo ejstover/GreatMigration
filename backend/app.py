@@ -1515,6 +1515,18 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
         try:
             vmanage_site_ids = _get_vmanage_site_ids()
             included, excluded = filter_mist_sites_by_sdwan_intersection(items, mist_sdwan_ids, sorted(vmanage_site_ids))
+            if items and not included:
+                action_logger.warning(
+                    "action=api_sites_fallback_to_mist_names total_sites=%s matched_sdwan=%s reason=no_intersection",
+                    len(items),
+                    len(mist_sdwan_ids),
+                )
+                return {
+                    "ok": True,
+                    "items": items,
+                    "excluded_count": 0,
+                    "sdwan_warning": "No SD-WAN site ID intersections were found; using Juniper Mist site names.",
+                }
             action_logger.info(
                 "action=api_sites_complete total_sites=%s matched_sdwan=%s included=%s excluded=%s",
                 len(items),
