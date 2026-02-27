@@ -29,7 +29,8 @@ class DeviceSummary:
 @dataclass
 class SDWANConfig:
     api_url: str
-    api_token: str
+    username: str
+    password: str
     request_timeout: int = 15
     max_concurrency: int = 5
     verbose_logging: bool = True
@@ -64,7 +65,8 @@ def load_sdwan_config() -> SDWANConfig:
         concurrency = 5
     return SDWANConfig(
         api_url=(os.getenv("SDWAN_API_URL") or "").strip().rstrip("/"),
-        api_token=(os.getenv("SDWAN_API_TOKEN") or "").strip(),
+        username=(os.getenv("SDWAN_API_USERNAME") or "").strip(),
+        password=(os.getenv("SDWAN_API_PASSWORD") or "").strip(),
         request_timeout=timeout,
         max_concurrency=concurrency,
         verbose_logging=verbose_raw not in {"0", "false", "no"},
@@ -76,8 +78,10 @@ def validate_sdwan_config(config: SDWANConfig) -> List[str]:
     errors: List[str] = []
     if not config.api_url:
         errors.append("Missing SDWAN_API_URL")
-    if not config.api_token:
-        errors.append("Missing SDWAN_API_TOKEN")
+    if not config.username:
+        errors.append("Missing SDWAN_API_USERNAME")
+    if not config.password:
+        errors.append("Missing SDWAN_API_PASSWORD")
     return errors
 
 
@@ -86,6 +90,33 @@ class SDWANClient:
         self.config = config
         self.logger = logger
         self.correlation_id = correlation_id
+        self.session = requests.Session()
+        self._authenticated = False
+
+    def _authenticate(self) -> None:
+        if self._authenticated:
+            return
+        login_url = f"{self.config.api_url}/j_security_check"
+        response = self.session.post(
+            login_url,
+            data={"j_username": self.config.username, "j_password": self.config.password},
+            timeout=self.config.request_timeout,
+            verify=self.config.verify_ssl,
+        )
+        response.raise_for_status()
+        if b"<html>" in (response.content or b"").lower():
+            raise RuntimeError("SD-WAN authentication failed")
+
+        token_url = f"{self.config.api_url}/dataservice/client/token"
+        token_response = self.session.get(
+            token_url,
+            timeout=self.config.request_timeout,
+            verify=self.config.verify_ssl,
+        )
+        if token_response.ok and token_response.text:
+            self.session.headers.update({"X-XSRF-TOKEN": token_response.text.strip()})
+        self._authenticated = True
+        self._log("authenticated", verify_ssl=self.config.verify_ssl)
 
     def _log(self, event: str, **payload: Any) -> None:
         base = {"component": "sdwan", "event": event, "correlation_id": self.correlation_id}
@@ -94,14 +125,15 @@ class SDWANClient:
 
     def _request(self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None) -> Any:
         url = f"{self.config.api_url}{path}"
-        headers = {"Authorization": f"Bearer {self.config.api_token}", "Accept": "application/json"}
+        self._authenticate()
+        headers = {"Accept": "application/json"}
         attempts = 0
         last_exc: Optional[Exception] = None
         while attempts < 2:
             attempts += 1
             started = time.perf_counter()
             try:
-                response = requests.request(
+                response = self.session.request(
                     method,
                     url,
                     headers=headers,

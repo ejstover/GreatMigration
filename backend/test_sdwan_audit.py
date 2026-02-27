@@ -73,7 +73,7 @@ def test_inventory_indexing_logic() -> None:
 
 def test_fallback_filtering_logic(monkeypatch: pytest.MonkeyPatch) -> None:
     logger = DummyLogger()
-    client = SDWANClient(SDWANConfig("https://example.com", "token"), logger, "cid")
+    client = SDWANClient(SDWANConfig("https://example.com", "user", "pass"), logger, "cid")
 
     calls: list[Any] = []
 
@@ -92,7 +92,7 @@ def test_fallback_filtering_logic(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_logging_strategy_records_events(monkeypatch: pytest.MonkeyPatch) -> None:
     logger = DummyLogger()
-    client = SDWANClient(SDWANConfig("https://example.com", "token"), logger, "cid")
+    client = SDWANClient(SDWANConfig("https://example.com", "user", "pass"), logger, "cid")
     monkeypatch.setattr(client, "get_vedges", lambda site_id=None: [{"site-id": "100", "system-ip": "1.1.1.1", "host-name": "ok"}])
     client.get_cedges_for_sites(["100"])
     assert any("inventory_strategy" in msg for msg in logger.messages)
@@ -100,7 +100,7 @@ def test_logging_strategy_records_events(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_graceful_failure_when_sdwan_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     logger = DummyLogger()
-    client = SDWANClient(SDWANConfig("https://example.com", "token"), logger, "cid")
+    client = SDWANClient(SDWANConfig("https://example.com", "user", "pass"), logger, "cid")
 
     def blow_up(*args, **kwargs):
         raise RuntimeError("down")
@@ -114,7 +114,8 @@ def test_graceful_failure_when_sdwan_unavailable(monkeypatch: pytest.MonkeyPatch
 
 def test_sdwan_config_ssl_verify_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SDWAN_API_URL", "https://vmanage.local")
-    monkeypatch.setenv("SDWAN_API_TOKEN", "token")
+    monkeypatch.setenv("SDWAN_API_USERNAME", "user")
+    monkeypatch.setenv("SDWAN_API_PASSWORD", "pass")
     monkeypatch.setenv("SDWAN_VERIFY_SSL", "false")
 
     from sdwan_audit import load_sdwan_config
@@ -125,7 +126,21 @@ def test_sdwan_config_ssl_verify_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_sdwan_request_uses_verify_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     logger = DummyLogger()
-    client = SDWANClient(SDWANConfig("https://example.com", "token", verify_ssl=False), logger, "cid")
+    client = SDWANClient(SDWANConfig("https://example.com", "user", "pass", verify_ssl=False), logger, "cid")
+
+    class LoginResp:
+        status_code = 200
+        content = b""
+
+        def raise_for_status(self):
+            return None
+
+    class TokenResp:
+        ok = True
+        text = "xsrf"
+
+    monkeypatch.setattr(client.session, "post", lambda *args, **kwargs: LoginResp())
+    monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: TokenResp())
 
     captured = {}
 
@@ -145,9 +160,38 @@ def test_sdwan_request_uses_verify_flag(monkeypatch: pytest.MonkeyPatch) -> None
         captured["verify"] = verify
         return Resp()
 
-    monkeypatch.setattr("sdwan_audit.requests.request", fake_request)
+    monkeypatch.setattr(client.session, "request", fake_request)
     client.get_vedges()
     assert captured["verify"] is False
+
+
+def test_sdwan_authentication_uses_session_login_and_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    logger = DummyLogger()
+    client = SDWANClient(SDWANConfig("https://example.com", "alice", "secret"), logger, "cid")
+
+    calls = {"post": 0, "get": 0}
+
+    class LoginResp:
+        status_code = 200
+        content = b""
+
+        def raise_for_status(self):
+            return None
+
+    class TokenResp:
+        ok = True
+        text = "token-123"
+
+    monkeypatch.setattr(client.session, "post", lambda *args, **kwargs: calls.__setitem__("post", calls["post"] + 1) or LoginResp())
+    monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: calls.__setitem__("get", calls["get"] + 1) or TokenResp())
+    monkeypatch.setattr(client.session, "request", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("stop")))
+
+    with pytest.raises(RuntimeError, match="stop"):
+        client.get_vedges()
+
+    assert calls["post"] == 1
+    assert calls["get"] == 1
+    assert client.session.headers["X-XSRF-TOKEN"] == "token-123"
 
 def test_device_checks_include_router_id_and_gi01() -> None:
     device = DeviceSummary(system_ip="10.10.10.10", host_name="NAABCIDF1AS1 C EDGE 1", site_id="100", device_group="branch_routers")
