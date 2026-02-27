@@ -4,12 +4,14 @@ import tempfile
 import re
 import math
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Sequence, Iterable, Mapping, Set, Tuple
 from dataclasses import dataclass
+from threading import Lock
 from zoneinfo import ZoneInfo
 from time import perf_counter
 import copy
@@ -164,6 +166,12 @@ NAV_LINK_KEYS = ("hardware", "replacements", "config", "audit", "rules")
 
 SDWAN_SITE_CACHE_SECONDS = 300
 _SDWAN_SITE_ID_CACHE: Dict[str, Any] = {"expires_at": 0.0, "site_ids": set()}
+MIST_SITE_SDWAN_CACHE_SECONDS = 90
+MIST_SITE_SETTING_MAX_WORKERS = 6
+MIST_SITE_SETTING_FETCH_TIMEOUT_SECONDS = 4.0
+MIST_SITE_SETTING_POLL_INTERVAL_SECONDS = 0.05
+_MIST_SITE_SDWAN_ID_CACHE: Dict[str, Any] = {"expires_at": 0.0, "values": {}}
+_MIST_SITE_SDWAN_ID_CACHE_LOCK = Lock()
 
 
 class SSHDeviceModel(BaseModel):
@@ -630,11 +638,27 @@ def _extract_sdwan_site_id(value: Any) -> str:
 
 
 def _mist_site_sdwan_ids(base_url: str, headers: Dict[str, str], sites: Sequence[Dict[str, Any]]) -> Dict[str, str]:
-    result: Dict[str, str] = {}
-    for site in sites:
-        site_id = str(site.get("id") or "").strip()
-        if not site_id:
-            continue
+    site_ids = sorted(
+        {
+            str(site.get("id") or "").strip()
+            for site in sites
+            if isinstance(site, dict) and str(site.get("id") or "").strip()
+        }
+    )
+    if not site_ids:
+        return {}
+
+    cache_key = "|".join(site_ids)
+    now = perf_counter()
+    with _MIST_SITE_SDWAN_ID_CACHE_LOCK:
+        cache_values = _MIST_SITE_SDWAN_ID_CACHE.get("values")
+        cache_expiry = float(_MIST_SITE_SDWAN_ID_CACHE.get("expires_at") or 0)
+        if isinstance(cache_values, dict) and now < cache_expiry:
+            cached = cache_values.get(cache_key)
+            if isinstance(cached, dict):
+                return dict(cached)
+
+    def _fetch_site_setting_sdwan_id(site_id: str) -> tuple[str, str]:
         setting_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/setting", optional=True)
         variables: Dict[str, Any] = {}
         if isinstance(setting_doc, dict):
@@ -643,8 +667,43 @@ def _mist_site_sdwan_ids(base_url: str, headers: Dict[str, str], sites: Sequence
                 if isinstance(candidate, dict):
                     variables.update(candidate)
         sdwan_id = _extract_sdwan_site_id(variables.get("SDWAN_site_id"))
-        if sdwan_id:
-            result[site_id] = sdwan_id
+        return site_id, sdwan_id
+
+    result: Dict[str, str] = {}
+    pending = set()
+    timeout_deadline = perf_counter() + MIST_SITE_SETTING_FETCH_TIMEOUT_SECONDS
+    max_workers = min(MIST_SITE_SETTING_MAX_WORKERS, len(site_ids))
+
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        future_map = {executor.submit(_fetch_site_setting_sdwan_id, site_id): site_id for site_id in site_ids}
+        pending = set(future_map.keys())
+        while pending and perf_counter() < timeout_deadline:
+            done, pending = wait(
+                pending,
+                timeout=MIST_SITE_SETTING_POLL_INTERVAL_SECONDS,
+                return_when=FIRST_COMPLETED,
+            )
+            for future in done:
+                try:
+                    site_id, sdwan_id = future.result()
+                except Exception:
+                    continue
+                if sdwan_id:
+                    result[site_id] = sdwan_id
+    finally:
+        for future in pending:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    with _MIST_SITE_SDWAN_ID_CACHE_LOCK:
+        cache_values = _MIST_SITE_SDWAN_ID_CACHE.get("values")
+        if not isinstance(cache_values, dict):
+            cache_values = {}
+        cache_values[cache_key] = dict(result)
+        _MIST_SITE_SDWAN_ID_CACHE["values"] = cache_values
+        _MIST_SITE_SDWAN_ID_CACHE["expires_at"] = now + MIST_SITE_SDWAN_CACHE_SECONDS
+
     return result
 
 
