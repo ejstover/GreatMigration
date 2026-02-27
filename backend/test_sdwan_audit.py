@@ -31,7 +31,8 @@ class DummyLogger:
 def test_sdwan_site_id_validation() -> None:
     assert normalize_sdwan_site_id(" 123 ") == "123"
     assert normalize_sdwan_site_id("abc") is None
-    assert extract_sdwan_site_id({"{{SDWAN_SiteID}}": " 44 "}) == "44"
+    assert extract_sdwan_site_id({"SDWAN_SiteID": " 44 "}) == "44"
+    assert extract_sdwan_site_id({"{{SDWAN_SiteID}}": " 55 "}) == "55"
 
 
 def test_name_suffix_validation() -> None:

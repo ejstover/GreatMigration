@@ -1036,19 +1036,20 @@ def _run_sdwan_audit(contexts: Sequence[SiteContext], correlation_id: str) -> Tu
             "variable_keys": sorted(list(variables.keys())),
         }, sort_keys=True))
         site_id = extract_sdwan_site_id(variables)
+        raw_site_id = variables.get("SDWAN_SiteID", variables.get("{{SDWAN_SiteID}}"))
         action_logger.info(json.dumps({
             "component": "mist",
             "event": "sdwan_site_id_extracted",
             "correlation_id": correlation_id,
             "site_id": context.site_id,
-            "raw_value": variables.get("{{SDWAN_SiteID}}"),
+            "raw_value": raw_site_id,
             "normalized_value": site_id,
         }, sort_keys=True, default=str))
         if not site_id:
             findings.append({
                 "site_id": context.site_id,
                 "site_name": context.site_name,
-                "message": "No valid {{SDWAN_SiteID}} present for SDWAN correlation.",
+                "message": "No valid SDWAN_SiteID present for SDWAN correlation.",
                 "severity": "info",
             })
             findings_by_site[context.site_id] = findings_by_site.get(context.site_id, 0) + 1
@@ -1853,7 +1854,7 @@ def api_audit_run(
         checks.append({
             "id": "sdwan_cedge_audit",
             "name": "Cisco SD-WAN cEdge audit",
-            "description": "Optional vManage checks correlated by {{SDWAN_SiteID}}",
+            "description": "Optional vManage checks correlated by SDWAN_SiteID",
             "severity": "warning",
             "findings": sdwan_findings,
             "site_level_findings": [f for f in sdwan_findings if not f.get("device_id")],

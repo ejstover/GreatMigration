@@ -12,7 +12,8 @@ import requests
 
 from compliance import ENV_SWITCH_NAME_PATTERN
 
-SDWAN_SITE_VAR_KEY = "{{SDWAN_SiteID}}"
+SDWAN_SITE_VAR_KEY = "SDWAN_SiteID"
+SDWAN_SITE_VAR_LEGACY_KEY = "{{SDWAN_SiteID}}"
 SITE_ID_RE = re.compile(r"^\d+$")
 
 
@@ -47,7 +48,9 @@ def normalize_sdwan_site_id(raw: Any) -> Optional[str]:
 
 
 def extract_sdwan_site_id(variables: Mapping[str, Any]) -> Optional[str]:
-    return normalize_sdwan_site_id(variables.get(SDWAN_SITE_VAR_KEY))
+    return normalize_sdwan_site_id(
+        variables.get(SDWAN_SITE_VAR_KEY, variables.get(SDWAN_SITE_VAR_LEGACY_KEY))
+    )
 
 
 def load_sdwan_config() -> SDWANConfig:
