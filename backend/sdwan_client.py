@@ -251,14 +251,23 @@ class SDWANClient:
         return payload
 
     def _get_data_items(self, paths: Sequence[str]) -> List[Dict[str, Any]]:
+        last_error: Optional[RuntimeError] = None
         for path in paths:
-            payload = self._get(path)
+            try:
+                payload = self._get(path)
+            except RuntimeError as exc:
+                last_error = exc
+                logger.debug("sdwan_api_fallback path=%s error=%s", path, exc)
+                continue
             if isinstance(payload, dict):
                 data = payload.get("data")
                 if isinstance(data, list):
                     return [item for item in data if isinstance(item, dict)]
             if isinstance(payload, list):
                 return [item for item in payload if isinstance(item, dict)]
+
+        if last_error is not None:
+            raise last_error
         return []
 
     def fetch_device_inventory(self) -> List[Dict[str, Any]]:
