@@ -4,11 +4,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-BACKEND_DIR = Path(__file__).resolve().parent
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
-
-
 def _load_app():
     return importlib.reload(importlib.import_module("app"))
 

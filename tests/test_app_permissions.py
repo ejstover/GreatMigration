@@ -6,11 +6,6 @@ from types import SimpleNamespace
 import pytest
 
 
-BACKEND_DIR = Path(__file__).resolve().parent
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
-
-
 @pytest.fixture
 def app_module(monkeypatch):
     app = importlib.reload(importlib.import_module("app"))

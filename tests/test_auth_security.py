@@ -5,11 +5,6 @@ from pathlib import Path
 from fastapi import FastAPI
 
 
-BACKEND_DIR = Path(__file__).resolve().parent
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
-
-
 def _middleware_options(app: FastAPI):
     for item in app.user_middleware:
         if item.cls.__name__ == "SessionMiddleware":

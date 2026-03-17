@@ -4,11 +4,6 @@ from pathlib import Path
 from ldap3.utils.conv import escape_filter_chars
 
 
-BACKEND_DIR = Path(__file__).resolve().parent
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
-
-
 def _setup_auth(monkeypatch, *, can_push: bool, read_only: bool = False, readonly_groups=None, push_group: bool = True):
     import importlib
 

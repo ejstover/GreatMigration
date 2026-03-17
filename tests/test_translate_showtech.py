@@ -2,7 +2,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
 os.environ.setdefault("AUTH_METHOD", "local")
 
@@ -10,8 +10,8 @@ import io
 import asyncio
 from fastapi import UploadFile
 
-from backend.translate_showtech import build_report, find_copper_10g_ports, parse_showtech
-from backend.app import api_showtech, api_showtech_pdf
+from translate_showtech import build_report, find_copper_10g_ports, parse_showtech
+from app import api_showtech, api_showtech_pdf
 
 
 def test_find_copper_10g_ports():
