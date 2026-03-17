@@ -24,8 +24,6 @@ import argparse
 import json
 import os
 import re
-import signal
-from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -189,34 +187,10 @@ def tag_description(desc: str, ts: str) -> str:
     d = (desc or "").strip()
     return f"{d} - converted by API {ts}" if d else f"converted by API {ts}"
 
-
-
-@contextmanager
-def _regex_timeout(seconds: int = 1):
-    if not hasattr(signal, "SIGALRM"):
-        yield
-        return
-
-    def _alarm_handler(signum, frame):
-        raise TimeoutError("regex execution timed out")
-
-    previous_handler = signal.getsignal(signal.SIGALRM)
-    signal.signal(signal.SIGALRM, _alarm_handler)
-    signal.setitimer(signal.ITIMER_REAL, float(seconds))
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0.0)
-        signal.signal(signal.SIGALRM, previous_handler)
-
 def _match_regex(val: Optional[str], pattern: str) -> bool:
     if val is None:
         return False
-    try:
-        with _regex_timeout(1):
-            return re.search(pattern, val) is not None
-    except TimeoutError:
-        return False
+    return re.search(pattern, val) is not None
 
 def _normalize_vlan_list(v) -> List[int]:
     if v is None:

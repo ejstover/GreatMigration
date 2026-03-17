@@ -433,21 +433,6 @@ action_logger = get_user_logger()
 AUDIT_RUNNER: SiteAuditRunner = build_default_runner()
 
 
-def _request_origin_allowed(request: Request) -> bool:
-    host = request.headers.get("host", "")
-    if not host:
-        return True
-    expected = host.split(":", 1)[0].lower()
-    for header in ("origin", "referer"):
-        raw = (request.headers.get(header) or "").strip()
-        if not raw:
-            continue
-        match = re.match(r"^https?://([^/:?#]+)", raw, flags=re.IGNORECASE)
-        if match and match.group(1).lower() != expected:
-            return False
-    return True
-
-
 def _request_user_label(request: Request) -> str:
     try:
         info = current_user(request)
@@ -517,15 +502,6 @@ async def _log_user_actions(request: Request, call_next):
         response.status_code,
     )
     return response
-
-
-@app.middleware("http")
-async def _enforce_api_auth(request: Request, call_next):
-    if request.url.path.startswith("/api/"):
-        current_user(request)
-        if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and not _request_origin_allowed(request):
-            raise HTTPException(status_code=403, detail="Blocked cross-site request")
-    return await call_next(request)
 
 
 @app.post("/api/log_timing")
@@ -893,51 +869,36 @@ def _is_recent_device(device: Mapping[str, Any], reference_ts: float) -> bool:
     return last_seen_ts >= reference_ts - RECENT_LAST_SEEN_WINDOW_SECONDS
 
 
-def _fetch_site_context(
-    base_url: str,
-    headers: Dict[str, str],
-    site_id: str,
-    *,
-    include_all_devices: bool = False,
-) -> SiteContext:
-    fetch_map = {
-        "site": f"/sites/{site_id}",
-        "setting": f"/sites/{site_id}/setting",
-        "templates": f"/sites/{site_id}/networktemplates",
-        "devices": f"/sites/{site_id}/devices",
-        "switch_devices": f"/sites/{site_id}/devices?type=switch",
-        "switch_stats": f"/sites/{site_id}/stats/devices?type=switch&limit=1000",
-        "ap_stats": f"/sites/{site_id}/stats/devices?type=ap&limit=1000",
-    }
-    fetch_results: Dict[str, Any] = {}
-    with ThreadPoolExecutor(max_workers=len(fetch_map)) as executor:
-        futures = {
-            executor.submit(
-                _mist_get_json,
-                base_url,
-                headers,
-                path,
-                optional=(name != "site"),
-            ): name
-            for name, path in fetch_map.items()
-        }
-        for future in as_completed(futures):
-            name = futures[future]
-            fetch_results[name] = future.result()
-
-    raw_site = fetch_results.get("site")
+def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) -> SiteContext:
+    raw_site = _mist_get_json(base_url, headers, f"/sites/{site_id}")
     site_doc = raw_site if isinstance(raw_site, dict) else {}
     site_name = _site_display_name(site_doc, fallback=site_id)
-    setting_doc = fetch_results.get("setting")
+    setting_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/setting", optional=True)
     if not isinstance(setting_doc, dict):
         setting_doc = {}
-    templates_doc = fetch_results.get("templates")
+    templates_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/networktemplates", optional=True)
     template_list = [t for t in templates_doc or [] if isinstance(t, dict)] if isinstance(templates_doc, list) else []
 
-    base_devices_doc = fetch_results.get("devices")
-    switch_devices_doc = fetch_results.get("switch_devices")
-    switch_stats_doc = fetch_results.get("switch_stats")
-    ap_stats_doc = fetch_results.get("ap_stats")
+    base_devices_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/devices", optional=True)
+    switch_devices_doc = _mist_get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/devices?type=switch",
+        optional=True,
+    )
+
+    switch_stats_doc = _mist_get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/stats/devices?type=switch&limit=1000",
+        optional=True,
+    )
+    ap_stats_doc = _mist_get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/stats/devices?type=ap&limit=1000",
+        optional=True,
+    )
 
     ordered_ids: List[str] = []
     devices_by_id: Dict[str, Dict[str, Any]] = {}
@@ -1034,7 +995,21 @@ def _fetch_site_context(
     device_list: List[Dict[str, Any]] = []
     for device_id in ordered_ids:
         device = devices_by_id[device_id]
+        detailed_doc: Optional[Dict[str, Any]] = None
+        try:
+            detailed = _mist_get_json(
+                base_url,
+                headers,
+                f"/sites/{site_id}/devices/{device_id}",
+                optional=True,
+            )
+        except Exception:
+            detailed = None
+        if isinstance(detailed, dict):
+            detailed_doc = detailed
         merged: Dict[str, Any] = dict(device)
+        if detailed_doc:
+            merged.update({k: v for k, v in detailed_doc.items() if k not in {"id", "site_id"} or v is not None})
         stats_doc = _claim_stats(merged)
         if stats_doc:
             merged.update({k: v for k, v in stats_doc.items() if v is not None})
@@ -1059,15 +1034,15 @@ def _fetch_site_context(
         device_list.append(extra_device)
     candidate_org_ids = _collect_candidate_org_ids(site_doc, setting_doc, template_list, device_list)
 
-    if not include_all_devices:
-        reference_ts = _current_timestamp()
-        filtered_devices: List[Dict[str, Any]] = []
-        for device in device_list:
-            if not isinstance(device, dict):
-                continue
-            if _is_recent_device(device, reference_ts):
-                filtered_devices.append(device)
-        device_list = filtered_devices
+    reference_ts = _current_timestamp()
+    filtered_devices: List[Dict[str, Any]] = []
+    for device in device_list:
+        if not isinstance(device, dict):
+            continue
+        if _is_recent_device(device, reference_ts):
+            filtered_devices.append(device)
+
+    device_list = filtered_devices
 
     if SWITCH_TEMPLATE_ID:
         template_doc = _fetch_switch_template_document(
@@ -1108,14 +1083,12 @@ def _gather_site_contexts(
     base_url: str,
     headers: Dict[str, str],
     site_ids: Sequence[str],
-    *,
-    include_all_devices: bool = False,
 ) -> tuple[List[SiteContext], List[Dict[str, Any]]]:
     contexts: List[SiteContext] = []
     errors: List[Dict[str, Any]] = []
     for site_id in site_ids:
         try:
-            contexts.append(_fetch_site_context(base_url, headers, site_id, include_all_devices=include_all_devices))
+            contexts.append(_fetch_site_context(base_url, headers, site_id))
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
             detail: Any = None
@@ -1603,7 +1576,6 @@ def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
     token = _load_mist_token()
     base_url = base_url.rstrip("/")
     headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
-    r: Optional[requests.Response] = None
     try:
         r = requests.get(f"{base_url}/sites/{site_id}/devices?type=switch", headers=headers, timeout=30)
         r.raise_for_status()
@@ -1625,10 +1597,10 @@ def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
         return {"ok": True, "items": items}
     except Exception as e:
         try:
-            err_payload = r.json() if r is not None else {"error": str(e)}
+            err_payload = r.json()  # type: ignore[name-defined]
         except Exception:
             err_payload = {"error": str(e)}
-        return JSONResponse({"ok": False, "error": err_payload}, status_code=getattr(r, "status_code", 500) if r is not None else 500)
+        return JSONResponse({"ok": False, "error": err_payload}, status_code=getattr(r, "status_code", 500))  # type: ignore[name-defined]
 
 def _discover_org_ids(base_url: str, headers: Dict[str, str]) -> List[str]:
     """Return list of org IDs visible to the token using /self."""
@@ -1815,13 +1787,7 @@ def api_audit_run(
         started_at = datetime.now(tz) if tz else datetime.now()
         timer = perf_counter()
 
-        include_all_devices = bool(payload.get("include_all_devices"))
-        contexts, errors = _gather_site_contexts(
-            base_url,
-            headers,
-            unique_site_ids,
-            include_all_devices=include_all_devices,
-        )
+        contexts, errors = _gather_site_contexts(base_url, headers, unique_site_ids)
         audit_result = AUDIT_RUNNER.run(contexts)
         duration_ms = int((perf_counter() - timer) * 1000)
         finished_at = datetime.now(tz) if tz else datetime.now()

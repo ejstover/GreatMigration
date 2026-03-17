@@ -1,13 +1,8 @@
-import base64
-import hashlib
-import os
-
 import importlib
 import sys
 from pathlib import Path
 
 from fastapi import FastAPI
-import pytest
 
 
 def _middleware_options(app: FastAPI):
@@ -46,24 +41,3 @@ def test_local_auth_requires_explicit_users(monkeypatch):
     auth_local = importlib.reload(importlib.import_module("auth_local"))
 
     assert auth_local.USERS == {}
-
-
-def test_local_auth_supports_hashed_passwords(monkeypatch):
-    salt = b"salty-salt"
-    digest = hashlib.pbkdf2_hmac("sha256", b"strong-password", salt, 600000)
-    stored = "pbkdf2_sha256$600000$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(digest).decode()
-
-    monkeypatch.setenv("LOCAL_USERS", f"alice:{stored}")
-    auth_local = importlib.reload(importlib.import_module("auth_local"))
-
-    assert auth_local._verify_password(auth_local.USERS["alice"], "strong-password") is True
-    assert auth_local._verify_password(auth_local.USERS["alice"], "wrong") is False
-
-
-def test_session_secret_required_in_production(monkeypatch):
-    monkeypatch.delenv("SESSION_SECRET", raising=False)
-    monkeypatch.setenv("ENV", "production")
-    monkeypatch.setenv("LOCAL_USERS", "alice:password")
-
-    with pytest.raises(RuntimeError):
-        importlib.reload(importlib.import_module("auth_local"))

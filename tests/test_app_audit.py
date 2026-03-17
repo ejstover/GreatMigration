@@ -67,11 +67,19 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
                 },
             ]
         },
+        "/sites/site-1/devices/dev-1": {
+            "id": "dev-1",
+            "status": {"state": "online"},
+            "switch_config": {"vlans": [10]},
+            "extra": "detail",
+        },
         "/sites/site-1/stats/devices/dev-1?type=switch": {
             "if_stat": {
                 "ge-0/0/0.0": {"port_id": "ge-0/0/0", "up": True}
             }
         },
+        "/sites/site-1/devices/dev-2": None,
+        "/sites/site-1/devices/dev-3": None,
         "/sites/site-1/switch_templates/template-1": {
             "id": "template-1",
             "switch_config": {"port_config": {"ge-0/0/1": {"usage": "end_user"}}},
@@ -91,7 +99,11 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
     devices_by_id = {d.get("id"): d for d in context.devices if d.get("id")}
 
     dev1 = devices_by_id["dev-1"]
+    # Base fields remain, detail fields are merged, and structured statuses are preserved.
     assert dev1["name"] == "Switch 1"
+    assert dev1["status"] == {"state": "online"}
+    assert dev1["switch_config"] == {"vlans": [10]}
+    assert dev1["extra"] == "detail"
     assert dev1["version"] == "23.4R2-S4.11"
 
     dev2 = devices_by_id["dev-2"]
@@ -106,7 +118,9 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
     assert "/sites/site-1/devices?type=switch" in calls
     assert "/sites/site-1/stats/devices?type=switch&limit=1000" in calls
     assert "/sites/site-1/stats/devices?type=ap&limit=1000" in calls
+    assert "/sites/site-1/devices/dev-1" in calls
     assert "/sites/site-1/stats/devices/dev-1?type=switch" in calls
+    assert "/sites/site-1/devices/dev-2" in calls
     assert "/sites/site-1/switch_templates/template-1" in calls
 
     template_ids = {t.get("id") for t in context.templates if isinstance(t, dict)}
@@ -145,6 +159,11 @@ def test_fetch_site_context_filters_recent_last_seen(monkeypatch, app_module):
             ]
         },
         "/sites/site-1/stats/devices?type=ap&limit=1000": [],
+        "/sites/site-1/devices/recent": None,
+        "/sites/site-1/devices/stale": None,
+        "/sites/site-1/devices/missing": None,
+        "/sites/site-1/devices/recent-iso": None,
+        "/sites/site-1/devices/recent-ms": None,
         "/sites/site-1/stats/devices/recent-ms?type=switch": {},
         "/sites/site-1/switch_templates/template-1": {"id": "template-1"},
     }
@@ -1213,35 +1232,3 @@ console-ports:
     assert err is None
     assert ports == {"mge-0/0/0", "ge-0/0/16", "xe-0/2/0"}
     assert any(url.endswith("/device-types/Juniper/EX4100-48MP.yaml") for url in calls)
-
-
-def test_fetch_site_context_include_all_devices(monkeypatch, app_module):
-    now_ts = 1_700_000_000.0
-    monkeypatch.setattr(app_module, "_current_timestamp", lambda: now_ts)
-
-    responses: Dict[str, Any] = {
-        "/sites/site-1": {"id": "site-1", "name": "HQ"},
-        "/sites/site-1/setting": {},
-        "/sites/site-1/networktemplates": [],
-        "/sites/site-1/devices": [
-            {"id": "recent", "name": "Recent", "last_seen": now_ts - 120},
-            {"id": "old", "name": "Old", "last_seen": now_ts - (30 * 24 * 60 * 60)},
-        ],
-        "/sites/site-1/devices?type=switch": [],
-        "/sites/site-1/stats/devices?type=switch&limit=1000": [],
-        "/sites/site-1/stats/devices?type=ap&limit=1000": [],
-        "/sites/site-1/switch_templates/template-1": {"id": "template-1"},
-    }
-
-    monkeypatch.setattr(app_module, "_mist_get_json", lambda *args, **kwargs: responses.get(args[2]))
-
-    filtered = app_module._fetch_site_context("https://example.com/api/v1", {"Authorization": "token"}, "site-1")
-    assert [d.get("id") for d in filtered.devices] == ["recent"]
-
-    all_devices = app_module._fetch_site_context(
-        "https://example.com/api/v1",
-        {"Authorization": "token"},
-        "site-1",
-        include_all_devices=True,
-    )
-    assert [d.get("id") for d in all_devices.devices] == ["recent", "old"]

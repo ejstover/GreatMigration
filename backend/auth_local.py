@@ -1,9 +1,6 @@
 """Local authentication routes."""
 import os
 import secrets
-import hashlib
-import base64
-import hmac
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Form
@@ -14,8 +11,6 @@ from logging_utils import get_user_logger
 
 SESSION_SECRET = os.getenv("SESSION_SECRET")
 if not SESSION_SECRET:
-    if (os.getenv("ENV") or os.getenv("APP_ENV") or "").strip().lower() in {"prod", "production"}:
-        raise RuntimeError("SESSION_SECRET is required in production")
     SESSION_SECRET = secrets.token_urlsafe(32)
 SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", "true").strip().lower() in {"1", "true", "yes", "on"}
 # LOCAL_USERS format: "user1:pass1,user2:pass2"
@@ -31,27 +26,6 @@ def _load_users() -> Dict[str, str]:
             u, p = pair.split(":", 1)
             users[u.strip()] = p.strip()
     return users
-
-
-def _verify_password(stored: str, provided: str) -> bool:
-    value = (stored or "").strip()
-    if not value:
-        return False
-
-    # Expected format: pbkdf2_sha256$<iterations>$<salt_b64>$<digest_b64>
-    parts = value.split("$")
-    if len(parts) == 4 and parts[0] == "pbkdf2_sha256":
-        try:
-            iterations = int(parts[1])
-            salt = base64.b64decode(parts[2].encode("utf-8"), validate=True)
-            expected = base64.b64decode(parts[3].encode("utf-8"), validate=True)
-        except Exception:
-            return False
-        candidate = hashlib.pbkdf2_hmac("sha256", provided.encode("utf-8"), salt, iterations)
-        return hmac.compare_digest(candidate, expected)
-
-    # Legacy plaintext compatibility (discouraged, but compared safely).
-    return hmac.compare_digest(value, provided)
 
 
 def _load_push_users() -> set[str]:
@@ -111,7 +85,7 @@ def get_login():
 
 @router.post("/login")
 def post_login(request: Request, username: str = Form(...), password: str = Form(...)):
-    if not _verify_password(USERS.get(username, ""), password):
+    if USERS.get(username) != password:
         client_host = request.client.host if request.client else "-"
         action_logger.warning("local_login_failed user=%s client=%s", username, client_host)
         return HTMLResponse(_html_login("Invalid username or password."), status_code=401)

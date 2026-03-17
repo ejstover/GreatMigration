@@ -155,20 +155,6 @@ def _looks_like_uplink_by_module(nums: List[int], uplink_module: int) -> bool:
     """Uplink if we have member/module/port AND module == uplink_module."""
     return len(nums) >= 3 and nums[1] == uplink_module
 
-def _looks_like_uplink_by_hint(children: List[str], src_port: Optional[int], model: str) -> bool:
-    """Fallback inference when Cisco module numbering is ambiguous."""
-    text = "\n".join(children).lower()
-    if "tengig" in text or "sfp" in text or "10g" in text:
-        return True
-    model_l = (model or "").lower()
-    if src_port is None:
-        return False
-    if "24" in model_l and 25 <= src_port <= 28:
-        return True
-    if "48" in model_l and 49 <= src_port <= 52:
-        return True
-    return False
-
 def _map_uplink(nums: List[int], derived_vc_members: int) -> str:
     """
     EX4100 uplinks are xe-<fpc>/2/<0-3>.
@@ -358,21 +344,13 @@ def convert_one_file(
         allowed_raw  = first(children, r"^switchport\s+trunk\s+allowed\s+vlan\s+(.+)$")
         allowed_list = parse_allowed_list(allowed_raw)
 
-        src_member = nums[0] if nums else None
-        src_module = nums[1] if len(nums) >= 2 else None
-        src_port   = nums[-1] if nums else None
-        model_for_member = member_models.get(src_member or 1, "ex4100-48mp")
-        effective_uplink_module = uplink_module
-        if _looks_like_uplink_by_hint(children, src_port, model_for_member) and len(nums) >= 3:
-            effective_uplink_module = nums[1]
-
         # Build Juniper target interface
         try:
             j_if = cisco_to_juniper_if_direct(
                 ifname,
                 member_models=member_models,
                 derived_vc_members=derived_vc_members,
-                uplink_module=effective_uplink_module,
+                uplink_module=uplink_module,
                 strict_overflow=strict_overflow,
                 port_offset=start_port,
             )
@@ -382,17 +360,17 @@ def convert_one_file(
                 ifname,
                 member_models=member_models,
                 derived_vc_members=derived_vc_members,
-                uplink_module=effective_uplink_module,
+                uplink_module=uplink_module,
                 strict_overflow=False,
                 port_offset=start_port,
             )
             mapping_overflow = True
             overflow_count += 1
 
-        model_for_member = member_models.get(src_member or 1, "ex4100-48mp")
-        is_uplink = (len(nums) >= 3 and nums[1] == uplink_module)
-        if not is_uplink:
-            is_uplink = _looks_like_uplink_by_hint(children, src_port, model_for_member)
+        src_member = nums[0] if nums else None
+        src_module = nums[1] if len(nums) >= 2 else None
+        src_port   = nums[-1] if nums else None
+        is_uplink  = (len(nums) >= 3 and nums[1] == uplink_module)
 
         iface: Dict[str, Any] = {
             "name": ifname,
