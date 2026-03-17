@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 from time import perf_counter
 import copy
+from urllib.parse import urlparse
 
 import requests
 
@@ -381,6 +382,11 @@ NETBOX_DT_URL = os.getenv(
 NETBOX_LOCAL_DT = (os.getenv("NETBOX_LOCAL_DT") or "").strip()
 SWITCH_TEMPLATE_ID = (os.getenv("SWITCH_TEMPLATE_ID") or "").strip()
 DEFAULT_ORG_ID = (os.getenv("MIST_ORG_ID") or "").strip()
+MIST_ALLOWED_HOSTS = {
+    host.strip().lower()
+    for host in (os.getenv("MIST_ALLOWED_HOSTS") or "api.mist.com,api.ac2.mist.com,api.eu.mist.com").split(",")
+    if host.strip()
+}
 AUTH_METHOD = (os.getenv("AUTH_METHOD") or "").lower()
 if AUTH_METHOD == "ldap":
     try:
@@ -688,6 +694,22 @@ def _mist_headers(token: str) -> Dict[str, str]:
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
+
+
+def _sanitize_base_url(base_url: str) -> str:
+    candidate = (base_url or "").strip()
+    if not candidate:
+        raise ValueError("base_url is required")
+
+    parsed = urlparse(candidate)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not host:
+        raise ValueError("base_url must be a valid https URL")
+
+    if host not in MIST_ALLOWED_HOSTS:
+        raise ValueError("base_url host is not allowed")
+
+    return candidate.rstrip("/")
 
 
 def _mist_get_json(
@@ -1542,12 +1564,13 @@ def api_add_device_type(request: Request, data: Dict[str, str] = Body(...)):
 
 
 @app.get("/api/sites")
-def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
+def api_sites(request: Request, base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
     """
     Returns the list of sites visible to the token. If org_id is provided, scopes to that org.
     """
+    current_user(request)
     token = _load_mist_token()
-    base_url = base_url.rstrip("/")
+    base_url = _sanitize_base_url(base_url)
     headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
 
     try:
@@ -1569,12 +1592,13 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
 
 
 @app.get("/api/site_devices")
-def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
+def api_site_devices(request: Request, site_id: str, base_url: str = DEFAULT_BASE_URL):
     """
     Returns the list of switch devices in the given site.
     """
+    current_user(request)
     token = _load_mist_token()
-    base_url = base_url.rstrip("/")
+    base_url = _sanitize_base_url(base_url)
     headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
     try:
         r = requests.get(f"{base_url}/sites/{site_id}/devices?type=switch", headers=headers, timeout=30)
@@ -1626,12 +1650,13 @@ def _discover_org_ids(base_url: str, headers: Dict[str, str]) -> List[str]:
 
 
 @app.get("/api/port_profiles")
-def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
+def api_port_profiles(request: Request, base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
     """Return port profiles visible to the token."""
     items: List[Dict[str, Any]] = []
     try:
+        current_user(request)
         token = _load_mist_token()
-        base_url = base_url.rstrip("/")
+        base_url = _sanitize_base_url(base_url)
         headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
 
         template_id = SWITCH_TEMPLATE_ID
@@ -1749,7 +1774,7 @@ def api_audit_run(
         entire_org = bool(payload.get("entire_org"))
         requested_org_id = (payload.get("org_id") or "").strip() or None
 
-        base_url = base_url.rstrip("/")
+        base_url = _sanitize_base_url(base_url)
         token = _load_mist_token()
         headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
 
@@ -1953,7 +1978,7 @@ def api_audit_fix(
             pause = pause_default
 
         token = _load_mist_token()
-        base_url = base_url.rstrip("/")
+        base_url = _sanitize_base_url(base_url)
         result = execute_audit_action(
             action_id,
             base_url,
