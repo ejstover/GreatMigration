@@ -7,11 +7,6 @@ from typing import Any, Dict
 import pytest
 
 
-BACKEND_DIR = Path(__file__).resolve().parent
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
-
-
 @pytest.fixture
 def app_module(monkeypatch):
     monkeypatch.setenv("SWITCH_TEMPLATE_ID", "template-1")
