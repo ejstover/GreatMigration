@@ -113,3 +113,12 @@ def test_index_to_ex4100_if_supports_model_variants():
 def test_cisco_to_ex_if_enhanced_supports_model_variants():
     assert cisco_to_ex_if_enhanced("EX4100-24MP Virtual Chassis", "GigabitEthernet1/0/10") == "ge-0/0/9"
     assert cisco_to_ex_if_enhanced("EX4100-48MP Virtual Chassis", "GigabitEthernet1/0/10") == "mge-0/0/9"
+
+
+def test_evaluate_rule_regex_timeout_returns_false(monkeypatch):
+    import push_mist_port_config as mod
+
+    monkeypatch.setattr(mod.re, "search", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("timeout")))
+    intf = {"description": "example"}
+
+    assert evaluate_rule({"description_regex": "(a+)+$"}, intf) is False
