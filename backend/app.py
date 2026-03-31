@@ -4470,9 +4470,20 @@ def _resolve_interface_name_from_available_ports(
         return None
 
     itype = m.group("type")
+    member = m.group("member")
+    pic = m.group("pic")
+    port = m.group("port")
+
     if itype in {"ge", "mge"}:
         alt_type = "ge" if itype == "mge" else "mge"
-        alt = f"{alt_type}-{m.group('member')}/{m.group('pic')}/{m.group('port')}"
+        alt = f"{alt_type}-{member}/{pic}/{port}"
+        if alt in available_physical_ports:
+            return alt
+
+    for alt_type in ("et", "xe", "ge", "mge"):
+        if alt_type == itype:
+            continue
+        alt = f"{alt_type}-{member}/{pic}/{port}"
         if alt in available_physical_ports:
             return alt
 

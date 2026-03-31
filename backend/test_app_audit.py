@@ -688,6 +688,13 @@ def test_resolve_interface_name_from_available_ports_supports_ge_mge(app_module)
     assert app_module._resolve_interface_name_from_available_ports("xe-0/2/1", available) is None
 
 
+
+
+def test_resolve_interface_name_from_available_ports_supports_et(app_module):
+    available = {"et-0/0/9", "et-0/0/12"}
+    assert app_module._resolve_interface_name_from_available_ports("ge-0/0/9", available) == "et-0/0/9"
+    assert app_module._resolve_interface_name_from_available_ports("xe-0/0/12", available) == "et-0/0/12"
+
 def test_derive_port_config_keeps_port_ids_without_model_normalization(monkeypatch, app_module):
     device_info = {
         "model": "EX4100-24MP",
