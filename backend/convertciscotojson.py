@@ -107,6 +107,21 @@ def _normalize_cisco_ifname(name: str) -> str:
     short = re.sub(r"^ten", "te", short)
     return short
 
+def _source_link_tier(name: str) -> str:
+    """
+    Best-effort speed tier from Cisco interface name.
+    Returns: "1g", "10g_plus", or "unknown".
+    """
+    n = re.sub(r"\s+", "", (name or "")).lower()
+    if re.match(r"^(gi|gigabitethernet|fa|fastethernet)", n):
+        return "1g"
+    if re.match(
+        r"^(te|ten|tengigabitethernet|fo|fortygigabitethernet|hu|hundredgige|twentyfivegige)",
+        n,
+    ):
+        return "10g_plus"
+    return "unknown"
+
 
 def parse_show_power_inline(raw_text: str) -> Dict[str, float]:
     """Return Cisco interface -> power draw watts parsed from 'show power inline' output."""
@@ -155,7 +170,7 @@ def _looks_like_uplink_by_module(nums: List[int], uplink_module: int) -> bool:
     """Uplink if we have member/module/port AND module == uplink_module."""
     return len(nums) >= 3 and nums[1] == uplink_module
 
-def _map_uplink(nums: List[int], derived_vc_members: int) -> str:
+def _map_uplink(nums: List[int], derived_vc_members: int, source_tier: str = "unknown") -> str:
     """
     EX4100 uplinks are xe-<fpc>/2/<0-3>.
     fpc  = (member-1); clamp to 0 if single switch
@@ -166,7 +181,8 @@ def _map_uplink(nums: List[int], derived_vc_members: int) -> str:
     if derived_vc_members == 1:
         fpc = 0
     port = max(0, min((nums[-1] - 1), 3))
-    return f"xe-{fpc}/2/{port}"
+    prefix = "ge" if source_tier == "1g" else "xe"
+    return f"{prefix}-{fpc}/2/{port}"
 
 def cisco_to_juniper_if_direct(
     name: str,
@@ -186,7 +202,7 @@ def cisco_to_juniper_if_direct(
 
     # Uplinks (always xe on EX4100)
     if _looks_like_uplink_by_module(nums, uplink_module):
-        upl = _map_uplink(nums, derived_vc_members)
+        upl = _map_uplink(nums, derived_vc_members, _source_link_tier(name))
         try:
             fpc = int(upl.split("-")[1].split("/")[0])
             if strict_overflow and fpc >= derived_vc_members:
@@ -207,9 +223,11 @@ def cisco_to_juniper_if_direct(
     # access ports (e.g. Gi1/0/25-28 or Gi1/0/49-52). Map these to xe uplinks
     # instead of wrapping back onto access ports.
     if "24" in model_l and 24 <= local_idx <= 27:
-        return f"xe-{fpc}/2/{local_idx - 24}"
+        uplink_prefix = "ge" if _source_link_tier(name) == "1g" else "xe"
+        return f"{uplink_prefix}-{fpc}/2/{local_idx - 24}"
     if "48" in model_l and 48 <= local_idx <= 51:
-        return f"xe-{fpc}/2/{local_idx - 48}"
+        uplink_prefix = "ge" if _source_link_tier(name) == "1g" else "xe"
+        return f"{uplink_prefix}-{fpc}/2/{local_idx - 48}"
 
     dest_ppm = _dest_ports_per_member(model)
 
