@@ -1293,6 +1293,54 @@ def _safe_project_filename_fragment(value: str, max_length: int = 64) -> str:
     return cleaned
 
 
+CORE_SWITCH_NAME_PATTERN = re.compile(r"^[A-Z0-9]{2}[A-Z0-9]{3}MDFCS1$", re.IGNORECASE)
+CORE_SWITCH_PID_RE = re.compile(
+    r'NAME:\s*"Switch\s*1"\s*,[^\n]*\nPID:\s*([^,\s]+)',
+    re.IGNORECASE,
+)
+
+
+def _core_switch_models_from_env() -> Set[str]:
+    raw = os.getenv("CORE_SWITCH_MODELS", "")
+    return {item.strip().upper() for item in raw.split(",") if item.strip()}
+
+
+def _extract_hostname_from_running_config_text(running_config_text: str) -> Optional[str]:
+    for line in str(running_config_text or "").splitlines():
+        match = re.match(r"\s*hostname\s+([^\s]+)", line, flags=re.IGNORECASE)
+        if match:
+            hostname = match.group(1).strip()
+            if hostname:
+                return hostname
+    return None
+
+
+def _extract_switch_one_pid_from_inventory(show_inventory_text: str) -> Optional[str]:
+    match = CORE_SWITCH_PID_RE.search(str(show_inventory_text or ""))
+    if not match:
+        return None
+    pid = match.group(1).strip().upper()
+    return pid or None
+
+
+def determine_switch_type(
+    running_config_text: str,
+    show_inventory_text: Optional[str],
+) -> str:
+    hostname = (_extract_hostname_from_running_config_text(running_config_text) or "").strip()
+    if not hostname or not CORE_SWITCH_NAME_PATTERN.fullmatch(hostname):
+        return "access"
+
+    core_models = _core_switch_models_from_env()
+    if not core_models:
+        return "access"
+
+    pid = _extract_switch_one_pid_from_inventory(show_inventory_text or "")
+    if pid and pid in core_models:
+        return "core"
+    return "access"
+
+
 def _alphanum_sort_key(value: str) -> tuple[tuple[int, object], ...]:
     parts = re.split(r"(\d+)", value.casefold())
     key_parts: list[tuple[int, object]] = []
@@ -2013,12 +2061,14 @@ async def api_convert(
     force_model: Optional[str] = Form(None),
     strict_overflow: bool = Form(False),
     show_vlan_map: Optional[str] = Form(None),
+    show_inventory_map: Optional[str] = Form(None),
 ) -> JSONResponse:
     """
     Converts one or more Cisco configs into the normalized JSON that the push script consumes.
     """
     results = []
     vlan_lookup: Dict[str, str] = {}
+    inventory_lookup: Dict[str, str] = {}
     if show_vlan_map:
         try:
             parsed_map = json.loads(show_vlan_map)
@@ -2026,6 +2076,13 @@ async def api_convert(
             return JSONResponse({"ok": False, "error": f"Invalid show_vlan_map: {exc}"}, status_code=400)
         if isinstance(parsed_map, dict):
             vlan_lookup = {str(k): str(v) for k, v in parsed_map.items() if v}
+    if show_inventory_map:
+        try:
+            parsed_inventory_map = json.loads(show_inventory_map)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": f"Invalid show_inventory_map: {exc}"}, status_code=400)
+        if isinstance(parsed_inventory_map, dict):
+            inventory_lookup = {str(k): str(v) for k, v in parsed_inventory_map.items() if v}
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for uf in files:
@@ -2048,6 +2105,16 @@ async def api_convert(
             show_vlan_text = vlan_lookup.get(uf.filename)
             if show_vlan_text:
                 data["show_vlan_text"] = show_vlan_text
+
+            switch_type = determine_switch_type(
+                running_config_text=contents.decode("utf-8", errors="ignore"),
+                show_inventory_text=inventory_lookup.get(uf.filename),
+            )
+            interfaces = data.get("interfaces")
+            if isinstance(interfaces, list):
+                for intf in interfaces:
+                    if isinstance(intf, dict):
+                        intf["switch_type"] = switch_type
 
             results.append({"source_file": uf.filename, "output_file": out_path.name, "json": data})
 

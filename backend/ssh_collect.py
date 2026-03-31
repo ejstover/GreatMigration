@@ -119,6 +119,7 @@ class JobState:
                     "hardware": r.hardware,
                     "running_config": r.running_config,
                     "show_vlan_text": self._select_show_vlan_output(r.command_outputs),
+                    "show_inventory_text": (r.command_outputs or {}).get("show inventory"),
                     "temp_files": r.temp_files,
                 }
                 for r in self.results

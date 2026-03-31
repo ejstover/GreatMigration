@@ -492,6 +492,10 @@ def map_interfaces_to_port_config(intfs: List[Dict[str, Any]], model: Optional[s
 
     port_config: Dict[str, Dict[str, Any]] = {}
     for intf in intfs:
+        if not isinstance(intf, dict):
+            continue
+        switch_type = str(intf.get("switch_type") or "").strip().lower()
+        intf["switch_type"] = switch_type if switch_type in VALID_SWITCH_TYPES else "access"
         if (intf.get("mode") or "").lower() == "routed":
             continue
 

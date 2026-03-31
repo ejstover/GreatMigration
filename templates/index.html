@@ -715,6 +715,7 @@
 
       const now = Date.now();
       const showVlanMap = {};
+      const showInventoryMap = {};
       const files = successes.map(item => {
         const text = item.running_config?.text || '';
         let filename = item.running_config?.filename || '';
@@ -725,11 +726,14 @@
         if (item.show_vlan_text){
           showVlanMap[filename] = item.show_vlan_text;
         }
+        if (item.show_inventory_text){
+          showInventoryMap[filename] = item.show_inventory_text;
+        }
         return new File([text], filename, { type: 'text/plain', lastModified: now });
       });
 
       if (files.length){
-        await handleFiles(files, showVlanMap);
+        await handleFiles(files, showVlanMap, showInventoryMap);
         if (sshCollectStartedAt !== null){
           const duration = performance.now() - sshCollectStartedAt;
           logTiming('config_fetch_results', duration, {
@@ -810,7 +814,7 @@
     // --- Conversion ---
     function keyForFile(f){ return `${f.name}|${f.size}|${f.lastModified}`; }
 
-    async function handleFiles(files, showVlanMap = {}){
+    async function handleFiles(files, showVlanMap = {}, showInventoryMap = {}){
       if (!files.length) return;
 
       // dedupe files
@@ -827,6 +831,9 @@
       form.append('strict_overflow', strictOverflow.checked ? 'true' : 'false');
       if (showVlanMap && Object.keys(showVlanMap).length){
         form.append('show_vlan_map', JSON.stringify(showVlanMap));
+      }
+      if (showInventoryMap && Object.keys(showInventoryMap).length){
+        form.append('show_inventory_map', JSON.stringify(showInventoryMap));
       }
 
       const res = await fetch('/api/convert', { method: 'POST', body: form });
