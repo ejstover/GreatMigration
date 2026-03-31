@@ -1123,7 +1123,8 @@ def api_get_rules():
         if not rules_path.exists():
             rules_path = RULES_SAMPLE_PATH
         data = json.loads(rules_path.read_text(encoding="utf-8"))
-        return {"ok": True, "doc": data}
+        normalized = pm.ensure_switch_type_condition(data)
+        return {"ok": True, "doc": normalized}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
@@ -1134,8 +1135,9 @@ def api_save_rules(request: Request, doc: Dict[str, Any] = Body(...)):
     try:
         # Ensure the request is from an authenticated user
         current_user(request)
-        pm.validate_rules_doc(doc)
-        RULES_LOCAL_PATH.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        normalized = pm.ensure_switch_type_condition(doc)
+        pm.validate_rules_doc(normalized)
+        RULES_LOCAL_PATH.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
         pm.RULES_DOC = pm.load_rules()
         return {"ok": True}
     except ValueError as e:
@@ -4775,6 +4777,7 @@ def _derive_port_config_from_port_profiles(
         intf = {
             "name": normalized_port_id,
             "juniper_if": normalized_port_id,
+            "switch_type": "access",
             "mode": mode_value,
             "description": entry.get("description") or usage_config.get("description"),
             "port_network": port_network,

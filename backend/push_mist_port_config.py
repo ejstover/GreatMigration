@@ -66,13 +66,44 @@ def load_rules(path: Optional[Path] = None) -> Dict[str, Any]:
             continue
         try:
             with candidate.open("r", encoding="utf-8") as fh:
-                return json.load(fh)
+                return ensure_switch_type_condition(json.load(fh))
         except Exception:
             continue
-    return {"rules": []}
+    return ensure_switch_type_condition({"rules": []})
+
+VALID_SWITCH_TYPES = {"core", "access"}
+
+
+def ensure_switch_type_condition(doc: Dict[str, Any], default: str = "access") -> Dict[str, Any]:
+    """Ensure every rule has a valid switch_type condition in `when`."""
+    normalized: Dict[str, Any] = dict(doc) if isinstance(doc, dict) else {"rules": []}
+    rules = normalized.get("rules")
+    if not isinstance(rules, list):
+        return normalized
+
+    selected_default = str(default or "access").strip().lower()
+    if selected_default not in VALID_SWITCH_TYPES:
+        selected_default = "access"
+
+    out_rules: List[Any] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            out_rules.append(rule)
+            continue
+        updated_rule = dict(rule)
+        when = updated_rule.get("when")
+        when_dict = dict(when) if isinstance(when, dict) else {}
+        switch_type = str(when_dict.get("switch_type") or "").strip().lower()
+        when_dict["switch_type"] = switch_type if switch_type in VALID_SWITCH_TYPES else selected_default
+        updated_rule["when"] = when_dict
+        out_rules.append(updated_rule)
+
+    normalized["rules"] = out_rules
+    return normalized
 
 
 RULES_DOC: Dict[str, Any] = load_rules()
+
 
 def validate_rules_doc(doc: Dict[str, Any]) -> None:
     """Validate structure and field types for a rules document.
@@ -93,6 +124,7 @@ def validate_rules_doc(doc: Dict[str, Any]) -> None:
         "native_vlan",
         "allowed_vlans",
         "poe_active",
+        "switch_type",
         "has_voice",
         "description_regex",
         "name_regex",
@@ -142,6 +174,11 @@ def validate_rules_doc(doc: Dict[str, Any]) -> None:
                 raise ValueError("poe_active condition must be boolean")
             if k == "any" and not isinstance(v, bool):
                 raise ValueError("any condition must be boolean")
+            if k == "switch_type":
+                if str(v).strip().lower() not in VALID_SWITCH_TYPES:
+                    raise ValueError("switch_type condition must be 'core' or 'access'")
+        if "switch_type" not in when:
+            raise ValueError(f"Rule {idx} is missing required condition 'switch_type'")
         setp = rule.get("set", {})
         if not isinstance(setp, dict):
             raise ValueError(f"Rule {idx} 'set' must be an object")
@@ -214,6 +251,9 @@ def evaluate_rule(when: Dict[str, Any], intf: Dict[str, Any]) -> bool:
     if not when or when.get("any") is True:
         return True
     mode = (intf.get("mode") or "").lower()
+    switch_type = str(intf.get("switch_type") or "access").strip().lower()
+    if switch_type not in VALID_SWITCH_TYPES:
+        switch_type = "access"
     data_vlan   = int(intf["data_vlan"])   if intf.get("data_vlan")   is not None else None
     if mode == "access" and data_vlan is None:
         # Cisco access interfaces default to VLAN 1 when no explicit
@@ -246,6 +286,8 @@ def evaluate_rule(when: Dict[str, Any], intf: Dict[str, Any]) -> bool:
     for k, v in when.items():
         if k == "mode":
             if mode != str(v).lower(): return False
+        elif k == "switch_type":
+            if switch_type != str(v).strip().lower(): return False
         elif k == "data_vlan":
             if data_vlan != int(v): return False
         elif k == "data_vlan_in":
