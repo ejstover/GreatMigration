@@ -41,6 +41,21 @@ def test_job_to_dict_prefers_available_show_vlan_text():
 
     data = job.to_dict()
     assert data["results"][0]["show_vlan_text"] == "VLAN Name\n1 default"
+    assert data["results"][0]["show_inventory_text"] is None
+
+
+def test_job_to_dict_includes_show_inventory_text():
+    job = JobState(id="job-inventory", created=0.0)
+    result = DeviceResult(
+        host="switch3",
+        label="switch3",
+        status="ok",
+        command_outputs={"show inventory": 'NAME: "Switch 1"\nPID: C9300-48UXM , VID: V03'},
+    )
+    job.results.append(result)
+
+    data = job.to_dict()
+    assert 'PID: C9300-48UXM' in data["results"][0]["show_inventory_text"]
 
 
 def test_job_to_dict_prefers_brief_when_full_command_is_cli_error():

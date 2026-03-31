@@ -1123,7 +1123,8 @@ def api_get_rules():
         if not rules_path.exists():
             rules_path = RULES_SAMPLE_PATH
         data = json.loads(rules_path.read_text(encoding="utf-8"))
-        return {"ok": True, "doc": data}
+        normalized = pm.ensure_switch_type_condition(data)
+        return {"ok": True, "doc": normalized}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
@@ -1134,8 +1135,9 @@ def api_save_rules(request: Request, doc: Dict[str, Any] = Body(...)):
     try:
         # Ensure the request is from an authenticated user
         current_user(request)
-        pm.validate_rules_doc(doc)
-        RULES_LOCAL_PATH.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        normalized = pm.ensure_switch_type_condition(doc)
+        pm.validate_rules_doc(normalized)
+        RULES_LOCAL_PATH.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
         pm.RULES_DOC = pm.load_rules()
         return {"ok": True}
     except ValueError as e:
@@ -1246,6 +1248,14 @@ def api_get_ssh_job(job_id: str):
     job = ssh_collect.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
+    for result in job.results:
+        running_cfg = result.running_config if isinstance(result.running_config, Mapping) else {}
+        filename = str(running_cfg.get("filename") or "").strip()
+        inventory_text = ""
+        if isinstance(result.command_outputs, Mapping):
+            inventory_text = str(result.command_outputs.get("show inventory") or "")
+        if filename and inventory_text:
+            SSH_INVENTORY_BY_FILENAME[filename] = inventory_text
     return {"ok": True, "job": job.to_dict()}
 
 
@@ -1289,6 +1299,55 @@ def _safe_project_filename_fragment(value: str, max_length: int = 64) -> str:
     if len(cleaned) > max_length:
         cleaned = cleaned[:max_length].rstrip("._-")
     return cleaned
+
+
+CORE_SWITCH_NAME_PATTERN = re.compile(r"^[A-Z0-9]{2}[A-Z0-9]{3}MDFCS1$", re.IGNORECASE)
+CORE_SWITCH_PID_RE = re.compile(
+    r'NAME:\s*"[^"]*stack[^"]*"\s*,[^\n]*\nPID:\s*([^,\s]+)',
+    re.IGNORECASE,
+)
+SSH_INVENTORY_BY_FILENAME: Dict[str, str] = {}
+
+
+def _core_switch_models_from_env() -> Set[str]:
+    raw = os.getenv("CORE_SWITCH_MODELS", "")
+    return {item.strip().upper() for item in raw.split(",") if item.strip()}
+
+
+def _extract_hostname_from_running_config_text(running_config_text: str) -> Optional[str]:
+    for line in str(running_config_text or "").splitlines():
+        match = re.match(r"\s*hostname\s+([^\s]+)", line, flags=re.IGNORECASE)
+        if match:
+            hostname = match.group(1).strip()
+            if hostname:
+                return hostname
+    return None
+
+
+def _extract_stack_pid_from_inventory(show_inventory_text: str) -> Optional[str]:
+    match = CORE_SWITCH_PID_RE.search(str(show_inventory_text or ""))
+    if not match:
+        return None
+    pid = match.group(1).strip().upper()
+    return pid or None
+
+
+def determine_switch_type(
+    running_config_text: str,
+    show_inventory_text: Optional[str],
+) -> str:
+    hostname = (_extract_hostname_from_running_config_text(running_config_text) or "").strip()
+    if not hostname or not CORE_SWITCH_NAME_PATTERN.fullmatch(hostname):
+        return "access"
+
+    core_models = _core_switch_models_from_env()
+    if not core_models:
+        return "access"
+
+    pid = _extract_stack_pid_from_inventory(show_inventory_text or "")
+    if pid and pid in core_models:
+        return "core"
+    return "access"
 
 
 def _alphanum_sort_key(value: str) -> tuple[tuple[int, object], ...]:
@@ -2011,12 +2070,14 @@ async def api_convert(
     force_model: Optional[str] = Form(None),
     strict_overflow: bool = Form(False),
     show_vlan_map: Optional[str] = Form(None),
+    show_inventory_map: Optional[str] = Form(None),
 ) -> JSONResponse:
     """
     Converts one or more Cisco configs into the normalized JSON that the push script consumes.
     """
     results = []
     vlan_lookup: Dict[str, str] = {}
+    inventory_lookup: Dict[str, str] = {}
     if show_vlan_map:
         try:
             parsed_map = json.loads(show_vlan_map)
@@ -2024,6 +2085,13 @@ async def api_convert(
             return JSONResponse({"ok": False, "error": f"Invalid show_vlan_map: {exc}"}, status_code=400)
         if isinstance(parsed_map, dict):
             vlan_lookup = {str(k): str(v) for k, v in parsed_map.items() if v}
+    if show_inventory_map:
+        try:
+            parsed_inventory_map = json.loads(show_inventory_map)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": f"Invalid show_inventory_map: {exc}"}, status_code=400)
+        if isinstance(parsed_inventory_map, dict):
+            inventory_lookup = {str(k): str(v) for k, v in parsed_inventory_map.items() if v}
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for uf in files:
@@ -2046,6 +2114,16 @@ async def api_convert(
             show_vlan_text = vlan_lookup.get(uf.filename)
             if show_vlan_text:
                 data["show_vlan_text"] = show_vlan_text
+
+            switch_type = determine_switch_type(
+                running_config_text=contents.decode("utf-8", errors="ignore"),
+                show_inventory_text=inventory_lookup.get(uf.filename) or SSH_INVENTORY_BY_FILENAME.get(uf.filename),
+            )
+            interfaces = data.get("interfaces")
+            if isinstance(interfaces, list):
+                for intf in interfaces:
+                    if isinstance(intf, dict):
+                        intf["switch_type"] = switch_type
 
             results.append({"source_file": uf.filename, "output_file": out_path.name, "json": data})
 
@@ -4775,6 +4853,7 @@ def _derive_port_config_from_port_profiles(
         intf = {
             "name": normalized_port_id,
             "juniper_if": normalized_port_id,
+            "switch_type": "access",
             "mode": mode_value,
             "description": entry.get("description") or usage_config.get("description"),
             "port_network": port_network,

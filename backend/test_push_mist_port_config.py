@@ -34,7 +34,7 @@ def test_validate_rules_doc_accepts_allowed_vlans_condition():
         "rules": [
             {
                 "name": "trunk-with-allowed",
-                "when": {"allowed_vlans": [10, 20]},
+                "when": {"switch_type": "access", "allowed_vlans": [10, 20]},
                 "set": {"usage": "ap"},
             }
         ]
@@ -48,8 +48,22 @@ def test_validate_rules_doc_accepts_poe_active_condition():
         "rules": [
             {
                 "name": "ap-trunk-poe",
-                "when": {"mode": "trunk", "poe_active": True},
+                "when": {"switch_type": "access", "mode": "trunk", "poe_active": True},
                 "set": {"usage": "ap"},
+            }
+        ]
+    }
+
+    validate_rules_doc(doc)
+
+
+def test_validate_rules_doc_accepts_port_type_action():
+    doc = {
+        "rules": [
+            {
+                "name": "core-uplink",
+                "when": {"switch_type": "core", "mode": "trunk"},
+                "set": {"usage": "uplink", "port_type": "WAN"},
             }
         ]
     }
@@ -80,7 +94,7 @@ def test_validate_rules_doc_rejects_invalid_allowed_vlans(value):
         "rules": [
             {
                 "name": "bad",
-                "when": {"allowed_vlans": value},
+                "when": {"switch_type": "access", "allowed_vlans": value},
                 "set": {"usage": "ap"},
             }
         ]
@@ -95,7 +109,7 @@ def test_validate_rules_doc_rejects_invalid_poe_active_type():
         "rules": [
             {
                 "name": "bad-poe",
-                "when": {"poe_active": "yes"},
+                "when": {"switch_type": "access", "poe_active": "yes"},
                 "set": {"usage": "ap"},
             }
         ]
@@ -103,6 +117,42 @@ def test_validate_rules_doc_rejects_invalid_poe_active_type():
 
     with pytest.raises(ValueError):
         validate_rules_doc(doc)
+
+
+def test_validate_rules_doc_rejects_invalid_port_type_action():
+    doc = {
+        "rules": [
+            {
+                "name": "bad-port-type",
+                "when": {"switch_type": "access", "mode": "access"},
+                "set": {"usage": "user", "port_type": "distribution"},
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match="port_type action must be one of"):
+        validate_rules_doc(doc)
+
+
+def test_validate_rules_doc_requires_switch_type():
+    doc = {
+        "rules": [
+            {
+                "name": "missing-switch-type",
+                "when": {"mode": "access"},
+                "set": {"usage": "user"},
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match="missing required condition 'switch_type'"):
+        validate_rules_doc(doc)
+
+
+def test_evaluate_rule_matches_switch_type():
+    intf = {"mode": "access", "switch_type": "core"}
+    assert evaluate_rule({"switch_type": "core"}, intf) is True
+    assert evaluate_rule({"switch_type": "access"}, intf) is False
 
 
 def test_index_to_ex4100_if_supports_model_variants():

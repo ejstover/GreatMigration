@@ -3,6 +3,7 @@
     {
       "name": "Access port example",
       "when": {
+        "switch_type": "access",
         "mode": "access",
         "data_vlan": 10
       },
@@ -13,6 +14,7 @@
     {
       "name": "AP trunk example (PoE)",
       "when": {
+        "switch_type": "access",
         "mode": "trunk",
         "native_vlan": 4,
         "poe_active": true
@@ -24,6 +26,7 @@
     {
       "name": "Trunk uplink example",
       "when": {
+        "switch_type": "access",
         "mode": "trunk",
         "native_vlan": 1
       },
