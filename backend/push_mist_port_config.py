@@ -361,6 +361,32 @@ def index_to_ex4100_if(model: Optional[str], index_1based: int) -> Optional[str]
         return f"mge-0/0/{p}" if 0 <= p <= 7 else f"ge-0/0/{p}"
     return f"ge-0/0/{p}"
 
+def _interface_type_for_model(model: Optional[str], *, uplink: bool = False, port_index: Optional[int] = None) -> str:
+    """Return Juniper interface prefix for the target model.
+
+    Defaults remain EX4100-oriented, but core platforms (for example EX4650)
+    should prefer `et` interfaces as described by their device-type YAML.
+    """
+    mk = _model_key(model)
+    model_text = str(model or "").strip().upper()
+
+    if mk in {"EX4650", "EX4650-48Y"} or model_text.startswith("EX4650"):
+        return "et"
+
+    if uplink:
+        return "xe" if model_text.startswith("EX4100") else "ge"
+
+    if mk == "EX4100-48MP":
+        if port_index is not None and 0 <= port_index <= 15:
+            return "mge"
+        return "ge"
+    if mk == "EX4100-24MP":
+        if port_index is not None and 0 <= port_index <= 7:
+            return "mge"
+        return "ge"
+    return "ge"
+
+
 def cisco_to_ex_if_enhanced(model: Optional[str], name: str) -> Optional[str]:
     """
     Cisco Gi<SW>/<MOD>/<PORT> -> <type>-<member>/<pic>/<port>
@@ -378,32 +404,22 @@ def cisco_to_ex_if_enhanced(model: Optional[str], name: str) -> Optional[str]:
 
     if mod == 1:
         pic, jport = 2, port - 1
-        itype = "xe" if (model or "").startswith("EX4100") else "ge"
+        itype = _interface_type_for_model(model, uplink=True)
         return f"{itype}-{member}/{pic}/{jport}"
 
     if mod == 0:
         pic, jport = 0, port - 1
-        if mk == "EX4100-48MP":
-            itype = "mge" if 0 <= jport <= 15 else "ge"
-        elif mk == "EX4100-24MP":
-            itype = "mge" if 0 <= jport <= 7 else "ge"
-        else:
-            itype = "ge"
+        itype = _interface_type_for_model(model, port_index=jport)
         return f"{itype}-{member}/{pic}/{jport}"
 
     # Fallback when MOD missing (2-part names)
     if 49 <= port <= 52:
         pic, jport = 2, port - 49
-        itype = "xe" if (model or "").startswith("EX4100") else "ge"
+        itype = _interface_type_for_model(model, uplink=True)
         return f"{itype}-{member}/{pic}/{jport}"
 
     pic, jport = 0, port - 1
-    if mk == "EX4100-48MP":
-        itype = "mge" if 0 <= jport <= 15 else "ge"
-    elif mk == "EX4100-24MP":
-        itype = "mge" if 0 <= jport <= 7 else "ge"
-    else:
-        itype = "ge"
+    itype = _interface_type_for_model(model, port_index=jport)
     return f"{itype}-{member}/{pic}/{jport}"
 
 # Accept ge/mge/xe/et; used by remap & capacity checks
@@ -555,6 +571,8 @@ MODEL_CAPS = {
     "EX4100-24MP": {"access_pic0": 24, "uplink_pic2": 4},
     "EX4100-48":   {"access_pic0": 48, "uplink_pic2": 4},
     "EX4100-48MP": {"access_pic0": 48, "uplink_pic2": 4},
+    "EX4650":      {"access_pic0": 56, "uplink_pic2": 0},
+    "EX4650-48Y":  {"access_pic0": 56, "uplink_pic2": 0},
     # extend here as needed
 }
 
