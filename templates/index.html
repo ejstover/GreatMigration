@@ -832,10 +832,6 @@
       if (showVlanMap && Object.keys(showVlanMap).length){
         form.append('show_vlan_map', JSON.stringify(showVlanMap));
       }
-      if (showInventoryMap && Object.keys(showInventoryMap).length){
-        form.append('show_inventory_map', JSON.stringify(showInventoryMap));
-      }
-
       const res = await fetch('/api/convert', { method: 'POST', body: form });
       const data = await res.json();
       if (!data.ok){

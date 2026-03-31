@@ -57,6 +57,20 @@ def test_validate_rules_doc_accepts_poe_active_condition():
     validate_rules_doc(doc)
 
 
+def test_validate_rules_doc_accepts_port_type_action():
+    doc = {
+        "rules": [
+            {
+                "name": "core-uplink",
+                "when": {"switch_type": "core", "mode": "trunk"},
+                "set": {"usage": "uplink", "port_type": "WAN"},
+            }
+        ]
+    }
+
+    validate_rules_doc(doc)
+
+
 def test_evaluate_rule_matches_poe_active_from_power_draw():
     intf = {"mode": "trunk", "power_draw": 6.5}
 
@@ -102,6 +116,21 @@ def test_validate_rules_doc_rejects_invalid_poe_active_type():
     }
 
     with pytest.raises(ValueError):
+        validate_rules_doc(doc)
+
+
+def test_validate_rules_doc_rejects_invalid_port_type_action():
+    doc = {
+        "rules": [
+            {
+                "name": "bad-port-type",
+                "when": {"switch_type": "access", "mode": "access"},
+                "set": {"usage": "user", "port_type": "distribution"},
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match="port_type action must be one of"):
         validate_rules_doc(doc)
 
 

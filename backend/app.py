@@ -1248,6 +1248,14 @@ def api_get_ssh_job(job_id: str):
     job = ssh_collect.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
+    for result in job.results:
+        running_cfg = result.running_config if isinstance(result.running_config, Mapping) else {}
+        filename = str(running_cfg.get("filename") or "").strip()
+        inventory_text = ""
+        if isinstance(result.command_outputs, Mapping):
+            inventory_text = str(result.command_outputs.get("show inventory") or "")
+        if filename and inventory_text:
+            SSH_INVENTORY_BY_FILENAME[filename] = inventory_text
     return {"ok": True, "job": job.to_dict()}
 
 
@@ -1295,9 +1303,10 @@ def _safe_project_filename_fragment(value: str, max_length: int = 64) -> str:
 
 CORE_SWITCH_NAME_PATTERN = re.compile(r"^[A-Z0-9]{2}[A-Z0-9]{3}MDFCS1$", re.IGNORECASE)
 CORE_SWITCH_PID_RE = re.compile(
-    r'NAME:\s*"Switch\s*1"\s*,[^\n]*\nPID:\s*([^,\s]+)',
+    r'NAME:\s*"[^"]*stack[^"]*"\s*,[^\n]*\nPID:\s*([^,\s]+)',
     re.IGNORECASE,
 )
+SSH_INVENTORY_BY_FILENAME: Dict[str, str] = {}
 
 
 def _core_switch_models_from_env() -> Set[str]:
@@ -1315,7 +1324,7 @@ def _extract_hostname_from_running_config_text(running_config_text: str) -> Opti
     return None
 
 
-def _extract_switch_one_pid_from_inventory(show_inventory_text: str) -> Optional[str]:
+def _extract_stack_pid_from_inventory(show_inventory_text: str) -> Optional[str]:
     match = CORE_SWITCH_PID_RE.search(str(show_inventory_text or ""))
     if not match:
         return None
@@ -1335,7 +1344,7 @@ def determine_switch_type(
     if not core_models:
         return "access"
 
-    pid = _extract_switch_one_pid_from_inventory(show_inventory_text or "")
+    pid = _extract_stack_pid_from_inventory(show_inventory_text or "")
     if pid and pid in core_models:
         return "core"
     return "access"
@@ -2108,7 +2117,7 @@ async def api_convert(
 
             switch_type = determine_switch_type(
                 running_config_text=contents.decode("utf-8", errors="ignore"),
-                show_inventory_text=inventory_lookup.get(uf.filename),
+                show_inventory_text=inventory_lookup.get(uf.filename) or SSH_INVENTORY_BY_FILENAME.get(uf.filename),
             )
             interfaces = data.get("interfaces")
             if isinstance(interfaces, list):

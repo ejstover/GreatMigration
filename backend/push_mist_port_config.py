@@ -131,7 +131,7 @@ def validate_rules_doc(doc: Dict[str, Any]) -> None:
         "juniper_if_regex",
         "any",
     }
-    allowed_set = {"usage"}
+    allowed_set = {"usage", "port_type"}
 
     for idx, rule in enumerate(rules, 1):
         if not isinstance(rule, dict):
@@ -182,9 +182,13 @@ def validate_rules_doc(doc: Dict[str, Any]) -> None:
         setp = rule.get("set", {})
         if not isinstance(setp, dict):
             raise ValueError(f"Rule {idx} 'set' must be an object")
-        for k in setp:
+        for k, v in setp.items():
             if k not in allowed_set:
                 raise ValueError(f"Rule {idx} has unknown action '{k}'")
+            if k == "port_type":
+                normalized = str(v).strip().lower()
+                if normalized not in {"wan", "core", "access"}:
+                    raise ValueError("port_type action must be one of: WAN, core, access")
 
 BLACKLIST_PATTERNS = [
     r"^\s*$", r"^\s*vla?n?\s*\d+\s*$", r"^\s*(data|voice)\s*(port)?\s*$",

@@ -67,6 +67,7 @@
             <th class="p-2 text-left">Name</th>
             <th class="p-2 text-left">If</th>
             <th class="p-2 text-left">Then</th>
+            <th class="p-2 text-left">Port Type</th>
             <th class="p-2"></th>
           </tr>
         </thead>
@@ -280,6 +281,18 @@
               <span class="tip">Select the Mist port profile to apply when this rule matches.</span>
             </label>
           </td>
+          <td class="p-2">
+            <label class="tooltip">
+              <select class="port-type border rounded p-1 mr-2 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700">
+                <option value="">--port type--</option>
+                <option value="WAN">WAN</option>
+                <option value="core">core</option>
+                <option value="access">access</option>
+              </select>
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 112 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
+              <span class="tip">Optional future-state port type classification for field execution outputs.</span>
+            </label>
+          </td>
           <td class="p-2"><button class="del text-red-500">✕</button></td>`;
         const condsDiv = tr.querySelector('.conds');
         const when = {...(rule.when || {})};
@@ -294,6 +307,10 @@
         const usageSel = tr.querySelector('.usage');
         const empty=document.createElement('option'); empty.value=''; empty.textContent='--usage--'; usageSel.appendChild(empty);
         portProfiles.forEach(p=>{ const o=document.createElement('option'); o.value=p.name; o.textContent=p.name; if(rule.set?.usage===p.name) o.selected=true; usageSel.appendChild(o); });
+        const portTypeSel = tr.querySelector('.port-type');
+        const portTypeRaw = String(rule.set?.port_type || '').trim();
+        const normalizedPortType = portTypeRaw.toLowerCase() === 'wan' ? 'WAN' : portTypeRaw.toLowerCase();
+        if(['WAN', 'core', 'access'].includes(normalizedPortType)) portTypeSel.value = normalizedPortType;
         tr.querySelector('.del').addEventListener('click',()=>{ rulesDoc.rules.splice(idx,1); renderRules(); });
         tbody.appendChild(tr);
       });
@@ -329,8 +346,10 @@
           else { when[f]=Number(raw); }
         });
         const usage = tr.querySelector('.usage').value;
+        const portType = tr.querySelector('.port-type').value;
         const set={};
         if(usage) set.usage=usage;
+        if(portType) set.port_type=portType;
         const switchType = String(when.switch_type || '').toLowerCase();
         when.switch_type = (switchType === 'core' || switchType === 'access') ? switchType : 'access';
         return {name, when, set};
