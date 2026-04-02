@@ -63,6 +63,7 @@ from compliance import (
 from audit_fixes import execute_audit_action
 from audit_actions import AP_RENAME_ACTION_ID
 from audit_history import load_site_history
+import migration_strategy
 install_http_logging()
 
 
@@ -2073,6 +2074,7 @@ def _build_payload_for_row(
     port_offset: int,
     normalize_modules: bool,
     dry_run: bool,
+    show_inventory_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Shared logic used by both /api/push and /api/push_batch for a single row.
@@ -2122,6 +2124,39 @@ def _build_payload_for_row(
     # Apply member/port remap BEFORE excludes
     port_config = remap_members(port_config, member_offset=member_offset_val, normalize=normalize_flag)
     port_config = remap_ports(port_config, port_offset=port_offset_val, model=model)
+
+    # Optic-based speed downshift
+    if show_inventory_text:
+        optics_map = migration_strategy.parse_optics(show_inventory_text)
+        for intf in payload_in.get("interfaces", []):
+            cisco_name = intf.get("name")
+            j_if = intf.get("juniper_if")
+            if not cisco_name or not j_if:
+                continue
+            
+            # Find in optics map
+            short_name = re.sub(r"^(?:TenGigabitEthernet|GigabitEthernet|FastEthernet|Ten|Gi|Fa)", "", cisco_name, flags=re.IGNORECASE)
+            cisco_optic = None
+            for k, v in optics_map.items():
+                if k == cisco_name or k == short_name or cisco_name.endswith(k):
+                    cisco_optic = v
+                    break
+            
+            if cisco_optic:
+                details = migration_strategy.get_optic_details(cisco_optic)
+                if details["speed"] == "1g":
+                    try:
+                        dummy = {j_if: {}}
+                        dummy = remap_members(dummy, member_offset=member_offset_val, normalize=normalize_flag)
+                        dummy = remap_ports(dummy, port_offset=port_offset_val, model=model)
+                        remapped_name = list(dummy.keys())[0]
+                        if remapped_name in port_config:
+                            port_config[remapped_name]["speed"] = "1g"
+                            if remapped_name.startswith("et-"):
+                                new_name = remapped_name.replace("et-", "ge-", 1)
+                                port_config[new_name] = port_config.pop(remapped_name)
+                    except Exception:
+                        pass
 
     temp_interfaces = temp_source.get("interfaces") if isinstance(temp_source, dict) else None
     if isinstance(temp_interfaces, list):
@@ -5589,6 +5624,7 @@ async def api_push_batch(
     stage_site_deployment: bool = Form(False),
     push_site_deployment: bool = Form(False),
     force_preview: bool = Form(False),
+    show_inventory_text: Optional[str] = Form(None),
 ) -> JSONResponse:
     """
     Batch push. Each row can specify: site_id, device_id, input_json (object),
@@ -5929,3 +5965,119 @@ async def api_push_batch(
             "phase_status": phase_status,
         }
     )
+
+@app.get("/api/migration_strategy/available_ports")
+def api_migration_strategy_available_ports(site_id: str, device_id: str):
+    token = _load_mist_token()
+    available = migration_strategy.get_available_core_ports(DEFAULT_BASE_URL, token, site_id, device_id)
+    return {"ok": True, "available_ports": available}
+
+@app.post("/api/migration_strategy/calculate")
+async def api_migration_strategy_calculate(
+    site_id: str = Form(...),
+    core_device_id: str = Form(...),
+    wan_device_id: str = Form(...),
+    access_device_ids: str = Form(...), # JSON list
+    input_json: str = Form(...),
+    show_inventory_text: str = Form(""),
+):
+    try:
+        payload_in = json.loads(input_json)
+        access_ids = json.loads(access_device_ids)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"Invalid JSON: {e}"}, status_code=400)
+
+    token = _load_mist_token()
+    
+    # Get available ports for core switch
+    core_available = migration_strategy.get_available_core_ports(DEFAULT_BASE_URL, token, site_id, core_device_id)
+    
+    available_ports_by_role = {
+        migration_strategy.ROLE_CORE: core_available,
+        migration_strategy.ROLE_WAN: [], # WAN ports are simple ge-0/0/X
+        migration_strategy.ROLE_ACCESS: [] # Access ports are simple ge-0/0/X or mge-0/0/X
+    }
+    
+    strategy = migration_strategy.calculate_migration_strategy(
+        payload_in, show_inventory_text, available_ports_by_role
+    )
+    
+    # Also generate the suggested batch rows for the UI
+    # We want to return 1-to-Many rows
+    suggested_rows = []
+    
+    # Group mappings by target role to create filtered rows
+    role_mappings = defaultdict(list)
+    for m in strategy["mappings"]:
+        role_mappings[m["target_role"]].append(m)
+        
+    # Generate suggested batch rows
+    suggested_rows = []
+    
+    def get_excludes_for_role(target_role):
+        # Exclude any port NOT in this role
+        others = []
+        for m in strategy["mappings"]:
+            if m["target_role"] != target_role:
+                others.append(m["source_port"])
+        return ", ".join(others)
+
+    # Core row
+    suggested_rows.append({
+        "role": migration_strategy.ROLE_CORE,
+        "device_id": core_device_id,
+        "excludes": get_excludes_for_role(migration_strategy.ROLE_CORE)
+    })
+    
+    # WAN row
+    suggested_rows.append({
+        "role": migration_strategy.ROLE_WAN,
+        "device_id": wan_device_id,
+        "excludes": get_excludes_for_role(migration_strategy.ROLE_WAN)
+    })
+    
+    # Access rows (distribute across provided access_ids)
+    # Simple logic: divide access ports equally or fill up to 48
+    access_ports = role_mappings[migration_strategy.ROLE_ACCESS]
+    if access_ports:
+        ports_per_switch = 48
+        for i, aid in enumerate(access_ids):
+            start_idx = i * ports_per_switch
+            end_idx = (i + 1) * ports_per_switch
+            this_switch_ports = access_ports[start_idx:end_idx]
+            if not this_switch_ports:
+                break
+            
+            # Ports to exclude for this specific access switch:
+            # 1. All Core ports
+            # 2. All WAN ports
+            # 3. Access ports assigned to OTHER switches
+            excluded_ports = []
+            for m in strategy["mappings"]:
+                if m["target_role"] != migration_strategy.ROLE_ACCESS:
+                    excluded_ports.append(m["source_port"])
+                elif m not in this_switch_ports:
+                    excluded_ports.append(m["source_port"])
+            
+            suggested_rows.append({
+                "role": f"{migration_strategy.ROLE_ACCESS} {i+1}",
+                "device_id": aid,
+                "excludes": ", ".join(excluded_ports)
+            })
+
+    return {"ok": True, "mappings": strategy["mappings"], "suggested_rows": suggested_rows}
+
+@app.post("/api/migration_strategy/csv")
+async def api_migration_strategy_csv(mappings: str = Form(...)):
+    try:
+        mappings_list = json.loads(mappings)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"Invalid mappings: {e}"}, status_code=400)
+    
+    csv_content = migration_strategy.generate_cut_sheet_csv(mappings_list)
+    
+    headers = {
+        "Content-Disposition": "attachment; filename=cable_cut_sheet.csv",
+        "Content-Type": "text/csv",
+    }
+    return Response(content=csv_content, headers=headers)

@@ -82,6 +82,7 @@
           <div class="flex flex-wrap items-center gap-3 mt-4">
             <button id="cfg_ssh_collect" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Fetch Configs</button>
             <button id="choose_files" class="px-4 py-2 rounded bg-sky-600 text-white hover:bg-sky-700">Manual Upload</button>
+            <button id="plan_migration_btn" class="hidden px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700">Plan Distributed Migration</button>
             <span id="cfg_ssh_progress" class="text-sm text-slate-600 dark:text-slate-300"></span>
           </div>
           <input id="file_input" type="file" multiple class="hidden" accept=".txt,.cfg,.conf,.json" />
@@ -288,6 +289,74 @@
   </div>
   </div>
 
+    <!-- Hardware Migration Modal -->
+    <div id="migration_modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-[60]">
+      <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+        <div class="p-6 border-b dark:border-slate-700 flex items-center justify-between">
+          <h3 class="text-xl font-bold">Plan Distributed Hardware Migration</h3>
+          <button id="migration_modal_close" class="text-slate-500 hover:text-slate-700 dark:hover:text-slate-200">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+        <div class="p-6 overflow-y-auto space-y-6 flex-1">
+          <p class="text-sm text-slate-600 dark:text-slate-300">Map a Cisco core stack to a distributed Juniper architecture (Core, WAN, Access). Select the target switches for each role.</p>
+          
+          <div class="grid md:grid-cols-2 gap-6">
+            <div class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium mb-1">Target Site</label>
+                <select id="migration_site" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700"></select>
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1">Core Switch (EX4650)</label>
+                <select id="migration_core_dev" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700"></select>
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1">WAN Switch (EX4000)</label>
+                <select id="migration_wan_dev" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700"></select>
+              </div>
+            </div>
+            <div class="space-y-4">
+              <label class="block text-sm font-medium mb-1">Access Switches (EX4100)</label>
+              <div id="migration_access_devs" class="h-48 overflow-y-auto border rounded p-3 bg-slate-50 dark:bg-slate-900 dark:border-slate-700 space-y-2">
+                Select a site to list switches.
+              </div>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-3">
+            <button id="calculate_migration_btn" class="px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700">Calculate Mapping</button>
+            <span id="migration_calc_status" class="text-sm text-slate-600 dark:text-slate-300"></span>
+          </div>
+
+          <div id="migration_results_section" class="hidden space-y-4">
+            <div class="flex items-center justify-between">
+              <h4 class="font-bold">Calculated Mapping</h4>
+              <div class="space-x-2">
+                <button id="download_cut_sheet_btn" class="text-xs px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700">Download Cut-Sheet (CSV)</button>
+                <button id="apply_migration_to_batch_btn" class="text-xs px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700">Apply to Batch UI</button>
+              </div>
+            </div>
+            <div class="overflow-x-auto border dark:border-slate-700 rounded-xl">
+              <table class="min-w-full text-[11px]">
+                <thead class="bg-slate-100 dark:bg-slate-900/50 text-slate-500 uppercase tracking-wider">
+                  <tr>
+                    <th class="p-2 text-left">Source Port</th>
+                    <th class="p-2 text-left">Optic</th>
+                    <th class="p-2 text-left">Target Role</th>
+                    <th class="p-2 text-left">Target Port</th>
+                    <th class="p-2 text-left">Optic Req</th>
+                    <th class="p-2 text-left">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="migration_results_body" class="divide-y divide-slate-200 dark:divide-slate-700"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script>
       const menuBtn = document.getElementById('menu_btn');
       const menu = document.getElementById('menu');
@@ -392,6 +461,7 @@
     let lcmStep3PreviewComplete = false;
     let sshCollectStartedAt = null;
     let sshCollectRequested = 0;
+    const showInventoryMap = {}; // filename -> show_inventory_text
     const siteAutomationCheckboxes = [siteStage, sitePush].filter(Boolean);
     const lcmAutomationCheckboxes = [applyTempConfig, finalizeAssignments, removeTempConfig].filter(Boolean);
     const liveChangeCheckboxes = [sitePush, applyTempConfig, finalizeAssignments, removeTempConfig].filter(Boolean);
@@ -837,6 +907,7 @@
       }
       (data.items || []).forEach(it => convertedItems.push(it));
       renderConvertedList();
+      if (plan_migration_btn) show(plan_migration_btn);
       convertStatus.textContent = `Converted ${data.items.length} file(s). Total: ${convertedItems.length}.`;
 
       if (!sitesCache.length) await fetchSites();
@@ -1622,6 +1693,148 @@
         lcmCleanupDevices.textContent = 'Select a site to list switches.';
       }
       syncPushBtnLabel();
+    });
+
+    // --- Hardware Migration Strategy ---
+    const planMigrationBtn = document.getElementById('plan_migration_btn');
+    const migrationModal = document.getElementById('migration_modal');
+    const migrationModalClose = document.getElementById('migration_modal_close');
+    const migrationSite = document.getElementById('migration_site');
+    const migrationCoreDev = document.getElementById('migration_core_dev');
+    const migrationWanDev = document.getElementById('migration_wan_dev');
+    const migrationAccessDevs = document.getElementById('migration_access_devs');
+    const calculateMigrationBtn = document.getElementById('calculate_migration_btn');
+    const migrationCalcStatus = document.getElementById('migration_calc_status');
+    const migrationResultsSection = document.getElementById('migration_results_section');
+    const migrationResultsBody = document.getElementById('migration_results_body');
+    const downloadCutSheetBtn = document.getElementById('download_cut_sheet_btn');
+    const applyMigrationToBatchBtn = document.getElementById('apply_migration_to_batch_btn');
+
+    let currentMigrationMappings = [];
+    let currentSuggestedRows = [];
+
+    planMigrationBtn?.addEventListener('click', () => {
+      migrationSite.innerHTML = siteOptionsHtml(rows[0]?.site_id || '');
+      updateMigrationDeviceLists(migrationSite.value);
+      show(migrationModal);
+    });
+
+    migrationModalClose?.addEventListener('click', () => hide(migrationModal));
+
+    migrationSite?.addEventListener('change', () => updateMigrationDeviceLists(migrationSite.value));
+
+    async function updateMigrationDeviceLists(siteId){
+      if(!siteId) {
+        migrationCoreDev.innerHTML = '<option value="">Select a site first</option>';
+        migrationWanDev.innerHTML = '<option value="">Select a site first</option>';
+        migrationAccessDevs.textContent = 'Select a site to list switches.';
+        return;
+      }
+      const devs = await fetchDevices(siteId);
+      const opts = deviceOptionsHtml(siteId, '');
+      migrationCoreDev.innerHTML = opts;
+      migrationWanDev.innerHTML = opts;
+      
+      migrationAccessDevs.innerHTML = '';
+      devs.forEach(d => {
+        const label = document.createElement('label');
+        label.className = 'flex items-center gap-2 text-xs';
+        label.innerHTML = `<input type="checkbox" name="mig_access_cb" value="${d.id}" class="w-4 h-4"> <span>${escapeHtml(formatDeviceLabel(d.id, d.name))}</span>`;
+        migrationAccessDevs.appendChild(label);
+      });
+    }
+
+    calculateMigrationBtn?.addEventListener('click', async () => {
+      const siteId = migrationSite.value;
+      const coreId = migrationCoreDev.value;
+      const wanId = migrationWanDev.value;
+      const accessIds = Array.from(migrationAccessDevs.querySelectorAll('input[name="mig_access_cb"]:checked')).map(cb => cb.value);
+      
+      if(!siteId || !coreId || !wanId || !accessIds.length) {
+        alert('Please select a site and at least one switch for each role (Core, WAN, Access).');
+        return;
+      }
+
+      migrationCalcStatus.textContent = 'Calculating strategy...';
+      hide(migrationResultsSection);
+
+      if(!convertedItems.length) {
+        migrationCalcStatus.textContent = 'No converted configs available.';
+        return;
+      }
+      
+      const firstItem = convertedItems[0];
+      
+      const form = new FormData();
+      form.append('site_id', siteId);
+      form.append('core_device_id', coreId);
+      form.append('wan_device_id', wanId);
+      form.append('access_device_ids', JSON.stringify(accessIds));
+      form.append('input_json', JSON.stringify(firstItem.json));
+      
+      try {
+        const res = await fetch('/api/migration_strategy/calculate', { method: 'POST', body: form });
+        const data = await res.json();
+        if(!data.ok) throw new Error(data.error);
+        
+        currentMigrationMappings = data.mappings || [];
+        currentSuggestedRows = data.suggested_rows || [];
+        renderMigrationResults(currentMigrationMappings);
+        show(migrationResultsSection);
+        migrationCalcStatus.textContent = 'Calculation complete.';
+      } catch (e) {
+        migrationCalcStatus.textContent = 'Error: ' + e.message;
+      }
+    });
+
+    function renderMigrationResults(mappings){
+      migrationResultsBody.innerHTML = '';
+      mappings.forEach(m => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="p-2">${escapeHtml(m.source_port)}</td>
+          <td class="p-2">${escapeHtml(m.source_optic)}</td>
+          <td class="p-2 font-bold">${escapeHtml(m.target_role)}</td>
+          <td class="p-2">${escapeHtml(m.target_port)}</td>
+          <td class="p-2">${escapeHtml(m.target_optic)}</td>
+          <td class="p-2">${m.speed_conversion ? `<span class="px-1 rounded bg-amber-100 text-amber-800">Speed: ${m.speed_conversion}</span>` : '—'}</td>
+        `;
+        migrationResultsBody.appendChild(tr);
+      });
+    }
+
+    downloadCutSheetBtn?.addEventListener('click', async () => {
+      const form = new FormData();
+      form.append('mappings', JSON.stringify(currentMigrationMappings));
+      const res = await fetch('/api/migration_strategy/csv', { method: 'POST', body: form });
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'cable_cut_sheet.csv';
+      document.body.appendChild(a); a.click(); a.remove();
+    });
+
+    applyMigrationToBatchBtn?.addEventListener('click', () => {
+      const siteId = migrationSite.value;
+      if (!currentSuggestedRows.length) return;
+
+      rows = [];
+      currentSuggestedRows.forEach(sr => {
+        rows.push({
+          idx: 0, 
+          site_id: siteId, 
+          device_id: sr.device_id,
+          excludes: sr.excludes,
+          exclude_uplinks: false, 
+          member_offset: 0, 
+          port_offset: 0, 
+          userChangedSite: true
+        });
+      });
+
+      renderBatchRows();
+      hide(migrationModal);
+      batchStatus.textContent = `Applied ${currentSuggestedRows.length} migration roles to batch rows.`;
     });
 
     // --- Init ---

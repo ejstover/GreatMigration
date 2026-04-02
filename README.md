@@ -78,6 +78,42 @@ The Hardware Conversion workflow helps you answer: **“What Juniper hardware sh
 - Hardware conversion is an **analysis workflow** and does not push configuration to Mist.
 - You can run this safely before any migration window.
 
+### Hardware migration strategy
+
+The Hardware Migration Strategy module automates the transition from legacy Cisco collapsed-core stacks to distributed Juniper Mist architectures.
+
+**What it does**
+
+- Analyzes parsed Cisco configurations to deduce migration intent.
+- Maps legacy Cisco interfaces to a new distributed architecture: **Core** (EX4650), **Access** (EX4100), and **WAN** (EX4000).
+- Handles sequential port mapping from Cisco NIMs to Juniper PICs.
+- Respects strict EX4650 hardware constraints (reserving management and stacking ports).
+- Automatically detects 1Gb Cisco optics and facilitates speed downshifts (1g) and interface renaming (et to ge) in Juniper payloads.
+- Generates a downloadable **Cable Cut-Sheet (CSV)** for deployment engineers.
+
+**How to use**
+
+1. Open **Config Conversion**.
+2. Upload or fetch Cisco configurations.
+3. Click **Plan Distributed Migration**.
+4. Select the target site and specific switches for Core, WAN, and Access roles.
+5. Click **Calculate Mapping** to preview the strategy and optic requirements.
+6. Click **Download Cut-Sheet** for physical cabling documentation.
+7. Click **Apply to Batch UI** to automatically populate the conversion rows with the generated port mappings and exclusion filters.
+
+**How it works**
+
+- Classification logic is defined in `backend/migration_strategy.py` based on parsed configuration state (VLANs, port modes, voice config).
+- Sequential mapping logic ensures legacy ports are distributed across the new hardware roles.
+- The module integrates with the Mist API to identify available/unconfigured ports on destination switches before assignment.
+- Optic speed conversions are deduced from `show inventory` data and injected into the final Mist `port_config` payloads.
+
+**Safety notes**
+
+- Migration planning is an analysis and staging workflow.
+- Use the **Cable Cut-Sheet** to verify physical connectivity before applying logical configuration.
+- Always use **Stage/Test** to review generated payloads before a live push.
+
 ### Port profile rules
 
 Port Profile Rules provide deterministic logic for assigning Mist port usages from Cisco interface characteristics.
