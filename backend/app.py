@@ -875,6 +875,165 @@ def _is_recent_device(device: Mapping[str, Any], reference_ts: float) -> bool:
     return last_seen_ts >= reference_ts - RECENT_LAST_SEEN_WINDOW_SECONDS
 
 
+def _extract_virtual_chassis_blob(device: Mapping[str, Any]) -> Optional[Any]:
+    vc_data = device.get("virtual_chassis")
+    if isinstance(vc_data, Mapping):
+        return vc_data
+    if isinstance(vc_data, Sequence) and not isinstance(vc_data, (str, bytes, bytearray)):
+        return vc_data
+    return None
+
+
+def _device_looks_like_switch(device: Mapping[str, Any]) -> bool:
+    for key in ("type", "device_type", "category", "role", "device_profile", "device_profile_name"):
+        value = device.get(key)
+        if isinstance(value, str):
+            lowered = value.lower()
+            if "switch" in lowered or lowered in {"access", "distribution", "core", "wan"}:
+                return True
+    model = device.get("model")
+    return isinstance(model, str) and "switch" in model.lower()
+
+
+def _extract_virtual_chassis_members(vc_data: Any) -> List[Dict[str, Any]]:
+    if isinstance(vc_data, Mapping):
+        candidates = vc_data.get("members") or vc_data.get("devices") or []
+    elif isinstance(vc_data, Sequence) and not isinstance(vc_data, (str, bytes, bytearray)):
+        candidates = vc_data
+    else:
+        candidates = []
+    return [dict(item) for item in candidates if isinstance(item, Mapping)]
+
+
+def _extract_virtual_chassis_key(device: Mapping[str, Any], vc_data: Any) -> Optional[str]:
+    if isinstance(vc_data, Mapping):
+        for key in ("id", "vc_mac", "mac"):
+            value = vc_data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+    device_id = device.get("id")
+    if isinstance(device_id, str) and device_id.strip():
+        return device_id.strip().lower()
+    return None
+
+
+def _extract_virtual_chassis_member_id(member: Mapping[str, Any]) -> Optional[int]:
+    for key in ("member_id", "member", "fpc_idx", "slot", "id"):
+        value = member.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                return int(value.strip())
+            except ValueError:
+                continue
+    return None
+
+
+def _resolve_virtual_chassis_root_device_id(
+    device: Mapping[str, Any],
+    vc_data: Any,
+    devices_by_id: Mapping[str, Mapping[str, Any]],
+    device_id_by_mac: Mapping[str, str],
+) -> Optional[str]:
+    if isinstance(vc_data, Mapping):
+        vc_id = vc_data.get("id")
+        if isinstance(vc_id, str) and vc_id.strip() in devices_by_id:
+            return vc_id.strip()
+
+    members = _extract_virtual_chassis_members(vc_data)
+    if members:
+        for member in sorted(
+            members,
+            key=lambda item: (
+                _extract_virtual_chassis_member_id(item) is None,
+                _extract_virtual_chassis_member_id(item)
+                if _extract_virtual_chassis_member_id(item) is not None
+                else 0,
+            ),
+        ):
+            mac = member.get("mac")
+            if not isinstance(mac, str) or not mac.strip():
+                continue
+            candidate = device_id_by_mac.get(mac.strip().lower())
+            if candidate:
+                return candidate
+
+    device_id = device.get("id")
+    if isinstance(device_id, str) and device_id.strip():
+        return device_id.strip()
+    return None
+
+
+def _fetch_site_virtual_chassis_documents(
+    base_url: str,
+    headers: Dict[str, str],
+    site_id: str,
+    devices: Sequence[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    devices_by_id: Dict[str, Mapping[str, Any]] = {}
+    device_id_by_mac: Dict[str, str] = {}
+    for device in devices:
+        if not isinstance(device, Mapping):
+            continue
+        raw_device_id = device.get("id")
+        if isinstance(raw_device_id, str) and raw_device_id.strip():
+            devices_by_id[raw_device_id.strip()] = device
+        raw_mac = device.get("mac")
+        if (
+            isinstance(raw_device_id, str)
+            and raw_device_id.strip()
+            and isinstance(raw_mac, str)
+            and raw_mac.strip()
+        ):
+            device_id_by_mac[raw_mac.strip().lower()] = raw_device_id.strip()
+
+    vc_targets: Dict[str, str] = {}
+    for device in devices:
+        if not isinstance(device, Mapping) or not _device_looks_like_switch(device):
+            continue
+        vc_data = _extract_virtual_chassis_blob(device)
+        if vc_data is None:
+            continue
+        vc_key = _extract_virtual_chassis_key(device, vc_data)
+        root_device_id = _resolve_virtual_chassis_root_device_id(
+            device,
+            vc_data,
+            devices_by_id,
+            device_id_by_mac,
+        )
+        if not vc_key or not root_device_id or vc_key in vc_targets:
+            continue
+        vc_targets[vc_key] = root_device_id
+
+    vc_documents: List[Dict[str, Any]] = []
+    for root_device_id in vc_targets.values():
+        try:
+            vc_doc = _mist_get_json(
+                base_url,
+                headers,
+                f"/sites/{site_id}/devices/{root_device_id}/vc",
+                optional=True,
+            )
+        except requests.HTTPError:
+            continue
+        if not isinstance(vc_doc, dict):
+            continue
+        enriched_vc_doc = dict(vc_doc)
+        enriched_vc_doc["root_device_id"] = root_device_id
+        root_device = devices_by_id.get(root_device_id)
+        if isinstance(root_device, Mapping):
+            for key in ("name", "hostname", "device_name"):
+                value = root_device.get(key)
+                if isinstance(value, str) and value.strip():
+                    enriched_vc_doc["root_device_name"] = value.strip()
+                    break
+        vc_documents.append(enriched_vc_doc)
+    return vc_documents
+
+
 def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) -> SiteContext:
     raw_site = _mist_get_json(base_url, headers, f"/sites/{site_id}")
     site_doc = raw_site if isinstance(raw_site, dict) else {}
@@ -1049,6 +1208,7 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
             filtered_devices.append(device)
 
     device_list = filtered_devices
+    vc_documents = _fetch_site_virtual_chassis_documents(base_url, headers, site_id, device_list)
 
     if SWITCH_TEMPLATE_ID:
         template_doc = _fetch_switch_template_document(
@@ -1082,6 +1242,7 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
         setting=setting_doc,
         templates=template_list,
         devices=device_list,
+        vc_documents=vc_documents,
     )
 
 

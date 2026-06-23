@@ -17,6 +17,7 @@ from compliance import (
     CloudManagementCheck,
     SwitchPowerSupplyHealthCheck,
     SpareSwitchPresenceCheck,
+    VirtualChassisRoleCheck,
     DeviceNamingConventionCheck,
     DeviceDocumentationCheck,
     SiteAuditRunner,
@@ -35,6 +36,7 @@ from audit_actions import (
     ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
     SET_SITE_VARIABLES_ACTION_ID,
     SET_SPARE_SWITCH_ROLE_ACTION_ID,
+    SET_VIRTUAL_CHASSIS_ROLES_ACTION_ID,
 )
 
 
@@ -1447,6 +1449,102 @@ def test_spare_switch_presence_allows_spare_role():
     findings = check.run(ctx)
 
     assert findings == []
+
+
+def test_virtual_chassis_role_check_accepts_ex4650_routing_engine_pair():
+    ctx = SiteContext(
+        site_id="site-vc-1",
+        site_name="EX4650 Site",
+        site={},
+        setting={},
+        templates=[],
+        devices=[],
+        vc_documents=[
+            {
+                "id": "vc-1",
+                "root_device_id": "sw-root",
+                "root_device_name": "VC-Root",
+                "model": "EX4650",
+                "members": [
+                    {"fpc_idx": 0, "mac": "aa:bb:cc:00:00:01", "model": "EX4650", "vc_role": "routing-engine", "vc_state": "present"},
+                    {"fpc_idx": 1, "mac": "aa:bb:cc:00:00:02", "model": "EX4650", "vc_role": "routing-engine", "vc_state": "present"},
+                ],
+            }
+        ],
+    )
+
+    check = VirtualChassisRoleCheck()
+    findings = check.run(ctx)
+
+    assert findings == []
+
+
+def test_virtual_chassis_role_check_flags_missing_backup_and_offers_fix():
+    ctx = SiteContext(
+        site_id="site-vc-2",
+        site_name="EX4100 Site",
+        site={},
+        setting={},
+        templates=[],
+        devices=[],
+        vc_documents=[
+            {
+                "id": "vc-2",
+                "root_device_id": "sw-root",
+                "root_device_name": "VC-Root",
+                "model": "EX4100",
+                "members": [
+                    {"fpc_idx": 0, "mac": "aa:bb:cc:00:00:11", "model": "EX4100", "vc_role": "master", "vc_state": "present"},
+                    {"fpc_idx": 1, "mac": "aa:bb:cc:00:00:12", "model": "EX4100", "vc_role": "linecard", "vc_state": "present"},
+                ],
+            }
+        ],
+    )
+
+    check = VirtualChassisRoleCheck()
+    findings = check.run(ctx)
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.device_id == "sw-root"
+    assert finding.device_name == "VC-Root"
+    assert finding.actions is not None
+    action = finding.actions[0]
+    assert action["id"] == SET_VIRTUAL_CHASSIS_ROLES_ACTION_ID
+    assert action["metadata"]["vc_device_id"] == "sw-root"
+    assert action["metadata"]["prechecks"]["can_run"] is True
+    assert finding.details["members"][1]["expected_role"] == "backup"
+
+
+def test_virtual_chassis_role_check_disables_fix_when_member_not_present():
+    ctx = SiteContext(
+        site_id="site-vc-3",
+        site_name="EX4100 Site",
+        site={},
+        setting={},
+        templates=[],
+        devices=[],
+        vc_documents=[
+            {
+                "id": "vc-3",
+                "root_device_id": "sw-root",
+                "root_device_name": "VC-Root",
+                "model": "EX4100",
+                "members": [
+                    {"fpc_idx": 0, "mac": "aa:bb:cc:00:00:21", "model": "EX4100", "vc_role": "master", "vc_state": "present"},
+                    {"fpc_idx": 1, "mac": "aa:bb:cc:00:00:22", "model": "EX4100", "vc_role": "linecard", "vc_state": "not-present"},
+                ],
+            }
+        ],
+    )
+
+    check = VirtualChassisRoleCheck()
+    findings = check.run(ctx)
+
+    assert len(findings) == 1
+    action = findings[0].actions[0]
+    assert action["metadata"]["prechecks"]["can_run"] is False
+    assert any("present state" in message for message in action["metadata"]["prechecks"]["messages"])
 
 
 def test_configuration_overrides_check_includes_offline_devices():

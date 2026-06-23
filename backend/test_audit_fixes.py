@@ -7,6 +7,7 @@ from audit_actions import (
     ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
     SET_SITE_VARIABLES_ACTION_ID,
     SET_SPARE_SWITCH_ROLE_ACTION_ID,
+    SET_VIRTUAL_CHASSIS_ROLES_ACTION_ID,
 )
 from audit_fixes import execute_audit_action
 
@@ -811,3 +812,138 @@ def test_execute_action_allows_active_uplink_pic_interfaces(monkeypatch):
     assert summary["failed"] == 0
     assert summary["changes"][0]["status"] == "success"
     assert len(put_calls) == 2
+
+
+def test_execute_action_updates_virtual_chassis_roles(monkeypatch):
+    calls = {"put": []}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        if url.endswith("/sites/site-1"):
+            return DummyResponse({"name": "Site One"})
+        if url.endswith("/sites/site-1/devices/vc-root/vc"):
+            return DummyResponse(
+                {
+                    "id": "vc-1",
+                    "type": "switch",
+                    "name": "VC Root",
+                    "members": [
+                        {"fpc_idx": 0, "mac": "aa:bb:cc:00:00:01", "model": "EX4100", "vc_role": "master", "vc_state": "present"},
+                        {"fpc_idx": 1, "mac": "aa:bb:cc:00:00:02", "model": "EX4100", "vc_role": "linecard", "vc_state": "present"},
+                    ],
+                }
+            )
+        raise AssertionError(f"Unexpected GET {url}")
+
+    def fake_put(url, headers=None, json=None, timeout=None):
+        calls["put"].append((url, json))
+        return DummyResponse({})
+
+    monkeypatch.setattr("audit_fixes.requests.get", fake_get)
+    monkeypatch.setattr("audit_fixes.requests.put", fake_put)
+
+    result = execute_audit_action(
+        SET_VIRTUAL_CHASSIS_ROLES_ACTION_ID,
+        "https://api.mist.test/api/v1",
+        "token",
+        ["site-1"],
+        dry_run=False,
+        metadata={"vc_device_id": "vc-root"},
+    )
+
+    summary = result["results"][0]
+    assert summary["updated"] == 1
+    assert summary["failed"] == 0
+    assert calls["put"][0][0].endswith("/sites/site-1/devices/vc-root/vc")
+    assert calls["put"][0][1] == {
+        "op": "preprovision",
+        "members": [
+            {"member_id": 0, "mac": "aa:bb:cc:00:00:01", "vc_role": "master"},
+            {"member_id": 1, "mac": "aa:bb:cc:00:00:02", "vc_role": "backup"},
+        ],
+    }
+
+
+def test_execute_action_skips_compliant_ex4650_virtual_chassis(monkeypatch):
+    calls = {"put": []}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        if url.endswith("/sites/site-1"):
+            return DummyResponse({"name": "Site One"})
+        if url.endswith("/sites/site-1/devices/vc-root/vc"):
+            return DummyResponse(
+                {
+                    "id": "vc-1",
+                    "type": "switch",
+                    "name": "VC Root",
+                    "model": "EX4650",
+                    "members": [
+                        {"fpc_idx": 0, "mac": "aa:bb:cc:00:00:11", "model": "EX4650", "vc_role": "routing-engine", "vc_state": "present"},
+                        {"fpc_idx": 1, "mac": "aa:bb:cc:00:00:12", "model": "EX4650", "vc_role": "routing-engine", "vc_state": "present"},
+                    ],
+                }
+            )
+        raise AssertionError(f"Unexpected GET {url}")
+
+    def fake_put(url, headers=None, json=None, timeout=None):
+        calls["put"].append((url, json))
+        return DummyResponse({})
+
+    monkeypatch.setattr("audit_fixes.requests.get", fake_get)
+    monkeypatch.setattr("audit_fixes.requests.put", fake_put)
+
+    result = execute_audit_action(
+        SET_VIRTUAL_CHASSIS_ROLES_ACTION_ID,
+        "https://api.mist.test/api/v1",
+        "token",
+        ["site-1"],
+        dry_run=False,
+        metadata={"vc_device_id": "vc-root"},
+    )
+
+    summary = result["results"][0]
+    assert summary["updated"] == 0
+    assert summary["skipped"] == 1
+    assert calls["put"] == []
+
+
+def test_execute_action_blocks_virtual_chassis_fix_when_member_not_present(monkeypatch):
+    calls = {"put": []}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        if url.endswith("/sites/site-1"):
+            return DummyResponse({"name": "Site One"})
+        if url.endswith("/sites/site-1/devices/vc-root/vc"):
+            return DummyResponse(
+                {
+                    "id": "vc-1",
+                    "type": "switch",
+                    "name": "VC Root",
+                    "members": [
+                        {"fpc_idx": 0, "mac": "aa:bb:cc:00:00:21", "model": "EX4100", "vc_role": "master", "vc_state": "present"},
+                        {"fpc_idx": 1, "mac": "aa:bb:cc:00:00:22", "model": "EX4100", "vc_role": "linecard", "vc_state": "not-present"},
+                    ],
+                }
+            )
+        raise AssertionError(f"Unexpected GET {url}")
+
+    def fake_put(url, headers=None, json=None, timeout=None):
+        calls["put"].append((url, json))
+        return DummyResponse({})
+
+    monkeypatch.setattr("audit_fixes.requests.get", fake_get)
+    monkeypatch.setattr("audit_fixes.requests.put", fake_put)
+
+    result = execute_audit_action(
+        SET_VIRTUAL_CHASSIS_ROLES_ACTION_ID,
+        "https://api.mist.test/api/v1",
+        "token",
+        ["site-1"],
+        dry_run=False,
+        metadata={"vc_device_id": "vc-root"},
+    )
+
+    summary = result["results"][0]
+    assert summary["updated"] == 0
+    assert summary["failed"] == 1
+    assert "present state" in summary["errors"][0]["reason"]
+    assert calls["put"] == []

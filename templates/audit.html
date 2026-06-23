@@ -142,6 +142,7 @@
         cloud_management: 'device',
         switch_power_supply_health: 'device',
         spare_switch_presence: 'device',
+        virtual_chassis_roles: 'device',
         device_naming_convention: 'device',
         device_documentation: 'device'
       };
@@ -507,7 +508,9 @@
 
       async function runOneClickFix(action, button) {
         if (!action || !action.id) {
-          showStatus('Unable to start 1 Click Fix (missing action id).', 'error');
+          if (button) {
+            applyActionStatus(button, 'Unable to start 1 Click Fix (missing action id).', 'error');
+          }
           return;
         }
         const deviceTargets = Array.isArray(action.devices)
@@ -521,7 +524,9 @@
           siteIds = Array.from(new Set(deviceTargets.map(item => item.site_id).filter(Boolean)));
         }
         if (!siteIds.length) {
-          showStatus('No sites are eligible for this 1 Click Fix.', 'error');
+          if (button) {
+            applyActionStatus(button, 'No sites are eligible for this 1 Click Fix.', 'error');
+          }
           return;
         }
 
@@ -531,11 +536,12 @@
         if (metadataPayload.require_switch_selection === true) {
           const selection = await chooseSpareSwitchOption(action);
           if (selection && selection.cancelled) {
-            showStatus('1 Click Fix cancelled.', 'info');
+            if (button) {
+              applyActionStatus(button, '1 Click Fix cancelled.', 'info');
+            }
             return;
           }
           if (selection && selection.error) {
-            showStatus(selection.error, 'error');
             if (button) {
               applyActionStatus(button, selection.error, 'error');
             }
@@ -596,7 +602,10 @@
             summaryDetails.push(`(${failed} device${failed === 1 ? '' : 's'} could not be updated)`);
           }
           const summaryVariant = failed ? 'error' : (updated ? 'success' : 'info');
-          showStatus(`1 Click Fix completed: ${summaryDetails.join(' ')}.`, summaryVariant);
+          const completionSummary = `1 Click Fix completed: ${summaryDetails.join(' ')}.`;
+          if (button && !deviceIdSet.size) {
+            applyActionStatus(button, completionSummary, summaryVariant);
+          }
 
           if (button) {
             const results = Array.isArray(data.results) ? data.results : [];
@@ -650,7 +659,7 @@
               const statusVariant = statusMessages.some(item => item.variant === 'success') ? 'success' : 'info';
               applyActionStatus(button, uniqueStatus.join(' '), statusVariant);
             } else {
-              resetActionStatus(button);
+              applyActionStatus(button, completionSummary, summaryVariant);
             }
           }
         } catch (error) {
