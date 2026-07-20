@@ -16,6 +16,7 @@ from audit_actions import (
     ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
     SET_SITE_VARIABLES_ACTION_ID,
     SET_SPARE_SWITCH_ROLE_ACTION_ID,
+    SET_VIRTUAL_CHASSIS_ROLES_ACTION_ID,
 )
 from compliance import (
     DEFAULT_AP_NAME_PATTERN,
@@ -361,6 +362,184 @@ def _device_display_name(doc: Mapping[str, Any], default: str) -> str:
                 return text
     return default
 
+
+def _fetch_virtual_chassis_document(
+    base_url: str,
+    headers: Dict[str, str],
+    site_id: str,
+    device_id: str,
+) -> Dict[str, Any]:
+    payload = _get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/devices/{device_id}/vc",
+    )
+    return payload if isinstance(payload, dict) else {}
+
+
+def _collect_vc_members(raw: Any) -> List[Dict[str, Any]]:
+    if isinstance(raw, Mapping):
+        candidates = raw.get("members") or raw.get("devices") or []
+    elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+        candidates = raw
+    else:
+        candidates = []
+    return [dict(item) for item in candidates if isinstance(item, Mapping)]
+
+
+def _extract_vc_member_id(member: Mapping[str, Any]) -> Optional[int]:
+    for key in ("member_id", "member", "fpc_idx", "slot", "id"):
+        value = member.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                return int(value.strip())
+            except ValueError:
+                continue
+    return None
+
+
+def _normalize_vc_role(role: Any) -> str:
+    if not isinstance(role, str):
+        return ""
+    return role.strip().lower()
+
+
+def _normalize_vc_state(state: Any) -> str:
+    if not isinstance(state, str):
+        return ""
+    return state.strip().lower()
+
+
+def _normalize_switch_model(model: Any) -> str:
+    if not isinstance(model, str):
+        return ""
+    return model.strip().strip('"').strip("'").upper()
+
+
+def _vc_member_model(member: Mapping[str, Any], fallback_model: str = "") -> str:
+    for key in ("model", "device_model"):
+        model = _normalize_switch_model(member.get(key))
+        if model:
+            return model
+    return fallback_model
+
+
+def _is_ex4650_virtual_chassis(vc_doc: Mapping[str, Any], members: Sequence[Mapping[str, Any]]) -> bool:
+    fallback_model = _normalize_switch_model(vc_doc.get("model"))
+    models = {
+        _vc_member_model(member, fallback_model)
+        for member in members
+        if _vc_member_model(member, fallback_model)
+    }
+    return bool(models) and all(model.startswith("EX4650") for model in models)
+
+
+def _build_virtual_chassis_target_roles(
+    vc_doc: Mapping[str, Any],
+) -> Tuple[Optional[Dict[int, str]], Optional[str], bool]:
+    members = _collect_vc_members(vc_doc.get("members") if "members" in vc_doc else vc_doc)
+    if len(members) < 2:
+        return None, "VC does not have enough members to remediate.", False
+
+    member_ids = [_extract_vc_member_id(member) for member in members]
+    if any(member_id is None for member_id in member_ids):
+        return None, "VC member numbering is incomplete.", False
+    if any(_normalize_vc_state(member.get("vc_state")) != "present" for member in members):
+        return None, "All VC members must be in present state before remediation can run.", False
+    if any(not isinstance(member.get("mac"), str) or not member.get("mac", "").strip() for member in members):
+        return None, "One or more VC members are missing a MAC address required by the Mist API.", False
+
+    current_roles = {
+        int(member_id): _normalize_vc_role(member.get("vc_role"))
+        for member, member_id in zip(members, member_ids)
+        if member_id is not None
+    }
+
+    if _is_ex4650_virtual_chassis(vc_doc, members) and len(members) == 2:
+        if all(role == "routing-engine" for role in current_roles.values()):
+            return None, "EX4650 routing-engine pair is already compliant.", True
+
+    sorted_member_ids = sorted(current_roles.keys())
+    master_members = [member_id for member_id, role in current_roles.items() if role == "master"]
+    routing_engine_members = [
+        member_id for member_id, role in current_roles.items() if role == "routing-engine"
+    ]
+    backup_members = [member_id for member_id, role in current_roles.items() if role == "backup"]
+
+    primary_id = master_members[0] if len(master_members) == 1 else None
+    if primary_id is None and len(routing_engine_members) == 1:
+        primary_id = routing_engine_members[0]
+    if primary_id is None:
+        primary_id = sorted_member_ids[0]
+
+    remaining_ids = [member_id for member_id in sorted_member_ids if member_id != primary_id]
+    if not remaining_ids:
+        return None, "VC does not have enough members to assign a backup role.", False
+
+    backup_id = None
+    for candidate in backup_members:
+        if candidate != primary_id:
+            backup_id = candidate
+            break
+    if backup_id is None:
+        for candidate in routing_engine_members:
+            if candidate != primary_id:
+                backup_id = candidate
+                break
+    if backup_id is None:
+        backup_id = remaining_ids[0]
+
+    targets = {
+        member_id: (
+            "master"
+            if member_id == primary_id
+            else "backup"
+            if member_id == backup_id
+            else "linecard"
+        )
+        for member_id in sorted_member_ids
+    }
+    is_compliant = all(current_roles.get(member_id) == role for member_id, role in targets.items())
+    return targets, None, is_compliant
+
+
+def _build_virtual_chassis_preprovision_payload(
+    vc_doc: Mapping[str, Any],
+    target_roles: Mapping[int, str],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    members = _collect_vc_members(vc_doc.get("members") if "members" in vc_doc else vc_doc)
+    payload_members: List[Dict[str, Any]] = []
+    for member in sorted(
+        members,
+        key=lambda item: (
+            _extract_vc_member_id(item) is None,
+            _extract_vc_member_id(item) if _extract_vc_member_id(item) is not None else 0,
+        ),
+    ):
+        member_id = _extract_vc_member_id(member)
+        if member_id is None:
+            return None, "VC member numbering is incomplete."
+        mac = member.get("mac")
+        if not isinstance(mac, str) or not mac.strip():
+            return None, "One or more VC members are missing a MAC address required by the Mist API."
+
+        payload_member: Dict[str, Any] = {
+            "member_id": member_id,
+            "mac": mac.strip().lower(),
+            "vc_role": target_roles[member_id],
+        }
+        if "vc_ports" in member and isinstance(member.get("vc_ports"), list):
+            payload_member["vc_ports"] = [
+                str(port).strip()
+                for port in member.get("vc_ports") or []
+                if isinstance(port, str) and str(port).strip()
+            ]
+        payload_members.append(payload_member)
+    return {"op": "preprovision", "members": payload_members}, None
 
 def _normalize_dns_values(values: Any) -> List[str]:
     normalized: List[str] = []
@@ -1626,6 +1805,176 @@ def _execute_set_site_variables_action(
     }
 
 
+def _execute_set_virtual_chassis_roles_action(
+    base_url: str,
+    token: str,
+    site_ids: Sequence[str],
+    *,
+    dry_run: bool,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    headers = _mist_headers(token)
+    normalized_site_ids = [sid for sid in site_ids if isinstance(sid, str) and sid]
+
+    vc_device_id = ""
+    if isinstance(metadata, Mapping):
+        raw = metadata.get("vc_device_id")
+        if raw is not None:
+            vc_device_id = str(raw).strip()
+    if not vc_device_id:
+        raise ValueError("VC device identifier is required for VC role remediation.")
+
+    results: List[Dict[str, Any]] = []
+    totals = {"updated": 0, "skipped": 0, "failed": 0}
+
+    for site_id in normalized_site_ids:
+        site_name = _fetch_site_name(base_url, headers, site_id)
+        summary: Dict[str, Any] = {
+            "site_id": site_id,
+            "site_name": site_name,
+            "updated": 0,
+            "skipped": 0,
+            "failed": 0,
+            "changes": [],
+            "errors": [],
+        }
+
+        try:
+            vc_doc = _fetch_virtual_chassis_document(base_url, headers, site_id, vc_device_id)
+        except requests.HTTPError as exc:
+            summary["failed"] += 1
+            summary["errors"].append(
+                {"device_id": vc_device_id, "reason": f"Virtual chassis lookup failed: {exc}"}
+            )
+            results.append(summary)
+            totals["failed"] += 1
+            continue
+
+        device_name = _device_display_name(vc_doc, vc_device_id)
+        target_roles, planning_error, is_compliant = _build_virtual_chassis_target_roles(vc_doc)
+        if is_compliant:
+            summary["skipped"] += 1
+            summary["changes"].append(
+                {
+                    "device_id": vc_device_id,
+                    "device_name": device_name,
+                    "status": "skipped",
+                    "reason": "VC role layout is already compliant.",
+                }
+            )
+            results.append(summary)
+            totals["skipped"] += 1
+            continue
+
+        if planning_error or not target_roles:
+            summary["failed"] += 1
+            summary["errors"].append(
+                {
+                    "device_id": vc_device_id,
+                    "device_name": device_name,
+                    "reason": planning_error or "Unable to determine a supported VC role layout.",
+                }
+            )
+            summary["changes"].append(
+                {
+                    "device_id": vc_device_id,
+                    "device_name": device_name,
+                    "status": "failed",
+                    "reason": planning_error or "Unable to determine a supported VC role layout.",
+                }
+            )
+            results.append(summary)
+            totals["failed"] += 1
+            continue
+
+        payload, payload_error = _build_virtual_chassis_preprovision_payload(vc_doc, target_roles)
+        if payload_error or not payload:
+            summary["failed"] += 1
+            summary["errors"].append(
+                {
+                    "device_id": vc_device_id,
+                    "device_name": device_name,
+                    "reason": payload_error or "Unable to construct VC update payload.",
+                }
+            )
+            results.append(summary)
+            totals["failed"] += 1
+            continue
+
+        source_members = _collect_vc_members(vc_doc.get("members") if "members" in vc_doc else vc_doc)
+        member_changes = []
+        for member in payload["members"]:
+            member_id = member.get("member_id")
+            current_role = ""
+            for source_member in source_members:
+                if _extract_vc_member_id(source_member) == member_id:
+                    current_role = _normalize_vc_role(source_member.get("vc_role"))
+                    break
+            member_changes.append(
+                {
+                    "member_id": member_id,
+                    "mac": member.get("mac"),
+                    "previous_role": current_role or None,
+                    "new_role": member.get("vc_role"),
+                }
+            )
+
+        change_entry: Dict[str, Any] = {
+            "device_id": vc_device_id,
+            "device_name": device_name,
+            "members": member_changes,
+        }
+
+        if dry_run:
+            change_entry["status"] = "preview"
+            change_entry["message"] = "Would update VC member roles using the Mist preprovision operation."
+            summary["updated"] += 1
+        else:
+            try:
+                response = requests.put(
+                    f"{base_url}/sites/{site_id}/devices/{vc_device_id}/vc",
+                    headers=headers,
+                    json=payload,
+                    timeout=30,
+                )
+                response.raise_for_status()
+            except requests.HTTPError as exc:
+                summary["failed"] += 1
+                summary["errors"].append(
+                    {
+                        "device_id": vc_device_id,
+                        "device_name": device_name,
+                        "reason": f"Failed to update VC roles: {exc}",
+                    }
+                )
+                change_entry["status"] = "failed"
+                change_entry["reason"] = "Failed to update VC roles."
+            else:
+                change_entry["status"] = "success"
+                change_entry["message"] = "Updated VC member roles."
+                summary["updated"] += 1
+
+        summary["changes"].append(change_entry)
+        results.append(summary)
+        totals["updated"] += summary.get("updated", 0)
+        totals["skipped"] += summary.get("skipped", 0)
+        totals["failed"] += summary.get("failed", 0)
+
+    totals_with_sites = {**totals, "sites": len(results)}
+    totals_with_sites.setdefault(
+        "summary",
+        _format_summary_message("Updated virtual chassis roles for", totals_with_sites.get("updated", 0)),
+    )
+
+    return {
+        "ok": True,
+        "action_id": SET_VIRTUAL_CHASSIS_ROLES_ACTION_ID,
+        "dry_run": dry_run,
+        "results": results,
+        "totals": totals_with_sites,
+    }
+
+
 def execute_audit_action(
     action_id: str,
     base_url: str,
@@ -1672,6 +2021,14 @@ def execute_audit_action(
         )
     if action_id == SET_SPARE_SWITCH_ROLE_ACTION_ID:
         return _execute_set_spare_switch_role_action(
+            base_url,
+            token,
+            site_ids,
+            dry_run=dry_run,
+            metadata=metadata,
+        )
+    if action_id == SET_VIRTUAL_CHASSIS_ROLES_ACTION_ID:
+        return _execute_set_virtual_chassis_roles_action(
             base_url,
             token,
             site_ids,

@@ -23,6 +23,7 @@ from audit_actions import (
     ENABLE_CLOUD_MANAGEMENT_ACTION_ID,
     SET_SITE_VARIABLES_ACTION_ID,
     SET_SPARE_SWITCH_ROLE_ACTION_ID,
+    SET_VIRTUAL_CHASSIS_ROLES_ACTION_ID,
 )
 from logging_utils import get_user_logger
 
@@ -42,6 +43,7 @@ class SiteContext:
     setting: Dict[str, Any] = field(default_factory=dict)
     templates: Sequence[Dict[str, Any]] = field(default_factory=list)
     devices: Sequence[Dict[str, Any]] = field(default_factory=list)
+    vc_documents: Sequence[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -711,6 +713,151 @@ def _normalize_device_model(model: Any) -> str:
     if not isinstance(model, str):
         return ""
     return model.strip().strip('"').strip("'").upper()
+
+
+def _collect_vc_members(raw: Any) -> List[Dict[str, Any]]:
+    if isinstance(raw, Mapping):
+        candidates = raw.get("members") or raw.get("devices") or []
+    elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+        candidates = raw
+    else:
+        candidates = []
+    return [dict(item) for item in candidates if isinstance(item, Mapping)]
+
+
+def _extract_vc_member_id(member: Mapping[str, Any]) -> Optional[int]:
+    for key in ("member_id", "member", "fpc_idx", "slot", "id"):
+        value = member.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                return int(value.strip())
+            except ValueError:
+                continue
+    return None
+
+
+def _extract_vc_member_mac(member: Mapping[str, Any]) -> str:
+    value = member.get("mac")
+    if not isinstance(value, str):
+        return ""
+    return value.strip().lower()
+
+
+def _normalize_vc_role(role: Any) -> str:
+    if not isinstance(role, str):
+        return ""
+    return role.strip().lower()
+
+
+def _normalize_vc_state(state: Any) -> str:
+    if not isinstance(state, str):
+        return ""
+    return state.strip().lower()
+
+
+def _vc_member_model(member: Mapping[str, Any], fallback_model: str = "") -> str:
+    for key in ("model", "device_model"):
+        model = _normalize_device_model(member.get(key))
+        if model:
+            return model
+    return fallback_model
+
+
+def _is_ex4650_virtual_chassis(vc_doc: Mapping[str, Any], members: Sequence[Mapping[str, Any]]) -> bool:
+    fallback_model = _normalize_device_model(vc_doc.get("model"))
+    models = {
+        _vc_member_model(member, fallback_model)
+        for member in members
+        if _vc_member_model(member, fallback_model)
+    }
+    return bool(models) and all(model.startswith("EX4650") for model in models)
+
+
+def _virtual_chassis_device_name(vc_doc: Mapping[str, Any], default: str = "virtual chassis") -> str:
+    root_name = vc_doc.get("root_device_name")
+    if isinstance(root_name, str) and root_name.strip():
+        return root_name.strip()
+    vc_mac = vc_doc.get("vc_mac")
+    if isinstance(vc_mac, str) and vc_mac.strip():
+        return f"VC {vc_mac.strip().lower()}"
+    return default
+
+
+def _build_virtual_chassis_role_targets(
+    vc_doc: Mapping[str, Any],
+) -> Tuple[Optional[Dict[int, str]], Optional[str], bool]:
+    members = _collect_vc_members(vc_doc.get("members") if "members" in vc_doc else vc_doc)
+    if len(members) < 2:
+        return None, None, True
+
+    member_ids = [_extract_vc_member_id(member) for member in members]
+    if any(member_id is None for member_id in member_ids):
+        return None, "VC member numbering is incomplete.", False
+
+    current_roles = {
+        int(member_id): _normalize_vc_role(member.get("vc_role"))
+        for member, member_id in zip(members, member_ids)
+        if member_id is not None
+    }
+
+    if _is_ex4650_virtual_chassis(vc_doc, members) and len(members) == 2:
+        if all(role == "routing-engine" for role in current_roles.values()):
+            return None, None, True
+
+    sorted_member_ids = sorted(current_roles.keys())
+    master_members = [member_id for member_id, role in current_roles.items() if role == "master"]
+    routing_engine_members = [
+        member_id for member_id, role in current_roles.items() if role == "routing-engine"
+    ]
+    backup_members = [member_id for member_id, role in current_roles.items() if role == "backup"]
+
+    primary_id = master_members[0] if len(master_members) == 1 else None
+    if primary_id is None and len(routing_engine_members) == 1:
+        primary_id = routing_engine_members[0]
+    if primary_id is None:
+        primary_id = sorted_member_ids[0]
+
+    remaining_ids = [member_id for member_id in sorted_member_ids if member_id != primary_id]
+    if not remaining_ids:
+        return None, "VC does not have enough members to assign a backup role.", False
+
+    backup_id = None
+    for candidate in backup_members:
+        if candidate != primary_id:
+            backup_id = candidate
+            break
+    if backup_id is None:
+        for candidate in routing_engine_members:
+            if candidate != primary_id:
+                backup_id = candidate
+                break
+    if backup_id is None:
+        backup_id = remaining_ids[0]
+
+    targets = {
+        member_id: (
+            "master"
+            if member_id == primary_id
+            else "backup"
+            if member_id == backup_id
+            else "linecard"
+        )
+        for member_id in sorted_member_ids
+    }
+    is_compliant = all(current_roles.get(member_id) == role for member_id, role in targets.items())
+    return targets, None, is_compliant
+
+
+def _virtual_chassis_fix_precheck_message(
+    vc_doc: Mapping[str, Any],
+    reason: str,
+) -> List[str]:
+    label = _virtual_chassis_device_name(vc_doc)
+    return [f"{label}: {reason}"]
 
 
 def _load_allowed_versions_by_model_from_standard_doc(device_type: str) -> Dict[str, Tuple[str, ...]]:
@@ -2694,6 +2841,115 @@ class SpareSwitchPresenceCheck(ComplianceCheck):
         return findings
 
 
+class VirtualChassisRoleCheck(ComplianceCheck):
+    id = "virtual_chassis_roles"
+    name = "Virtual chassis role compliance"
+    description = "Ensure switch virtual chassis members use a supported control-plane role layout."
+    severity = "warning"
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        findings: List[Finding] = []
+
+        for vc_doc in context.vc_documents:
+            if not isinstance(vc_doc, Mapping):
+                continue
+
+            members = _collect_vc_members(vc_doc.get("members") if "members" in vc_doc else vc_doc)
+            if len(members) < 2:
+                continue
+
+            root_device_id = str(vc_doc.get("root_device_id") or vc_doc.get("id") or "").strip() or None
+            device_name = _virtual_chassis_device_name(vc_doc)
+            target_roles, precheck_reason, is_compliant = _build_virtual_chassis_role_targets(vc_doc)
+            if is_compliant:
+                continue
+
+            member_details: List[Dict[str, Any]] = []
+            for member in sorted(
+                members,
+                key=lambda item: (
+                    _extract_vc_member_id(item) is None,
+                    _extract_vc_member_id(item) if _extract_vc_member_id(item) is not None else 0,
+                ),
+            ):
+                member_id = _extract_vc_member_id(member)
+                role = _normalize_vc_role(member.get("vc_role"))
+                member_details.append(
+                    {
+                        "member_id": member_id,
+                        "mac": _extract_vc_member_mac(member),
+                        "model": _vc_member_model(member, _normalize_device_model(vc_doc.get("model"))),
+                        "state": _normalize_vc_state(member.get("vc_state")),
+                        "current_role": role or None,
+                        "expected_role": target_roles.get(member_id) if target_roles and member_id is not None else None,
+                    }
+                )
+
+            details: Dict[str, Any] = {
+                "vc_id": vc_doc.get("id"),
+                "vc_mac": vc_doc.get("vc_mac"),
+                "root_device_id": root_device_id,
+                "members": member_details,
+                "num_routing_engines": vc_doc.get("num_routing_engines"),
+            }
+
+            precheck_messages: List[str] = []
+            can_run = True
+            if precheck_reason:
+                can_run = False
+                precheck_messages.extend(_virtual_chassis_fix_precheck_message(vc_doc, precheck_reason))
+
+            present_states = {_normalize_vc_state(member.get("vc_state")) for member in members}
+            if any(state and state != "present" for state in present_states):
+                can_run = False
+                precheck_messages.extend(
+                    _virtual_chassis_fix_precheck_message(
+                        vc_doc,
+                        "All VC members must be in present state before remediation can run.",
+                    )
+                )
+
+            if any(not _extract_vc_member_mac(member) for member in members):
+                can_run = False
+                precheck_messages.extend(
+                    _virtual_chassis_fix_precheck_message(
+                        vc_doc,
+                        "One or more VC members are missing a MAC address required by the Mist API.",
+                    )
+                )
+
+            action: Optional[Dict[str, Any]] = None
+            if root_device_id:
+                action = {
+                    "id": SET_VIRTUAL_CHASSIS_ROLES_ACTION_ID,
+                    "label": "Normalize VC member roles",
+                    "button_label": "1 Click Fix Now",
+                    "site_ids": [context.site_id],
+                    "metadata": {
+                        "vc_device_id": root_device_id,
+                        "vc_id": vc_doc.get("id"),
+                        "prechecks": {
+                            "can_run": can_run,
+                            "messages": precheck_messages,
+                        },
+                    },
+                }
+
+            findings.append(
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    device_id=root_device_id,
+                    device_name=device_name,
+                    message="Virtual chassis member roles do not match the supported layout.",
+                    details=details,
+                    actions=[action] if action else None,
+                )
+            )
+
+        return findings
+
+
 class DeviceNamingConventionCheck(ComplianceCheck):
     id = "device_naming_convention"
     name = "Device naming convention"
@@ -3069,6 +3325,7 @@ DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
     CloudManagementCheck(),
     SwitchPowerSupplyHealthCheck(),
     SpareSwitchPresenceCheck(),
+    VirtualChassisRoleCheck(),
     DeviceNamingConventionCheck(),
     DeviceDocumentationCheck(),
 )
