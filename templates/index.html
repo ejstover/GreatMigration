@@ -58,27 +58,47 @@
       <section class="mb-6">
         <div class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-6">
           <h2 class="text-lg font-medium mb-2">Fetch running configs via SSH</h2>
-          <p class="text-sm text-slate-600 dark:text-slate-300 mb-4">Enter the Cisco switches to collect <code>show running-config</code>. The configs are converted automatically once collection completes.</p>
-          <div class="grid md:grid-cols-2 gap-4">
-            <div>
-              <label for="cfg_ssh_devices" class="block text-sm font-medium mb-1">Devices (one per line)</label>
-              <textarea id="cfg_ssh_devices" class="w-full border rounded-lg p-3 min-h-[8rem] dark:bg-slate-900 dark:border-slate-700" placeholder="switch1.example.com&#10;10.0.0.5"></textarea>
-            </div>
-            <div class="space-y-4">
-              <div>
-                <label for="cfg_ssh_username" class="block text-sm font-medium mb-1">SSH username</label>
-                <input id="cfg_ssh_username" type="text" class="w-full border rounded-lg p-3 dark:bg-slate-900 dark:border-slate-700" autocomplete="username" />
-              </div>
-              <div>
-                <label for="cfg_ssh_password" class="block text-sm font-medium mb-1">SSH password</label>
-                <div class="relative">
-                  <input id="cfg_ssh_password" type="password" class="w-full border rounded-lg p-3 pr-16 dark:bg-slate-900 dark:border-slate-700" autocomplete="current-password" />
-                  <button type="button" id="cfg_ssh_toggle_password" class="absolute inset-y-0 right-0 px-3 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-200">Show</button>
-                </div>
-              </div>
-              <p class="text-xs text-slate-500 dark:text-slate-400">Usernames persist locally for convenience. Passwords clear immediately after the job starts.</p>
-            </div>
+          <p class="text-sm text-slate-600 dark:text-slate-300 mb-4">Define source/destination mappings first, then fetch Cisco <code>show running-config</code> in one pass. Workflow options and JSON previews appear after SSH collection completes.</p>
+          <div class="rounded-xl border border-slate-200 dark:border-slate-700 overflow-x-auto">
+            <table class="min-w-full text-sm">
+              <thead class="bg-slate-100/80 dark:bg-slate-900/50">
+                <tr>
+                  <th class="px-3 py-2 text-left font-medium">Source device IP/hostname</th>
+                  <th class="px-3 py-2 text-left font-medium">Mist site</th>
+                  <th class="px-3 py-2 text-left font-medium">Destination device</th>
+                  <th class="px-3 py-2 text-left font-medium">Start member</th>
+                  <th class="px-3 py-2 text-left font-medium">Start port</th>
+                  <th class="px-3 py-2 text-left font-medium">Excluded interfaces</th>
+                  <th class="px-3 py-2 text-left font-medium">Model override</th>
+                  <th class="px-3 py-2 text-right font-medium">
+                    <button id="cfg_add_map_row" class="h-8 w-8 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30" title="Add mapping row">+</button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="cfg_switch_map_body" class="divide-y dark:divide-slate-700"></tbody>
+              <tfoot class="bg-slate-50 dark:bg-slate-900/30">
+                <tr>
+                  <td colspan="8" class="px-3 py-3">
+                    <div class="grid md:grid-cols-2 gap-3">
+                      <label class="block">
+                        <span class="block text-xs font-medium mb-1">SSH username</span>
+                        <input id="cfg_ssh_username" type="text" class="w-full border rounded-lg p-2 dark:bg-slate-900 dark:border-slate-700" autocomplete="username" />
+                      </label>
+                      <label class="block">
+                        <span class="block text-xs font-medium mb-1">SSH password</span>
+                        <div class="relative">
+                          <input id="cfg_ssh_password" type="password" class="w-full border rounded-lg p-2 pr-16 dark:bg-slate-900 dark:border-slate-700" autocomplete="current-password" />
+                          <button type="button" id="cfg_ssh_toggle_password" class="absolute inset-y-0 right-0 px-3 text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-200">Show</button>
+                        </div>
+                      </label>
+                    </div>
+                    <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">Credentials row is always visible. Usernames persist locally for convenience; passwords clear immediately after the job starts.</p>
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
           </div>
+          <div id="rows_warning" class="hidden rounded-lg border p-3 mt-3 status-error text-sm dark:bg-rose-950"></div>
           <div class="flex flex-wrap items-center gap-3 mt-4">
             <button id="cfg_ssh_collect" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Fetch Configs</button>
             <button id="choose_files" class="px-4 py-2 rounded bg-sky-600 text-white hover:bg-sky-700">Manual Upload</button>
@@ -168,7 +188,7 @@
 
     <!-- Batch Push -->
     <section id="batch_section" class="hidden">
-      <h2 class="text-lg font-medium mb-2">Batch: Map files to switches</h2>
+      <h2 class="text-lg font-medium mb-2">Run selected automation</h2>
 
       <!-- Global options -->
       <div class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-4 mb-4">
@@ -272,10 +292,6 @@
         </div>
       </div>
 
-      <!-- Rows -->
-      <div id="rows_warning" class="hidden rounded-lg border p-3 mb-3 status-error text-sm dark:bg-rose-950"></div>
-      <div id="batch_rows" class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow divide-y dark:divide-slate-700"></div>
-
       <div class="flex items-center gap-3 mt-4">
         <button id="push_batch_btn" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Run selected automation</button>
         <div id="batch_status" class="text-sm text-slate-600 dark:text-slate-300 ml-2"></div>
@@ -340,7 +356,8 @@
     });
 
     // --- Elements ---
-    const sshDevicesInput = document.getElementById('cfg_ssh_devices');
+    const switchMapBody = document.getElementById('cfg_switch_map_body');
+    const addMapRowBtn = document.getElementById('cfg_add_map_row');
     const sshUsernameInput = document.getElementById('cfg_ssh_username');
     const sshPasswordInput = document.getElementById('cfg_ssh_password');
     const sshToggleBtn = document.getElementById('cfg_ssh_toggle_password');
@@ -359,7 +376,6 @@
 
     const batchSection = document.getElementById('batch_section');
     const rowsWarning = document.getElementById('rows_warning');
-    const batchRows = document.getElementById('batch_rows');
     const pushBatchBtn = document.getElementById('push_batch_btn');
     const batchStatus = document.getElementById('batch_status');
     const batchOutput = document.getElementById('batch_output');
@@ -384,7 +400,7 @@
 
     // --- Data ---
     let convertedItems = []; // [{ source_file, output_file, json }]
-    let rows = []; // [{ idx, site_id, device_id, excludes, exclude_uplinks, member_offset, port_offset, model_override?, userChangedSite? }]
+    let rows = []; // [{ source_host, site_id, device_id, excludes, exclude_uplinks, member_offset, port_offset, model_override?, userChangedSite?, converted_idx? }]
     let seenFiles = new Set(); // dedupe chooser/dnd
     let sitesCache = []; // list of sites
     const devicesBySite = new Map(); // site_id -> devices[]
@@ -605,10 +621,12 @@
         e.preventDefault();
         dismissLcmStep3Assets();
         if (sshCollectBtn.disabled) return;
-        const devicesRaw = (sshDevicesInput?.value || '').split(/\r?\n|,/);
-        const devices = devicesRaw.map(v => v.trim()).filter(Boolean).map(host => ({ host, label: host }));
+        const devices = rows
+          .map(r => (r?.source_host || '').trim())
+          .filter(Boolean)
+          .map(host => ({ host, label: host }));
         if (!devices.length){
-          convertStatus.textContent = 'Enter at least one device hostname or IP.';
+          convertStatus.textContent = 'Enter at least one source device IP/hostname in the mapping table.';
           return;
         }
         const username = sshUsernameInput?.value?.trim() || '';
@@ -729,7 +747,8 @@
       });
 
       if (files.length){
-        await handleFiles(files, showVlanMap);
+        const sourceOrder = successes.map(item => (item.host || item.label || '').trim()).filter(Boolean);
+        await handleFiles(files, showVlanMap, sourceOrder);
         if (sshCollectStartedAt !== null){
           const duration = performance.now() - sshCollectStartedAt;
           logTiming('config_fetch_results', duration, {
@@ -762,16 +781,17 @@
 
     clearAll.addEventListener('click', () => {
       convertedItems = [];
-      rows = [];
+      rows = [makeDefaultRow('')];
       seenFiles.clear();
       resultsList.innerHTML = '';
-      batchRows.innerHTML = '';
+      if (switchMapBody) switchMapBody.innerHTML = '';
       batchOutput.innerHTML = '';
       convertStatus.textContent = '';
       hide(results);
       syncBatchSectionVisibility();
       hide(rowsWarning);
       batchStatus.textContent = '';
+      renderBatchRows();
       syncPushBtnLabel();
       resetSshFailurePanel();
     });
@@ -810,7 +830,7 @@
     // --- Conversion ---
     function keyForFile(f){ return `${f.name}|${f.size}|${f.lastModified}`; }
 
-    async function handleFiles(files, showVlanMap = {}){
+    async function handleFiles(files, showVlanMap = {}, sourceOrder = []){
       if (!files.length) return;
 
       // dedupe files
@@ -835,27 +855,26 @@
         convertStatus.textContent = `Error: ${data.error || res.status}`;
         return;
       }
+      const startIdx = convertedItems.length;
       (data.items || []).forEach(it => convertedItems.push(it));
       renderConvertedList();
       convertStatus.textContent = `Converted ${data.items.length} file(s). Total: ${convertedItems.length}.`;
 
       if (!sitesCache.length) await fetchSites();
 
-      // New rows: site defaults to first row's site if exists, else first site in list
-      const defaultSite = rows.length ? rows[0].site_id : (sitesCache[0]?.id || '');
-      for (let i = rows.length; i < convertedItems.length; i++){
-        rows.push({
-          idx: i,
-          site_id: defaultSite || '',
-          device_id: '',
-          excludes: '',
-          exclude_uplinks: true,
-          member_offset: 0,
-          port_offset: 0,
-          model_override: '',
-          userChangedSite: false
+      if (sourceOrder.length){
+        sourceOrder.forEach((sourceHost, idx) => {
+          const row = rows.find(r => String(r.source_host || '').trim() === String(sourceHost || '').trim());
+          if (!row) return;
+          row.converted_idx = startIdx + idx;
         });
-        if (defaultSite) await fetchDevices(defaultSite);
+      } else {
+        while (rows.length < convertedItems.length){
+          rows.push(makeDefaultRow(''));
+        }
+        for (let i = startIdx; i < convertedItems.length; i++){
+          if (rows[i]) rows[i].converted_idx = i;
+        }
       }
 
       renderBatchRows();
@@ -1039,8 +1058,79 @@
       }
     }
 
+    function makeDefaultRow(sourceHost = ''){
+      return {
+        source_host: sourceHost,
+        site_id: rows[0]?.site_id || (sitesCache[0]?.id || ''),
+        device_id: '',
+        excludes: '',
+        exclude_uplinks: true,
+        member_offset: 0,
+        port_offset: 0,
+        model_override: '',
+        userChangedSite: false,
+        converted_idx: undefined
+      };
+    }
+
+    function renderSwitchMapTable(){
+      if (!switchMapBody) return;
+      switchMapBody.innerHTML = '';
+      rows.forEach((row, i) => {
+        const dup = isPairDuplicate(row.device_id, row.member_offset, row.port_offset);
+        const dupClass = dup ? 'ring-2 ring-rose-500' : '';
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="px-3 py-2 align-top">
+            <input data-rowsel="source_host" data-row="${i}" type="text" value="${escapeHtml(row.source_host || '')}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" placeholder="switch1.example.com or 10.0.0.5" />
+          </td>
+          <td class="px-3 py-2 align-top">
+            <select data-rowsel="site" data-row="${i}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700">${siteOptionsHtml(row.site_id)}</select>
+          </td>
+          <td class="px-3 py-2 align-top">
+            <select data-rowsel="device" data-row="${i}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700 ${dupClass}">
+              ${row.site_id ? deviceOptionsHtml(row.site_id, row.device_id) : '<option value="">Select a site first</option>'}
+            </select>
+          </td>
+          <td class="px-3 py-2 align-top">
+            <input data-rowsel="offset" data-row="${i}" type="number" min="0" step="1" value="${row.member_offset}" class="w-24 border rounded p-2 dark:bg-slate-900 dark:border-slate-700 ${dupClass}" />
+          </td>
+          <td class="px-3 py-2 align-top">
+            <input data-rowsel="port" data-row="${i}" type="number" min="0" step="1" value="${row.port_offset}" class="w-24 border rounded p-2 dark:bg-slate-900 dark:border-slate-700 ${dupClass}" />
+          </td>
+          <td class="px-3 py-2 align-top">
+            <div class="flex items-center gap-2 mb-1">
+              <input data-rowsel="exclude_uplinks" data-row="${i}" type="checkbox" class="w-4 h-4" ${row.exclude_uplinks ? 'checked' : ''} />
+              <span class="text-xs">Exclude uplinks</span>
+            </div>
+            <input data-rowsel="excludes" data-row="${i}" type="text" placeholder="ge-0/2/0, xe-0/2/1" value="${escapeHtml(row.excludes)}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" />
+          </td>
+          <td class="px-3 py-2 align-top">
+            <input data-rowsel="model_override" data-row="${i}" type="text" value="${escapeHtml(row.model_override || '')}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" placeholder="EX4100-48MP" />
+          </td>
+          <td class="px-3 py-2 align-top text-right">
+            <button class="h-8 w-8 rounded border border-rose-500 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30" title="Remove row" data-rowremove="${i}" ${rows.length <= 1 ? 'disabled' : ''}>×</button>
+          </td>
+        `;
+        switchMapBody.appendChild(tr);
+      });
+
+      switchMapBody.querySelectorAll('input[data-rowsel="source_host"]').forEach(inp => {
+        inp.addEventListener('input', () => {
+          const i = parseInt(inp.getAttribute('data-row'));
+          rows[i].source_host = inp.value || '';
+        });
+      });
+      switchMapBody.querySelectorAll('input[data-rowsel="model_override"]').forEach(inp => {
+        inp.addEventListener('input', () => {
+          const i = parseInt(inp.getAttribute('data-row'));
+          rows[i].model_override = inp.value || '';
+        });
+      });
+    }
+
     function renderBatchRows(){
-      batchRows.innerHTML = '';
+      renderSwitchMapTable();
       const lcmStep3Only = Boolean(removeTempConfig?.checked) && !applyTempConfig?.checked && !finalizeAssignments?.checked;
       if (lcmStep3Only){
         hide(rowsWarning);
@@ -1048,78 +1138,7 @@
         pushBatchBtn.classList.remove('cursor-not-allowed', 'opacity-70');
         return;
       }
-      rows.forEach((row, i) => {
-        const dup = isPairDuplicate(row.device_id, row.member_offset, row.port_offset);
-        const dupClass = dup ? 'ring-2 ring-rose-500' : '';
-        const el = document.createElement('div');
-        el.className = 'p-4';
-        el.innerHTML = `
-          <div class="grid md:grid-cols-12 gap-2 items-end">
-            <div class="md:col-span-1">
-              <label class="block text-xs font-medium mb-1">File</label>
-              <div class="text-sm text-slate-700 dark:text-slate-200 truncate" title="${escapeHtml(convertedItems[row.idx]?.source_file || '')}">
-                ${escapeHtml(convertedItems[row.idx]?.source_file || '(missing)')}
-              </div>
-            </div>
-
-            <div class="md:col-span-3">
-              <label class="block text-xs font-medium mb-1">Site</label>
-              <select data-rowsel="site" data-row="${i}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700">${siteOptionsHtml(row.site_id)}</select>
-            </div>
-
-            <div class="md:col-span-2">
-              <label class="block text-xs font-medium mb-1">Device</label>
-              <select data-rowsel="device" data-row="${i}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700 ${dupClass}">
-                ${row.site_id ? deviceOptionsHtml(row.site_id, row.device_id) : '<option value="">Select a site first</option>'}
-              </select>
-            </div>
-
-          <div class="md:col-span-1">
-              <label class="block text-xs font-medium mb-1 tooltip">
-                <span class="inline-flex items-center gap-1">Start member
-                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
-                </span>
-                <span class="tip">Offset Cisco member numbering when mapping to a Juniper VC. Example: two 48-port Cisco stacks become a single 5-member VC—set rows destined for members 0,1,2,3,4 accordingly.</span>
-              </label>
-              <input data-rowsel="offset" data-row="${i}" type="number" min="0" step="1" value="${row.member_offset}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700 ${dupClass}" />
-            </div>
-
-            <div class="md:col-span-1">
-              <label class="block text-xs font-medium mb-1 tooltip">
-                <span class="inline-flex items-center gap-1">Start port
-                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
-                </span>
-                <span class="tip">Shift port numbering within a member. Example: two 24-port switches forming one 48-port device—set the second row to Start port 24 so its ports map to 24–47.</span>
-              </label>
-              <input data-rowsel="port" data-row="${i}" type="number" min="0" step="1" value="${row.port_offset}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700 ${dupClass}" />
-            </div>
-
-            <div class="md:col-span-3">
-              <label class="block text-xs font-medium mb-1 tooltip">
-                <span class="inline-flex items-center gap-1">Exclude interfaces
-                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
-                </span>
-                <span class="tip">Skip specific interfaces from being pushed (e.g., uplinks or special ports). Use full Juniper names, comma-separated. Ranges like <code>xe-0/2/[0-3]</code> are supported.</span>
-              </label>
-              <div class="flex items-center gap-2 mb-1">
-                <input data-rowsel="exclude_uplinks" data-row="${i}" type="checkbox" class="w-4 h-4" ${row.exclude_uplinks ? 'checked' : ''} />
-                <span class="text-sm">Exclude uplinks</span>
-              </div>
-              <input data-rowsel="excludes" data-row="${i}" type="text" placeholder="ge-0/2/0, xe-0/2/1" value="${escapeHtml(row.excludes)}" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" />
-            </div>
-
-            <div class="md:col-span-1 flex items-end justify-end">
-              <button class="h-9 w-9 flex items-center justify-center rounded border border-rose-500 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30" title="Remove row" data-rowremove="${i}">
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 8.586l3.536-3.536 1.414 1.414L11.414 10l3.536 3.536-1.414 1.414L10 11.414l-3.536 3.536-1.414-1.414L8.586 10 5.05 6.464l1.414-1.414L10 8.586z" clip-rule="evenodd"/></svg>
-              </button>
-            </div>
-          </div>
-        `;
-        batchRows.appendChild(el);
-      });
-
-      // listeners
-      batchRows.querySelectorAll('select[data-rowsel="site"]').forEach(sel => {
+      switchMapBody.querySelectorAll('select[data-rowsel="site"]').forEach(sel => {
         sel.addEventListener('change', async () => {
           const i = parseInt(sel.getAttribute('data-row'));
           const oldFirst = rows[0]?.site_id || '';
@@ -1137,7 +1156,7 @@
           }
         });
       });
-      batchRows.querySelectorAll('select[data-rowsel="device"]').forEach(sel => {
+      switchMapBody.querySelectorAll('select[data-rowsel="device"]').forEach(sel => {
         sel.addEventListener('change', () => {
           const i = parseInt(sel.getAttribute('data-row'));
           rows[i].device_id = sel.value;
@@ -1145,7 +1164,7 @@
           markPairDuplicateClass(i);
         });
       });
-      batchRows.querySelectorAll('input[data-rowsel="offset"]').forEach(inp => {
+      switchMapBody.querySelectorAll('input[data-rowsel="offset"]').forEach(inp => {
         inp.addEventListener('input', () => {
           const i = parseInt(inp.getAttribute('data-row'));
           const v = parseInt(inp.value || '0'); rows[i].member_offset = isNaN(v) ? 0 : Math.max(0, v);
@@ -1153,7 +1172,7 @@
           markPairDuplicateClass(i);
         });
       });
-      batchRows.querySelectorAll('input[data-rowsel="port"]').forEach(inp => {
+      switchMapBody.querySelectorAll('input[data-rowsel="port"]').forEach(inp => {
         inp.addEventListener('input', () => {
           const i = parseInt(inp.getAttribute('data-row'));
           const v = parseInt(inp.value || '0'); rows[i].port_offset = isNaN(v) ? 0 : Math.max(0, v);
@@ -1161,22 +1180,23 @@
           markPairDuplicateClass(i);
         });
       });
-      batchRows.querySelectorAll('input[data-rowsel="excludes"]').forEach(inp => {
+      switchMapBody.querySelectorAll('input[data-rowsel="excludes"]').forEach(inp => {
         inp.addEventListener('input', () => {
           const i = parseInt(inp.getAttribute('data-row'));
           rows[i].excludes = inp.value || '';
         });
       });
-      batchRows.querySelectorAll('input[data-rowsel="exclude_uplinks"]').forEach(inp => {
+      switchMapBody.querySelectorAll('input[data-rowsel="exclude_uplinks"]').forEach(inp => {
         inp.addEventListener('change', () => {
           const i = parseInt(inp.getAttribute('data-row'));
           rows[i].exclude_uplinks = inp.checked;
         });
       });
-      batchRows.querySelectorAll('button[data-rowremove]').forEach(btn => {
+      switchMapBody.querySelectorAll('button[data-rowremove]').forEach(btn => {
         btn.addEventListener('click', () => {
           const i = parseInt(btn.getAttribute('data-rowremove'));
           rows.splice(i, 1);
+          if (!rows.length) rows.push(makeDefaultRow(''));
           renderBatchRows();
           updatePairDuplicateWarning();
         });
@@ -1201,13 +1221,13 @@
 
     function updateSiteSelect(i){
       const row = rows[i];
-      const sel = batchRows.querySelector(`select[data-rowsel="site"][data-row="${i}"]`);
+      const sel = switchMapBody.querySelector(`select[data-rowsel="site"][data-row="${i}"]`);
       if (!sel) return;
       sel.innerHTML = siteOptionsHtml(row.site_id);
     }
     function updateDeviceSelect(i){
       const row = rows[i];
-      const sel = batchRows.querySelector(`select[data-rowsel="device"][data-row="${i}"]`);
+      const sel = switchMapBody.querySelector(`select[data-rowsel="device"][data-row="${i}"]`);
       if (!sel) return;
       if (!row.site_id) { sel.innerHTML = '<option value="">Select a site first</option>'; return; }
       sel.innerHTML = deviceOptionsHtml(row.site_id, row.device_id);
@@ -1252,9 +1272,9 @@
     }
     function markPairDuplicateClass(i){
       const row = rows[i];
-      const devSel = batchRows.querySelector(`select[data-rowsel="device"][data-row="${i}"]`);
-      const offInp = batchRows.querySelector(`input[data-rowsel="offset"][data-row="${i}"]`);
-      const portInp = batchRows.querySelector(`input[data-rowsel="port"][data-row="${i}"]`);
+      const devSel = switchMapBody.querySelector(`select[data-rowsel="device"][data-row="${i}"]`);
+      const offInp = switchMapBody.querySelector(`input[data-rowsel="offset"][data-row="${i}"]`);
+      const portInp = switchMapBody.querySelector(`input[data-rowsel="port"][data-row="${i}"]`);
       const dup = isPairDuplicate(row.device_id, row.member_offset, row.port_offset);
       [devSel, offInp, portInp].forEach(el => {
         if (!el) return;
@@ -1426,6 +1446,10 @@
             alert('Each row must have a Site and a Device selected.');
             return;
           }
+          if (!convertedItems[r.converted_idx ?? -1]?.json){
+            alert(`Missing converted config for source device "${r.source_host || 'unknown'}". Run SSH collection first.`);
+            return;
+          }
         }
       } else {
         const cleanupSiteId = (lcmCleanupSite?.value || '').trim();
@@ -1443,7 +1467,7 @@
       const payloadRows = lcmStep3Only ? [] : rows.map(r => ({
         site_id: r.site_id,
         device_id: r.device_id,
-        input_json: convertedItems[r.idx].json,
+        input_json: convertedItems[r.converted_idx ?? -1]?.json,
         excludes: r.excludes,
         exclude_uplinks: r.exclude_uplinks,
         member_offset: r.member_offset,
@@ -1532,7 +1556,8 @@
         return;
       }
       results.forEach((r, i) => {
-        const fileLabel = convertedItems[rows[r.row_index]?.idx || 0]?.source_file || `Row ${i+1}`;
+        const mappedIdx = rows[r.row_index]?.converted_idx ?? 0;
+        const fileLabel = convertedItems[mappedIdx]?.source_file || `Row ${i+1}`;
         const rowSiteId = rows[r.row_index]?.site_id || r.site_id || '';
         const deviceDisplay = formatDeviceLabel(r.device_id, r.device_name || getDeviceName(rowSiteId, r.device_id));
         const statusBadge = r.ok
@@ -1623,10 +1648,26 @@
       }
       syncPushBtnLabel();
     });
+    addMapRowBtn?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (!sitesCache.length) await fetchSites();
+      rows.push(makeDefaultRow(''));
+      const siteId = rows[rows.length - 1]?.site_id;
+      if (siteId) await fetchDevices(siteId);
+      renderBatchRows();
+    });
 
     // --- Init ---
     window.addEventListener('load', async () => {
+      rows = [makeDefaultRow('')];
       await fetchSites();
+      if (rows[0] && !rows[0].site_id && sitesCache[0]?.id){
+        rows[0].site_id = sitesCache[0].id;
+      }
+      if (rows[0]?.site_id){
+        await fetchDevices(rows[0].site_id);
+      }
+      renderBatchRows();
       syncPushBtnLabel();
       updateAutomationLocks();
       syncLegacyVlanExtras();
