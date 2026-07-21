@@ -62,3 +62,33 @@ def test_ensure_push_allowed_blocks_live_push(monkeypatch, app_module):
     assert exc.value.status_code == 403
     assert warnings
     assert "read_only_attempt" in warnings[0][0][0]
+
+
+def test_sanitize_base_url_rejects_untrusted_host(app_module):
+    with pytest.raises(ValueError):
+        app_module._sanitize_base_url("https://evil.example.com/api/v1")
+
+
+def test_api_sites_requires_auth(monkeypatch, app_module):
+    req = _dummy_request()
+
+    def _deny(_request):
+        raise app_module.HTTPException(status_code=401, detail="Auth required")
+
+    monkeypatch.setattr(app_module, "current_user", _deny)
+
+    with pytest.raises(app_module.HTTPException) as exc:
+        app_module.api_sites(req)
+
+    assert exc.value.status_code == 401
+
+
+def test_api_sites_uses_sanitized_base_url(monkeypatch, app_module):
+    req = _dummy_request()
+    monkeypatch.setattr(app_module, "current_user", lambda request: {"name": "alice", "can_push": False})
+    monkeypatch.setattr(app_module, "_list_sites", lambda base_url, headers, org_id=None: [{"id": "s1", "name": "site"}])
+
+    payload = app_module.api_sites(req, base_url="https://api.mist.com/api/v1/")
+
+    assert payload["ok"] is True
+    assert payload["items"][0]["id"] == "s1"
