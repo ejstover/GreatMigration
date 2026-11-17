@@ -89,7 +89,7 @@ def load_records(path: Path | None = None) -> list[dict[str, Any]]:
     except FileNotFoundError:
         return []
     except (OSError, ValueError, TypeError, KeyError) as exc:
-        raise ExceptionStoreError(f"Cannot read audit exceptions: {exc}") from exc
+        raise ExceptionStoreError("Cannot read audit exceptions; check server configuration") from exc
 
 
 @contextmanager
@@ -149,7 +149,7 @@ def locked_records():
         with _locked(EXCEPTIONS_PATH):
             yield load_records()
     except OSError as exc:
-        raise ExceptionStoreError(f"Cannot lock audit exceptions: {exc}") from exc
+        raise ExceptionStoreError("Cannot lock audit exceptions; check server configuration") from exc
 
 
 def approve(candidate: Mapping[str, Any], reason: str, actor: str, *, site_name: str = "",
@@ -178,7 +178,7 @@ def approve(candidate: Mapping[str, Any], reason: str, actor: str, *, site_name:
             _write(path, records)
             return record
     except OSError as exc:
-        raise ExceptionStoreError(f"Cannot save audit exception: {exc}") from exc
+        raise ExceptionStoreError("Cannot save audit exception; check server configuration") from exc
 
 
 def revoke(exception_id: str, actor: str, *, path: Path | None = None) -> dict[str, Any]:
@@ -194,4 +194,4 @@ def revoke(exception_id: str, actor: str, *, path: Path | None = None) -> dict[s
                 _write(path, records)
             return record
     except OSError as exc:
-        raise ExceptionStoreError(f"Cannot revoke audit exception: {exc}") from exc
+        raise ExceptionStoreError("Cannot revoke audit exception; check server configuration") from exc

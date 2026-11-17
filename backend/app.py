@@ -1465,7 +1465,7 @@ def _gather_site_contexts(
             errors.append(
                 {
                     "site_id": site_id,
-                    "error": str(exc),
+                    "error": _internal_error(exc),
                 }
             )
     return contexts, errors
@@ -2807,7 +2807,7 @@ async def api_convert(
         try:
             parsed_map = json.loads(show_vlan_map)
         except Exception as exc:
-            return JSONResponse({"ok": False, "error": f"Invalid show_vlan_map: {exc}"}, status_code=400)
+            return JSONResponse({"ok": False, "error": "Invalid show_vlan_map: expected valid JSON"}, status_code=400)
         if isinstance(parsed_map, dict):
             vlan_lookup = {str(k): str(v) for k, v in parsed_map.items() if v}
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -2830,7 +2830,7 @@ async def api_convert(
             try:
                 data = json.loads(out_path.read_text(encoding="utf-8"))
             except Exception as e:
-                return JSONResponse({"ok": False, "error": f"Failed to load JSON for {uf.filename}: {e}"}, status_code=400)
+                return JSONResponse({"ok": False, "error": "Failed to load converted JSON"}, status_code=400)
 
             show_vlan_text = vlan_lookup.get(uf.filename)
             if show_vlan_text:
@@ -2972,7 +2972,7 @@ def _build_payload_for_row(
         available_physical_ports, inventory_error = _get_switch_physical_ports_for_model_with_diagnostics(model)
     except Exception as exc:
         available_physical_ports = None
-        inventory_error = str(exc)
+        inventory_error = _internal_error(exc)
 
     if available_physical_ports is not None:
         dynamic_port_map: Dict[str, str] = {}
@@ -3241,7 +3241,7 @@ def _invoke_batch_phase(
                     "site_id": site_id,
                     "device_id": device_id,
                     "status": None,
-                    "message": str(exc),
+                    "message": _internal_error(exc),
                 }
             )
 
@@ -5109,7 +5109,7 @@ def _get_switch_physical_ports_for_model_with_diagnostics(model: Optional[str]) 
     try:
         index_map = _load_netbox_juniper_model_download_urls()
     except Exception as exc:
-        return None, f"unable to load NetBox Juniper index ({exc}) for model {model_key}"
+        return None, f"unable to load NetBox Juniper index ({_internal_error(exc)}) for model {model_key}"
 
     download_url = None
     for mk in model_keys:
@@ -5124,7 +5124,7 @@ def _get_switch_physical_ports_for_model_with_diagnostics(model: Optional[str]) 
     try:
         resp = requests.get(download_url, timeout=60)
     except Exception as exc:
-        return None, f"failed to fetch NetBox YAML for model {model_key} ({exc})"
+        return None, f"failed to fetch NetBox YAML for model {model_key} ({_internal_error(exc)})"
     if not (200 <= resp.status_code < 300):
         return None, f"failed to fetch NetBox YAML for model {model_key} (HTTP {resp.status_code})"
 
@@ -5956,11 +5956,11 @@ def _finalize_assignments_for_rows(
                     "response": exc.response,
                 }
             except Exception as exc:  # pragma: no cover - network failures reported to UI
-                errors.append((f"Unable to push temporary port config: {exc}", None))
+                errors.append((f"Unable to push temporary port config: {_internal_error(exc)}", None))
                 record.setdefault("device_results", {})[device_id] = {
                     "ok": False,
                     "status": None,
-                    "message": str(exc),
+                    "message": _internal_error(exc),
                 }
 
     for record in records:
@@ -6065,10 +6065,10 @@ def _remove_temporary_config_for_rows(
                         "site_id": site_id,
                         "device_ids": record.get("device_ids"),
                         "status": None,
-                        "message": f"Unable to load site settings for cleanup: {exc}",
+                        "message": f"Unable to load site settings for cleanup: {_internal_error(exc)}",
                     }
                 )
-                record.setdefault("_errors", []).append((str(exc), None))
+                record.setdefault("_errors", []).append((_internal_error(exc), None))
 
     cleanup_payloads: Dict[str, Dict[str, Any]] = {}
     preserved_usage_names_by_site: Dict[str, Set[str]] = {}
@@ -6148,7 +6148,7 @@ def _remove_temporary_config_for_rows(
         except MistAPIError as exc:
             derivation_warnings[key] = f"Unable to fetch device details for port profile conversion: {exc}"
         except Exception as exc:  # pragma: no cover - network/parse failures reported to UI
-            derivation_warnings[key] = f"Unable to derive port configuration from port profile usage: {exc}"
+            derivation_warnings[key] = f"Unable to derive port configuration from port profile usage: {_internal_error(exc)}"
 
     if dry_run:
         for row in ok_rows:
@@ -6222,10 +6222,10 @@ def _remove_temporary_config_for_rows(
                     "site_id": site_id,
                     "device_ids": record.get("device_ids"),
                     "status": None,
-                    "message": f"Unable to clear temporary site configuration: {exc}",
+                    "message": f"Unable to clear temporary site configuration: {_internal_error(exc)}",
                 }
             )
-            record.setdefault("_errors", []).append((str(exc), None))
+            record.setdefault("_errors", []).append((_internal_error(exc), None))
 
     for row in ok_rows:
         site_id = str(row.get("site_id") or "").strip()
@@ -6288,13 +6288,13 @@ def _remove_temporary_config_for_rows(
                     "site_id": site_id,
                     "device_id": device_id,
                     "status": None,
-                    "message": f"Unable to push converted config: {exc}",
+                    "message": f"Unable to push converted config: {_internal_error(exc)}",
                 }
             )
             record["device_result"] = {
                 "ok": False,
                 "status": None,
-                "message": str(exc),
+                "message": _internal_error(exc),
             }
 
     ok = successes == total and all(not rec.get("_errors") for rec in sites.values())
@@ -6335,7 +6335,7 @@ async def api_push(
     try:
         payload_in = json.loads(input_json)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": f"Invalid input_json: {e}"}, status_code=400)
+        return JSONResponse({"ok": False, "error": "Invalid input_json: expected valid JSON"}, status_code=400)
 
     _ensure_push_allowed(request, dry_run=dry_run)
     token = _load_mist_token()
@@ -6465,7 +6465,7 @@ async def api_push_batch(
         row_list = json.loads(rows)
         assert isinstance(row_list, list)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": f"Invalid 'rows' payload: {e}"}, status_code=400)
+        return JSONResponse({"ok": False, "error": "Invalid 'rows' payload: expected a JSON array"}, status_code=400)
 
     use_cleanup_targets = bool(remove_temp_config and cleanup_site_id and cleanup_device_ids)
     results: List[Dict[str, Any]] = []

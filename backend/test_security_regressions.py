@@ -187,6 +187,30 @@ def test_vlan_table_parser_handles_long_malformed_rows(web):
     assert app._parse_show_vlan_text(raw) == [{"id": 10, "name": "users"}]
 
 
+def test_nested_audit_errors_hide_internal_exception_details(web, monkeypatch):
+    app, _, _ = web
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("synthetic-private-infrastructure-detail")
+
+    monkeypatch.setattr(app, "_fetch_site_context", fail)
+    contexts, errors = app._gather_site_contexts("https://api.ac2.mist.com/api/v1", {}, ["site"])
+    assert contexts == []
+    assert errors == [{"site_id": "site", "error": "Internal operation failed; consult the server logs."}]
+
+
+def test_exception_store_failure_hides_private_filesystem_path(tmp_path, monkeypatch):
+    import audit_exceptions
+    target = tmp_path / "synthetic-private-customer-path"
+    target.write_text("invalid JSON")
+    monkeypatch.setattr(audit_exceptions, "EXCEPTIONS_PATH", target)
+    with pytest.raises(audit_exceptions.ExceptionStoreError) as error:
+        audit_exceptions.load_records()
+    assert "Cannot read audit exceptions" in str(error.value)
+    assert str(target) not in str(error.value)
+    assert error.value.__cause__ is not None
+
+
 def test_legacy_privileged_cookie_is_rejected(web):
     _, client, _ = web
     forged = TimestampSigner("change_me").sign(base64.b64encode(json.dumps({"user": {"name": "forged", "can_push": True}}).encode())).decode()
