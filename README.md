@@ -79,35 +79,51 @@ Use `python3` instead of `python3.11` only after confirming the selected version
 
 ### Quickstart scripts
 
-For an existing checkout, the Python helper supports Windows and Linux:
+Normal quickstart starts the installed app **without fetching code, installing packages, or running setup**. Use Python on Windows, Linux, or macOS, or the PowerShell wrapper on Windows:
 
-```powershell
-py -3.11 quickstart.py --dir . --no-start
+```text
+python quickstart.py                         # start the installed app
+python quickstart.py setup                   # first installation or setup repair
+python quickstart.py setup --no-start        # configure without launching
+python quickstart.py upgrade                 # explicit fast-forward upgrade
+python quickstart.py upgrade --no-start      # upgrade without restarting
+python quickstart.py status
+python quickstart.py stop
+python quickstart.py restart
+python quickstart.py autostart enable
+python quickstart.py autostart disable
+python quickstart.py autostart status
 ```
 
-```bash
-python3.11 quickstart.py --dir . --no-start
-```
+Use `py -3.11` on Windows or `python3.11` on Linux/macOS when needed. PowerShell uses the same command names: `.\quickstart.ps1 setup -NoStart`, `.\quickstart.ps1 upgrade`, and `.\quickstart.ps1 autostart enable`. Keep both root launchers together. The wrapper prefers the target's existing virtual-environment interpreter.
 
-Both helpers can clone/update a checkout, create `.venv`, install/upgrade dependencies, prompt for missing `backend/.env`, run credential migration, copy missing port rules from the sample, initialize an empty firmware cache, and create `tmp_ssh_jobs/` and `backend/logs/`. Existing environment/rule/cache files are retained. **Quickstart's first local account is push-enabled.** Use manual setup to begin read-only.
+Setup creates/repairs `.venv`, installs requirements, prompts for missing `backend/.env`, runs security migration, initializes missing local rules/cache/directories, and retains existing settings/accounts/data. Stop the app before setup; maintenance commands cannot overlap. **The initial quickstart local account remains push-enabled.** Use manual setup for an initial read-only account. Setup can clone a missing target, but never fetches or updates an existing installation. Noninteractive setup requires a configured environment file and accounts; it never waits for setup answers. For a new checkout:
+
+```text
+python quickstart.py setup --repo https://github.com/ejstover/GreatMigration.git --dir /path/to/GreatMigration --no-start
+```
 
 | Python option | PowerShell equivalent | Behavior |
 | --- | --- | --- |
-| `--repo URL` | `-RepoUrl URL` | Required when target is not a checkout; the helper must already be available locally. |
-| `--dir PATH` | `-TargetDir PATH` | Target checkout; default current directory. |
-| `--branch NAME` | `-Branch NAME` | Desired branch; default `main`. |
-| `--port NUMBER` | `-Port NUMBER` | Overrides `API_PORT` for this run; otherwise environment-file value or `8000`. |
-| `--no-start` | `-NoStart` | Setup without starting the server. |
+| `--dir PATH` | `-TargetDir PATH` | Target installation; default current directory. |
+| `--repo URL` | `-RepoUrl URL` | Source override for explicit setup/upgrade only. |
+| `--branch NAME` | `-Branch NAME` | Branch override for explicit setup/upgrade only. |
+| `--port NUMBER` | `-Port NUMBER` | Foreground launch override; otherwise `API_PORT` or `8000`. |
+| `--no-start` | `-NoStart` | Suppress setup launch or upgrade restart. Alone, remains an alias for `setup --no-start`. |
+| `setup --autostart` | `setup -Autostart` | Enable boot startup without the setup yes/no question. |
+| `setup --no-autostart` | `setup -NoAutostart` | Disable boot startup and stop the managed instance. |
 
-Without setup-only mode, the helpers start Uvicorn in the foreground. Python uses `APP_HOST` from its loaded environment, defaulting to `127.0.0.1`; PowerShell binds to `127.0.0.1`. Stop with Ctrl+C. For later starts, use the manual Uvicorn command above, including `--env-file`.
+#### Start automatically after reboot
 
-**Current limitations and alternatives:**
+Interactive setup asks **Start GreatMigration automatically when this computer boots? [y/N]**. The default is no; an existing registration is preserved unless explicitly changed. Enable/disable it later with the `autostart` commands. Enabling registers startup without immediately launching; `start` launches now. Disabling stops the managed instance and removes its registration.
 
-- Quickstart is also an updater: a clean checkout on the requested branch is fetched and pulled with rebase. Tracked changes skip switching/updating, but setup/dependency installation still proceed. Untracked files are not part of that guard. Review/back up your checkout first; use controlled upgrades below for deliberate changes.
-- After switching from another clean branch, the helpers retain the old branch name in memory, so that invocation can switch without pulling updates. Switch/update explicitly before setup when a current revision is required.
-- PowerShell resolves `TargetDir` before creating it and can fail on empty Git status output. Use Python or manual setup if it fails; manual Windows setup is the reliable starting point. The intended invocation from an existing checkout is `.\quickstart.ps1 -TargetDir . -NoStart`.
-- LDAP quickstart writes sample directory settings. Use setup-only mode, replace every placeholder, and review groups/CA settings before startup; see [LDAP configuration](#ldap-configuration).
-- Firmware installation only initializes an empty cache. A Standards/audit workflow must request a refresh and receive eligible Mist data to populate it.
+Windows uses a startup scheduled task; Linux requires a running systemd service manager; macOS uses a LaunchDaemon. Services run under the installing user's account, before sign-in, with absolute interpreter/checkout paths and a fixed project-root working directory. Only OS registration/control uses administrator privileges. Windows registration prompts for the **Windows account password**, not the application password or Windows Hello PIN; account policy must permit batch logon. Its password is handled by the native credential prompt/Task Scheduler, never saved in application files or arguments. Linux/macOS use `sudo` for registration/control. Unsupported environments retain foreground startup.
+
+Once registered, normal `start` uses the service and returns its URL/log location. Otherwise it stays in the foreground; Ctrl+C stops it. `stop`/`restart` control only the installed service. Services and foreground launches honor `APP_HOST`, load environment settings before application imports, use one worker, and prevent duplicate quickstart instances. Managed launches use `API_PORT`; edit the file and restart rather than supplying a conflicting one-time `--port`.
+
+Use a stable local installation directory accessible to the service account. Moving a checkout changes its service identifier: disable startup before moving, then enable it at the new location. Avoid a login-mounted/encrypted-only location for pre-sign-in hosting. Service startup output is appended to `backend/logs/quickstart-service.log`; OS service-manager logs can also explain registration/bootstrap errors. Restart attempts have delays and limits; inspect logs and run `start` after correcting a repeated failure. Rotate/archive service logs as part of normal maintenance.
+
+Firmware setup only creates an empty cache; Standards/audit workflows populate it. For LDAP, use setup-only mode, replace directory/group placeholders, and review CA settings before launch. Reboot service installation is covered by mocked definition/lifecycle tests; native boot smoke tests are a separate release check described in [quickstart validation](docs/quickstart-validation.md).
 
 ## Configuration reference
 
@@ -124,7 +140,9 @@ Restart after environment changes. The documented Uvicorn `--env-file backend/.e
 | `SESSION_HTTPS_ONLY` | `true` | Secure cookies and HTTPS enforcement. Set exactly `false` only for HTTP with both host and client on loopback. |
 | `APP_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` | Comma-separated exact hostnames/IPs without scheme/port; set public names for shared hosting. |
 | `API_PORT` | Quickstart fallback `8000` | Quickstart only. Direct Uvicorn starts require `--port`. |
-| `APP_HOST` | Python quickstart fallback `127.0.0.1` | Python helper bind address; direct Uvicorn uses `--host`, PowerShell always uses loopback. |
+| `APP_HOST` | Quickstart fallback `127.0.0.1` | Bind address for both launchers and installed services; direct Uvicorn uses `--host`. |
+| `QUICKSTART_REPO_URL` | `https://github.com/ejstover/GreatMigration.git` | Source for explicit clone/upgrade; set to your fork as needed. |
+| `QUICKSTART_BRANCH` | `main` | Branch for explicit clone/upgrade. |
 | `MIST_TOKEN` | Required for Mist workflows | Server-side token; account permissions do not grant token privileges. |
 | `MIST_BASE_URL` | `https://api.ac2.mist.com` | Regional HTTPS API origin; optional `/api/v1` suffix is normalized. |
 | `MIST_ALLOWED_HOSTS` | Empty | Additional exact approved API hostnames, comma-separated; configured Mist host and AC2 are already allowed. |
@@ -333,17 +351,21 @@ Provide DNS resolution. Mirrors/custom URLs may need more destinations. Browser 
 
 ### Start, stop, and restart
 
-Start from the root with the manual command or a service manager; stop the foreground server with Ctrl+C. For managed deployment, explicitly configure working directory, virtual-environment Python, environment file, bind/trusted proxy, restart, and logging. No service installer is included.
+Start from the root with `python quickstart.py` or the manual command; stop the foreground server with Ctrl+C. With reboot startup installed, use `python quickstart.py stop`, `restart`, and `status`. The installer sets working directory, virtual-environment Python, environment loading, and restart/logging behavior. Configure shared HTTPS hosting and trusted proxy settings separately.
 
 Restart after environment/direct policy edits. SSH execution and baseline-job tracking are process-local: use a **single Uvicorn worker**, keep baseline polling active until saved, and avoid restarting during collection. Temporary jobs do not resume after restart; retry interrupted collections.
 
 ### Controlled upgrades
 
-1. Finish SSH jobs, stop the app, and record `git rev-parse HEAD`. Take the backup below.
-2. Inspect `git status --short` and preserve/review tracked/untracked work. Review incoming changes and explicitly select the intended branch. With a clean checkout, update using `git switch main` and `git pull --ff-only origin main`. Resolve divergence deliberately.
-3. Using the environment's Python, install `python -m pip install -r backend/requirements.txt`. Recreate the environment when changing Python versions.
-4. Compare `.env.sample` with `backend/.env`, adopting needed settings without overwriting policy/secrets. Run `python backend/security_setup.py` before restart.
-5. Start, sign in, and verify site lookup, Standards, conversion preview, and passive audit before live actions.
+1. Finish SSH/baseline jobs and take the backup below. Upgrades interrupt a managed running instance; unfinished process-local jobs do not resume.
+2. Preserve/review all tracked and nonignored untracked work. Set `QUICKSTART_REPO_URL` and `QUICKSTART_BRANCH` in `backend/.env` for your intended upstream/fork. Defaults are `ejstover/GreatMigration` and `main`. A command-line `--repo`/`--branch` overrides only that invocation. Precedence is CLI, environment file, inherited process environment, built-in defaults.
+3. Run `python quickstart.py upgrade`. Fetch and ancestry checks happen before stopping anything; the source, branch, current revision, and intended revision are displayed. The command requires a clean checkout and a fast-forward from both the current checkout and any existing requested local branch. It never changes `origin`, stashes, resets, rebases, or forces history. Stop foreground/manual instances yourself first.
+4. The command stops an OS-managed instance, updates the checkout, continues through the updated launcher, installs requirements, and runs security migration. Only a previously running service is restarted; `--no-start` leaves it stopped. An initially stopped app stays stopped. Selected revisions must support this launcher's upgrade protocol; otherwise use the manual procedure below.
+5. Compare `.env.sample` with `backend/.env`, adopting new settings without overwriting policy/secrets. Start if needed, sign in, and verify site lookup, Standards, conversion preview, and passive audit before live actions.
+
+The recovery journal is `backend/data/quickstart/upgrade.json`, with revisions, stage, and outcome. A failure after stopping leaves the service stopped; code, packages, and data are not rolled back automatically. Resolve the reported stage and review the deployed revision, then run `setup --no-start` and `start`. For Python-version changes, recreate the virtual environment deliberately. Keep backups outside the checkout.
+
+For manual upgrades or old revisions without the quickstart protocol: stop the app, record `git rev-parse HEAD`, back up, review work, explicitly select the intended branch, and use `git pull --ff-only origin main` (substitute your source/branch). Install `backend/requirements.txt` with the environment's Python, compare environment settings, run `backend/security_setup.py`, then start and verify. Resolve divergence manually.
 
 Setup replaces weak keys, migrates legacy inline accounts to salted hashes, clears inline credentials, and scrubs old HTTP payload copies from logs while preserving event metadata. It retains Mist token/unrelated settings. A changed key invalidates existing cookies; rerunning with a valid key does not revoke every session. Use `--revoke-sessions` when required.
 
@@ -399,7 +421,7 @@ Restored evidence with old modification times can be cleaned immediately; set an
 | `Invalid CSRF token` | Reload/sign in again; preserve public origin through proxy. |
 | `413`, `429`, concurrency/job-limit error | Reduce upload size/rate or wait for jobs; review app/proxy limits before changing settings. |
 | Missing syslog after manual start | Use `--env-file backend/.env` before module initialization; check UDP routing/local logs. |
-| Quickstart failure or stale checkout | Use manual setup/controlled upgrades; see [limitations](#quickstart-scripts) and [review report](docs/readme-review.md#remaining-code-and-setup-defects). |
+| Quickstart failure or stale checkout | Run `setup --no-start` for missing installation prerequisites; use explicit `upgrade` for newer code. Check the upgrade recovery journal and service log; see [quickstart](#quickstart-scripts). |
 
 ## Development verification
 
@@ -413,8 +435,8 @@ python -m playwright install chromium
 Linux browser testing may need system dependencies; CI uses `python -m playwright install --with-deps chromium`. Run:
 
 ```text
-python -m pytest backend -q
-python -m ruff check backend quickstart.py tests --select E9,F63,F7,F82
+python -m pytest backend tests -q
+python -m ruff check backend quickstart.py scripts tests --select E9,F63,F7,F82
 python -m pip_audit -r backend/requirements.txt
 python -m pip_audit -r backend/requirements-dev.txt
 python -m pip check
