@@ -255,14 +255,14 @@ def post_login(request: Request, username: str = Form(...), password: str = Form
         except Exception:
             client_host = request.client.host if request.client else "-"
             action_logger.warning("ldap_login_failed user=%s client=%s reason=bind_failed", username, client_host)
-            return HTMLResponse(_html_login("Invalid username or password."), status_code=401)
+            return _login_response(request, "Invalid username or password.", 401)
 
         # 2) Find user entry (with groups)
         entry = _search_user(user_conn, username)
         if not entry:
             client_host = request.client.host if request.client else "-"
             action_logger.warning("ldap_login_failed user=%s client=%s reason=user_not_found", username, client_host)
-            return HTMLResponse(_html_login("User not found in directory."), status_code=401)
+            return _login_response(request, "Invalid username or password.", 401)
 
         # 3) If we need recursive group check, bind service (or reuse user bind if permitted)
         try:
@@ -299,10 +299,7 @@ def post_login(request: Request, username: str = Form(...), password: str = Form
                 username,
                 client_host,
             )
-            return HTMLResponse(
-                _html_login("Your account is not authorized for Mist pushes."),
-                status_code=403,
-            )
+            return _login_response(request, "Your account is not authorized for Mist pushes.", 403)
 
         # 4) Store session
         read_only_flag = not can_push

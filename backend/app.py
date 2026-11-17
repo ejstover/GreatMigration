@@ -421,16 +421,13 @@ def _parse_show_vlan_text(raw: Any) -> List[Dict[str, Any]]:
             continue
         if line.strip().lower().startswith("vlan type"):
             break
-        m = re.match(r"\s*(\d+)\s+([^\s]+)", line)
-        if not m:
+        fields = line.split(None, 2)
+        if len(fields) < 2 or not re.fullmatch(r"[0-9]{1,4}", fields[0]):
             continue
-        try:
-            vid = int(m.group(1))
-        except Exception:
-            continue
+        vid = int(fields[0])
         if vid in {1002, 1003, 1004, 1005}:
             continue
-        name = m.group(2).strip() or str(vid)
+        name = fields[1]
         entries.append({"id": vid, "name": name})
 
     return entries
@@ -576,6 +573,12 @@ else:
 action_logger = get_user_logger()
 
 SNAPSHOT_BASELINE_JOBS: Dict[str, Dict[str, Any]] = {}
+
+
+def _internal_error(exc: Exception) -> str:
+    # Exception messages can contain credentials, local paths, or upstream bodies.
+    action_logger.error("action=operation_failed error_type=%s", type(exc).__name__)
+    return "Internal operation failed; consult the server logs."
 
 
 def _request_user_label(request: Request) -> str:
@@ -1462,7 +1465,7 @@ def _gather_site_contexts(
             errors.append(
                 {
                     "site_id": site_id,
-                    "error": str(exc),
+                    "error": _internal_error(exc),
                 }
             )
     return contexts, errors
@@ -1478,7 +1481,7 @@ def api_get_rules():
         data = json.loads(rules_path.read_text(encoding="utf-8"))
         return {"ok": True, "doc": data}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.post("/api/rules")
@@ -1494,7 +1497,7 @@ def api_save_rules(request: Request, doc: Dict[str, Any] = Body(...)):
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.get("/api/replacements")
@@ -1567,7 +1570,7 @@ def api_save_replacements(request: Request, doc: Dict[str, Any] = Body(...)):
         REPLACEMENTS_PATH.write_text(json.dumps(cleaned_doc, indent=2), encoding="utf-8")
         return {"ok": True}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.post("/api/ssh/jobs")
@@ -1592,7 +1595,7 @@ def api_start_ssh_job(payload: SSHJobRequest):
     except HTTPException:
         raise
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.get("/api/ssh/jobs/{job_id}")
@@ -1618,7 +1621,7 @@ def api_save_conversion_set(request: Request, payload: ConversionSetRequest):
         )
         return {"ok": True, "item": summary}
     except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(exc)}, status_code=500)
 
 
 @app.get("/api/conversion-sets/{project_key}")
@@ -1683,7 +1686,7 @@ def api_start_network_state_baseline_job(request: Request, payload: BaselineCapt
     except HTTPException:
         raise
     except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(exc)}, status_code=500)
 
 
 @app.get("/api/network-state/baselines/jobs/{job_id}")
@@ -1807,7 +1810,7 @@ def api_compare_network_state(request: Request, payload: MistComparisonRequest):
         nss.update_project_index(project_key, summary)
         return {"ok": True, "run": compare_run, "summary": summary}
     except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(exc)}, status_code=500)
 
 
 @app.post("/api/showtech")
@@ -1842,7 +1845,7 @@ async def api_showtech(files: List[UploadFile] = File(...)):
             )
         return {"ok": True, "results": results}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 def _safe_project_filename_fragment(value: str, max_length: int = 64) -> str:
@@ -2053,6 +2056,8 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
 
 @app.get("/api/device_types")
 def api_device_types(vendor: str):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", vendor):
+        raise HTTPException(status_code=400, detail="Vendor must be a single library directory name")
     try:
         r = requests.get(f"{NETBOX_DT_URL}/{vendor}", timeout=30)
         r.raise_for_status()
@@ -2070,7 +2075,7 @@ def api_device_types(vendor: str):
         items.sort(key=lambda x: x.lower())
         return {"ok": True, "items": items}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.post("/api/device_types")
@@ -2101,7 +2106,7 @@ def api_add_device_type(request: Request, data: Dict[str, str] = Body(...)):
 
         return {"ok": True, "items": models}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.get("/api/sites")
@@ -2128,7 +2133,7 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
             err_payload = str(exc)
         return JSONResponse({"ok": False, "error": err_payload}, status_code=status)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.get("/api/site_devices")
@@ -2163,7 +2168,7 @@ def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
         try:
             err_payload = r.json()  # type: ignore[name-defined]
         except Exception:
-            err_payload = {"error": str(e)}
+            err_payload = {"error": "Unable to retrieve Mist device data."}
         return JSONResponse({"ok": False, "error": err_payload}, status_code=getattr(r, "status_code", 502))  # type: ignore[name-defined]
 
 
@@ -2581,7 +2586,7 @@ def api_audit_run(
             _request_user_label(request),
             exc,
         )
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(exc)}, status_code=500)
 
 
 @app.get("/api/audit/exceptions")
@@ -2802,7 +2807,7 @@ async def api_convert(
         try:
             parsed_map = json.loads(show_vlan_map)
         except Exception as exc:
-            return JSONResponse({"ok": False, "error": f"Invalid show_vlan_map: {exc}"}, status_code=400)
+            return JSONResponse({"ok": False, "error": "Invalid show_vlan_map: expected valid JSON"}, status_code=400)
         if isinstance(parsed_map, dict):
             vlan_lookup = {str(k): str(v) for k, v in parsed_map.items() if v}
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -2825,7 +2830,7 @@ async def api_convert(
             try:
                 data = json.loads(out_path.read_text(encoding="utf-8"))
             except Exception as e:
-                return JSONResponse({"ok": False, "error": f"Failed to load JSON for {uf.filename}: {e}"}, status_code=400)
+                return JSONResponse({"ok": False, "error": "Failed to load converted JSON"}, status_code=400)
 
             show_vlan_text = vlan_lookup.get(uf.filename)
             if show_vlan_text:
@@ -2967,7 +2972,7 @@ def _build_payload_for_row(
         available_physical_ports, inventory_error = _get_switch_physical_ports_for_model_with_diagnostics(model)
     except Exception as exc:
         available_physical_ports = None
-        inventory_error = str(exc)
+        inventory_error = _internal_error(exc)
 
     if available_physical_ports is not None:
         dynamic_port_map: Dict[str, str] = {}
@@ -3236,7 +3241,7 @@ def _invoke_batch_phase(
                     "site_id": site_id,
                     "device_id": device_id,
                     "status": None,
-                    "message": str(exc),
+                    "message": _internal_error(exc),
                 }
             )
 
@@ -5104,7 +5109,7 @@ def _get_switch_physical_ports_for_model_with_diagnostics(model: Optional[str]) 
     try:
         index_map = _load_netbox_juniper_model_download_urls()
     except Exception as exc:
-        return None, f"unable to load NetBox Juniper index ({exc}) for model {model_key}"
+        return None, f"unable to load NetBox Juniper index ({_internal_error(exc)}) for model {model_key}"
 
     download_url = None
     for mk in model_keys:
@@ -5119,7 +5124,7 @@ def _get_switch_physical_ports_for_model_with_diagnostics(model: Optional[str]) 
     try:
         resp = requests.get(download_url, timeout=60)
     except Exception as exc:
-        return None, f"failed to fetch NetBox YAML for model {model_key} ({exc})"
+        return None, f"failed to fetch NetBox YAML for model {model_key} ({_internal_error(exc)})"
     if not (200 <= resp.status_code < 300):
         return None, f"failed to fetch NetBox YAML for model {model_key} (HTTP {resp.status_code})"
 
@@ -5951,11 +5956,11 @@ def _finalize_assignments_for_rows(
                     "response": exc.response,
                 }
             except Exception as exc:  # pragma: no cover - network failures reported to UI
-                errors.append((f"Unable to push temporary port config: {exc}", None))
+                errors.append((f"Unable to push temporary port config: {_internal_error(exc)}", None))
                 record.setdefault("device_results", {})[device_id] = {
                     "ok": False,
                     "status": None,
-                    "message": str(exc),
+                    "message": _internal_error(exc),
                 }
 
     for record in records:
@@ -6060,10 +6065,10 @@ def _remove_temporary_config_for_rows(
                         "site_id": site_id,
                         "device_ids": record.get("device_ids"),
                         "status": None,
-                        "message": f"Unable to load site settings for cleanup: {exc}",
+                        "message": f"Unable to load site settings for cleanup: {_internal_error(exc)}",
                     }
                 )
-                record.setdefault("_errors", []).append((str(exc), None))
+                record.setdefault("_errors", []).append((_internal_error(exc), None))
 
     cleanup_payloads: Dict[str, Dict[str, Any]] = {}
     preserved_usage_names_by_site: Dict[str, Set[str]] = {}
@@ -6143,7 +6148,7 @@ def _remove_temporary_config_for_rows(
         except MistAPIError as exc:
             derivation_warnings[key] = f"Unable to fetch device details for port profile conversion: {exc}"
         except Exception as exc:  # pragma: no cover - network/parse failures reported to UI
-            derivation_warnings[key] = f"Unable to derive port configuration from port profile usage: {exc}"
+            derivation_warnings[key] = f"Unable to derive port configuration from port profile usage: {_internal_error(exc)}"
 
     if dry_run:
         for row in ok_rows:
@@ -6217,10 +6222,10 @@ def _remove_temporary_config_for_rows(
                     "site_id": site_id,
                     "device_ids": record.get("device_ids"),
                     "status": None,
-                    "message": f"Unable to clear temporary site configuration: {exc}",
+                    "message": f"Unable to clear temporary site configuration: {_internal_error(exc)}",
                 }
             )
-            record.setdefault("_errors", []).append((str(exc), None))
+            record.setdefault("_errors", []).append((_internal_error(exc), None))
 
     for row in ok_rows:
         site_id = str(row.get("site_id") or "").strip()
@@ -6283,13 +6288,13 @@ def _remove_temporary_config_for_rows(
                     "site_id": site_id,
                     "device_id": device_id,
                     "status": None,
-                    "message": f"Unable to push converted config: {exc}",
+                    "message": f"Unable to push converted config: {_internal_error(exc)}",
                 }
             )
             record["device_result"] = {
                 "ok": False,
                 "status": None,
-                "message": str(exc),
+                "message": _internal_error(exc),
             }
 
     ok = successes == total and all(not rec.get("_errors") for rec in sites.values())
@@ -6330,7 +6335,7 @@ async def api_push(
     try:
         payload_in = json.loads(input_json)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": f"Invalid input_json: {e}"}, status_code=400)
+        return JSONResponse({"ok": False, "error": "Invalid input_json: expected valid JSON"}, status_code=400)
 
     _ensure_push_allowed(request, dry_run=dry_run)
     token = _load_mist_token()
@@ -6349,7 +6354,7 @@ async def api_push(
     except PortConfigError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": f"Server error: {e}"}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.post("/api/push_batch")
@@ -6460,7 +6465,7 @@ async def api_push_batch(
         row_list = json.loads(rows)
         assert isinstance(row_list, list)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": f"Invalid 'rows' payload: {e}"}, status_code=400)
+        return JSONResponse({"ok": False, "error": "Invalid 'rows' payload: expected a JSON array"}, status_code=400)
 
     use_cleanup_targets = bool(remove_temp_config and cleanup_site_id and cleanup_device_ids)
     results: List[Dict[str, Any]] = []
@@ -6562,7 +6567,7 @@ async def api_push_batch(
             except PortConfigError as e:
                 results.append({"ok": False, "row_index": i, "error": str(e)})
             except Exception as e:
-                results.append({"ok": False, "row_index": i, "error": f"Server error: {e}"})
+                results.append({"ok": False, "row_index": i, "error": _internal_error(e)})
 
     phase_status: Dict[str, Dict[str, Any]] = {}
 

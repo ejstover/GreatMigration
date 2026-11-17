@@ -1,8 +1,7 @@
-"""Helpers to log outbound HTTP calls and payloads."""
+"""Log outbound HTTP metadata without recording payloads or credentials."""
 from __future__ import annotations
 
-import json
-from typing import Any, Mapping, Optional
+from typing import Any
 
 import requests
 from urllib.parse import urlsplit
@@ -16,23 +15,8 @@ _INSTALLED = False
 _ORIGINAL_SESSION_REQUEST = requests.sessions.Session.request
 
 
-def _format_payload(payload: Any) -> str:
-    try:
-        return json.dumps(payload, ensure_ascii=False, default=str)
-    except Exception:
-        return repr(payload)
-
-
-def _extract_sent_payload(kwargs: Mapping[str, Any]) -> Optional[Any]:
-    if "json" in kwargs:
-        return kwargs.get("json")
-    if "data" in kwargs:
-        return kwargs.get("data")
-    return None
-
-
 def install_http_logging() -> None:
-    """Install a requests hook that logs method/endpoint and key payloads."""
+    """Install a requests hook that logs method, hostname, and status only."""
     global _INSTALLED
     if _INSTALLED:
         return
