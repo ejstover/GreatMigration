@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "scripts": {
+    "build:css": "node scripts/build-css.mjs"
+  },
+  "devDependencies": {
+    "@tailwindcss/node": "4.3.5",
+    "@tailwindcss/oxide": "4.3.5",
+    "sortablejs": "1.15.6",
+    "tailwindcss": "4.3.5"
+  }
+}

@@ -24,5 +24,18 @@ backend/replacement_rules.json
 # Local standard firmware versions
 backend/standard_fw_versions.json
 
+# Installation-local audit approvals
+backend/exceptions.json
+backend/exceptions.json.lock
+backend/.exceptions-*.tmp
+
 # Temp SSH jobs
 tmp_ssh_jobs/
+
+# Installation-local network evidence, credentials, sessions, and test artifacts
+backend/data/
+backend/.env.secure-tmp
+.pytest_tmp/
+startup_debug.txt
+security-test-results/
+node_modules/

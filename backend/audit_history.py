@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import re
+import json
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional
 
@@ -132,7 +133,7 @@ def load_site_history(
         try:
             with path.open("r", encoding="utf-8") as handle:
                 for line in handle:
-                    if AUDIT_MARKER not in line:
+                    if AUDIT_MARKER not in line and "event=audit_run audit_data=" not in line:
                         continue
                     ts_match = LOG_TS_RE.match(line)
                     if not ts_match:
@@ -144,27 +145,23 @@ def load_site_history(
                     if timestamp < cutoff:
                         continue
 
-                    issue_idx = line.find("site_issue_breakdown=")
-                    if issue_idx == -1:
-                        continue
-                    device_idx = line.find(" site_device_breakdown=")
-                    if device_idx == -1:
-                        issues_raw = line[issue_idx + len("site_issue_breakdown=") :].strip()
-                        devices_raw = ""
+                    message = line.split(" | ", 2)[-1]
+                    if message.startswith("event="):
+                        if not message.startswith("event=audit_run audit_data="):
+                            continue
+                        try:
+                            data, _ = json.JSONDecoder().raw_decode(message[len("event=audit_run audit_data="):])
+                            issue_map = data["issues"]
+                            device_map = data["devices"]
+                            if any(not isinstance(mapping, dict) or any(not isinstance(k, str) or type(v) is not int or v < 0
+                                    for k, v in mapping.items()) for mapping in (issue_map, device_map)):
+                                continue
+                        except (ValueError, KeyError, TypeError):
+                            continue
                     else:
-                        issues_raw = line[
-                            issue_idx + len("site_issue_breakdown=") : device_idx
-                        ].strip()
-                        devices_raw = line[
-                            device_idx + len(" site_device_breakdown=") :
-                        ].strip()
-
-                    # Remove trailing context that may follow the device breakdown (e.g., newline).
-                    devices_raw = devices_raw.strip()
-                    issues_raw = issues_raw.strip()
-
-                    issue_map = _parse_breakdown(issues_raw)
-                    device_map = _parse_breakdown(devices_raw)
+                        issue_map, device_map = _legacy_maps(line)
+                        if issue_map is None:
+                            continue
 
                     all_names = set(issue_map.keys()) | set(device_map.keys())
                     for name in all_names:
@@ -175,22 +172,27 @@ def load_site_history(
                         issues = issue_map.get(name, 0)
                         stats.issues_total += issues
                         stats.devices_total += device_map.get(name, 0)
-                        stats.runs.append(
-                            SiteHistoryRun(
-                                timestamp=timestamp,
-                                issues=issues,
-                                devices=device_map.get(name, 0),
-                            )
-                        )
-                        stats.last_audit_at = (
-                            timestamp
-                            if stats.last_audit_at is None or timestamp > stats.last_audit_at
-                            else stats.last_audit_at
-                        )
+                        stats.runs.append(SiteHistoryRun(timestamp=timestamp, issues=issues, devices=device_map.get(name, 0)))
+                        if stats.last_audit_at is None or timestamp > stats.last_audit_at:
+                            stats.last_audit_at = timestamp
         except FileNotFoundError:
             continue
 
     for stats in history.values():
         stats.run_count = len(stats.runs or [])
-
     return history
+
+
+def _legacy_maps(line):
+    """Retain historical entries; new records use an unambiguous structured prefix."""
+    issue_idx = line.find("site_issue_breakdown=")
+    if issue_idx == -1:
+        return None, None
+    device_idx = line.find(" site_device_breakdown=")
+    if device_idx == -1:
+        issues_raw = line[issue_idx + len("site_issue_breakdown="):].strip()
+        devices_raw = ""
+    else:
+        issues_raw = line[issue_idx + len("site_issue_breakdown="):device_idx].strip()
+        devices_raw = line[device_idx + len(" site_device_breakdown="):].strip()
+    return _parse_breakdown(issues_raw), _parse_breakdown(devices_raw)

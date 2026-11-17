@@ -1,24 +1,32 @@
 """Local authentication routes."""
 import os
 import secrets
+import json
+import hashlib
+import hmac
+from html import escape
+from pathlib import Path
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
-from starlette.middleware.sessions import SessionMiddleware
+from session_store import SessionMiddleware
+from security import session_secret, verify_password, csrf_token, BACKEND_DIR
 
 from logging_utils import get_user_logger
 
-SESSION_SECRET = os.getenv("SESSION_SECRET")
-if not SESSION_SECRET:
-    SESSION_SECRET = secrets.token_urlsafe(32)
-SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", "false").strip().lower() in {"1", "true", "yes", "on"}
+SESSION_SECRET = session_secret()
+SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", "true").strip().lower() in {"1", "true", "yes", "on"}
 # LOCAL_USERS format: "user1:pass1,user2:pass2"
 README_URL = "https://github.com/jacob-hopkins/GreatMigration#readme"
 HELP_URL = os.getenv("HELP_URL", README_URL)
 
 
 def _load_users() -> Dict[str, str]:
+    path = os.getenv("LOCAL_USERS_FILE", "").strip()
+    if path:
+        doc = json.loads((BACKEND_DIR / path).read_text(encoding="utf-8"))
+        return {name: item["password_hash"] for name, item in doc.items()}
     raw = os.getenv("LOCAL_USERS", "")
     users: Dict[str, str] = {}
     for pair in raw.split(","):
@@ -29,6 +37,10 @@ def _load_users() -> Dict[str, str]:
 
 
 def _load_push_users() -> set[str]:
+    path = os.getenv("LOCAL_USERS_FILE", "").strip()
+    if path:
+        doc = json.loads((BACKEND_DIR / path).read_text(encoding="utf-8"))
+        return {name for name, item in doc.items() if item.get("can_push")}
     return {x.strip() for x in os.getenv("LOCAL_PUSH_USERS", "").split(",") if x.strip()}
 
 
@@ -40,7 +52,7 @@ action_logger = get_user_logger()
 
 
 def _html_login(error: Optional[str] = None) -> str:
-    msg = f'<p class="text-sm text-rose-600 dark:text-rose-400 mt-2">{error}</p>' if error else ''
+    msg = f'<p class="text-sm text-rose-600 dark:text-rose-400 mt-2">{escape(error)}</p>' if error else ''
     return f"""
 <!doctype html>
 <html>
@@ -48,28 +60,28 @@ def _html_login(error: Optional[str] = None) -> str:
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Sign in</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>tailwind.config = {{ darkMode: 'media' }};</script>
+    <link rel="stylesheet" href="/static/app.css" />
   </head>
   <body class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100" style="background-image: url('/static/logo.png'); background-position: center; background-repeat: no-repeat; background-size: 1500px;">
-    <a href="{HELP_URL}" target="_blank" rel="noopener" class="fixed top-4 right-4 text-white/80 hover:text-white" aria-label="Help">
+    <a href="{escape(HELP_URL, quote=True)}" target="_blank" rel="noopener" class="fixed top-4 right-4 text-white/80 hover:text-white" aria-label="Help">
       <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM10 5a3 3 0 00-3 3 .75.75 0 101.5 0A1.5 1.5 0 0110 6.5a1.5 1.5 0 011.5 1.5c0 .401-.08.558-.494.969-.458.451-1.168 1.15-1.168 2.531h1.5c0-.822.447-1.2.903-1.642.571-.56 1.009-1.078 1.009-1.858A3 3 0 0010 5zm0 8a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/></svg>
     </a>
     <div class="min-h-screen flex items-center justify-center p-6">
-      <div class="w-full max-w-md bg-white dark:bg-slate-800 rounded-2xl shadow p-6">
+      <div class="w-full max-w-md bg-white dark:bg-slate-800 rounded-2xl shadow-sm p-6">
         <h1 class="text-xl font-semibold">Sign in</h1>
         <p class="text-sm text-slate-600 dark:text-slate-300">Use your local account</p>
         {msg}
         <form method="post" action="/login" class="mt-4 space-y-3">
+          <input type="hidden" name="csrf_token" value="{{{{CSRF_TOKEN}}}}" />
           <div>
             <label class="block text-sm font-medium mb-1">Username</label>
-            <input name="username" autocomplete="username" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" required />
+            <input name="username" autocomplete="username" class="w-full border rounded-sm p-2 dark:bg-slate-900 dark:border-slate-700" required />
           </div>
           <div>
             <label class="block text-sm font-medium mb-1">Password</label>
-            <input name="password" type="password" autocomplete="current-password" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" required />
+            <input name="password" type="password" autocomplete="current-password" class="w-full border rounded-sm p-2 dark:bg-slate-900 dark:border-slate-700" required />
           </div>
-          <button class="w-full mt-2 px-3 py-2 rounded text-white bg-emerald-600 hover:bg-emerald-700">Sign in</button>
+          <button class="w-full mt-2 px-3 py-2 rounded-sm text-white bg-emerald-600 hover:bg-emerald-700">Sign in</button>
         </form>
       </div>
     </div>
@@ -78,30 +90,41 @@ def _html_login(error: Optional[str] = None) -> str:
 """
 
 
+def _login_response(request, error=None, status_code=200):
+    html = _html_login(error).replace("{{CSRF_TOKEN}}", csrf_token(request)).replace("{{CSP_NONCE}}", request.scope.get("state", {}).get("csp_nonce", ""))
+    return HTMLResponse(html, status_code=status_code)
+
+
 @router.get("/login", response_class=HTMLResponse)
-def get_login():
-    return HTMLResponse(_html_login())
+def get_login(request: Request):
+    return _login_response(request)
 
 
 @router.post("/login")
 def post_login(request: Request, username: str = Form(...), password: str = Form(...)):
-    if USERS.get(username) != password:
+    users = _load_users()
+    push_users = _load_push_users()
+    if not verify_password(password, users.get(username, "")):
         client_host = request.client.host if request.client else "-"
         action_logger.warning("local_login_failed user=%s client=%s", username, client_host)
-        return HTMLResponse(_html_login("Invalid username or password."), status_code=401)
+        return _login_response(request, "Invalid username or password.", 401)
 
+    request.session.clear()
+    request.session["login_nonce"] = secrets.token_urlsafe(24)
     request.session["user"] = {
         "name": username,
         "email": "",
-        "can_push": username in _PUSH_USERS,
-        "read_only": username not in _PUSH_USERS,
+        "can_push": username in push_users,
+        "read_only": username not in push_users,
     }
+    request.session["auth_version"] = hashlib.sha256((users[username] + str(username in push_users)).encode()).hexdigest()
+    csrf_token(request)
     client_host = request.client.host if request.client else "-"
     action_logger.info("local_login_success user=%s client=%s", username, client_host)
     return RedirectResponse("/", status_code=302)
 
 
-@router.get("/logout")
+@router.post("/logout")
 def logout(request: Request):
     user = request.session.get("user", {})
     client_host = request.client.host if request.client else "-"
@@ -114,9 +137,18 @@ def logout(request: Request):
 # ----- Dependencies -----
 
 def current_user(request: Request) -> Dict[str, Any]:
+    cached = getattr(request, "scope", {}).get("state", {}).get("authenticated_user")
+    if cached:
+        return cached
     u = request.session.get("user")
     if not u:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Auth required")
+    users = _load_users()
+    name = u.get("name")
+    expected = hashlib.sha256((users.get(name, "") + str(name in _load_push_users())).encode()).hexdigest()
+    if name not in users or not hmac.compare_digest(request.session.get("auth_version", ""), expected):
+        request.session.clear()
+        raise HTTPException(status_code=401, detail="Session revoked; sign in again")
     return u
 
 
@@ -141,5 +173,5 @@ def me(user=Depends(current_user)):
 
 def install_auth(app):
     """Enable session auth routes."""
-    app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", https_only=SESSION_HTTPS_ONLY)
+    app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", https_only=SESSION_HTTPS_ONLY, max_age=3600)
     app.include_router(router)

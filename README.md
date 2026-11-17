@@ -133,7 +133,7 @@ Standards gives you a live firmware baseline view so operators can see what vers
 - The backend builds a normalized matrix from `standard_fw_versions.json`.
 - **First-Run Behavior**: If `standard_fw_versions.json` is missing or empty, the backend automatically triggers a refresh from Mist to populate it.
 - Firmware standards data is refreshed periodically (every 90 days by default) or can be manually triggered if the cache is stale.
-- When Standard 1 changes, the automation syncs the org switch **auto-upgrade custom version** target for onboarding/zero-touch provisioning workflows; this does **not** retroactively upgrade switches that are already connected and managed.
+- Push-enabled users can explicitly apply Standard 1 to the organization onboarding policy from the Standards page. Viewing or refreshing standards does not change Mist configuration.
 
 **Safety notes**
 
@@ -207,9 +207,20 @@ Compliance Audit checks deployed Mist state against your operational standards.
 - `audit_actions.py` defines available actions.
 - `audit_fixes.py` executes each action with prerequisite checks and API operations.
 
+**Configuration exceptions**
+
+- Push-enabled users can select **Add to exceptions** beside a configuration deviation and record why that local variance is approved. Bundled differences can be approved one field at a time.
+- Approvals are stored locally in `backend/exceptions.json` (ignored by Git), with the approved value, relevant standard, scope, reason, approver, and timestamp. Back up this file alongside your other local policy files.
+- Each audit checks current Mist state first, then matches saved approvals. A changed value, relevant standard, organization, site, or device becomes actionable again. Display-name and unrelated telemetry changes do not invalidate an approval.
+- **Approved exceptions** appear separately in the audit and its print/PDF export, excluded from actionable issue totals. Read-only users can view them.
+- Open the **Exceptions** register before or after an audit to filter saved approvals by organization and selected sites. Push-enabled users can revoke them; revoked records remain available for traceability. Approvals have no expiry and can match again if their exact value and standard return, until revoked.
+- Audit fixes recheck current approvals on the server, skipping protected targets or fields. Unavailable configuration or an unreadable exception store prevents affected fixes from proceeding safely. Saving or revoking an exception does not change Mist configuration.
+- Exceptions cover configuration overrides, template alignment, naming, site variables, firmware, cloud management, spare-switch presence, and virtual-chassis roles. Health, service-level, and documentation findings remain actionable.
+- A missing exception file means no approvals. A malformed or unreadable file is reported visibly and suppresses no findings; it is never silently replaced.
+
 **Safety notes**
 
-- Audit runs are read-only.
+- Audit runs are passive by default. Push-enabled users may explicitly opt into active cable diagnostics.
 - 1 Click Fix actions are explicit, per-action operations and remain permission-gated.
 - Preconditions are checked before actions are enabled or executed.
 
@@ -270,7 +281,7 @@ GreatMigration uses automation to simplify your first-run setup. Your local conf
 ### Prerequisites
 
 - Git
-- Python 3.9+ (`python3-venv` on Linux/macOS)
+- Python 3.11+ (`python3-venv` on Linux/macOS)
 - Mist API token (read for discovery; write for push/fix workflows)
 - Optional: PowerShell 5.1+ / 7.x for Windows quickstart
 
@@ -341,15 +352,19 @@ If you prefer to configure the tool manually:
    - `HELP_URL`: Link to your internal runbook or documentation.
 
    **Local Auth Settings (`AUTH_METHOD=local`):**
-   - `LOCAL_USERS`: Format `user1:pass1,user2:password2`.
-   - `LOCAL_PUSH_USERS`: Comma-separated list of users who can perform "Push" actions.
+   - `LOCAL_USERS_FILE`: Hash-only account database, normally `data/local_users.json`.
+   - Run `python backend/security_setup.py --add-user USERNAME --push` to create a push-enabled account; omit `--push` for read-only access.
 
    **LDAP Settings (`AUTH_METHOD=ldap`):**
-   - `LDAP_SERVER_URL`: Your directory server.
+   - `LDAP_SERVER_URL`: Your validating `ldaps://` directory server.
+   - `LDAP_SERVICE_DN` and `LDAP_SERVICE_PASSWORD`: Required for session authorization checks.
+   - `LDAP_CA_CERTS_FILE`: Optional corporate CA bundle.
    - `LDAP_SEARCH_BASE`: Root DN for searches.
    - `PUSH_GROUP_DN`: Members of this group can perform "Push" actions.
 
 3. **Initialize Local Configuration**
+   Run `python backend/security_setup.py` to generate a secure signing key and migrate legacy local credentials.
+
    The application requires these files to be present in the `backend/` directory:
    - `port_rules.json`: Define your interface-to-usage mapping (see `port_rules.sample.json`).
    - `standard_fw_versions.json`: Stores your firmware baseline (initialized automatically on first run).
@@ -357,12 +372,12 @@ If you prefer to configure the tool manually:
 
 4. **Run the app**
    ```bash
-   uvicorn app:app --host 0.0.0.0 --port 8000 --app-dir backend --reload
+   uvicorn app:app --host 127.0.0.1 --port 8000 --app-dir backend
    ```
 
 ### First-run checklist
 
-1. Open `http://localhost:8000`.
+1. For loopback-only HTTP development, set `SESSION_HTTPS_ONLY=false` and open `http://localhost:8000`. Shared deployments require HTTPS and an explicit `APP_ALLOWED_HOSTS` setting.
 2. Confirm authentication works with your chosen auth method.
 3. Validate read-only user behavior first.
 4. Run non-destructive workflows (hardware parse, stage/test, compliance audit).
@@ -406,10 +421,10 @@ If you prefer to configure the tool manually:
 
 ### Authentication and roles
 
-- `AUTH_METHOD=local` uses `LOCAL_USERS` (`username:password` list).
+- `AUTH_METHOD=local` uses the scrypt-hashed account database in `LOCAL_USERS_FILE`. Legacy plaintext entries are migrated by the setup utility.
 - `AUTH_METHOD=ldap` uses LDAP bind/search plus group DNs.
-- Push rights come from `PUSH_GROUP_DN` (LDAP) or `LOCAL_PUSH_USERS` (local).
-- `SESSION_HTTPS_ONLY` defaults to `false` for HTTP compatibility; set it to `true` in production.
+- Push rights come from `PUSH_GROUP_DN` (LDAP) or each local account's `can_push` field.
+- Shared deployments require HTTPS; keep `SESSION_HTTPS_ONLY=true`. See [security deployment and verification](SECURITY_REMEDIATION.md) for certificate, SSH trust, retention, migration, and test instructions.
 
 ### Mist connectivity
 

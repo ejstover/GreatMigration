@@ -150,6 +150,7 @@ def test_api_standards_table_filters_rows_to_production_models(monkeypatch, tmp_
         lambda base_url, headers, path, optional=False: {"results": [{"model": "AP32", "count": 4}]},
     )
 
+    monkeypatch.setattr(app, "_refresh_firmware_standards_if_needed", lambda path: {})
     data = app.api_standards_table()
 
     assert data["ok"] is True

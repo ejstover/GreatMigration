@@ -14,14 +14,18 @@ from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 from time import perf_counter
 import copy
+import threading
+from contextlib import asynccontextmanager
 
 import requests
 
 from http_logging import install_http_logging
 from fastapi import FastAPI, UploadFile, File, Form, Request, Body, HTTPException
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
+from security import SecurityMiddleware, csrf_token, mist_base_url, record_path
+from html import escape
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 from logging_utils import get_user_logger
@@ -52,6 +56,8 @@ from translate_showtech import (
     load_mapping,
     find_copper_10g_ports,
 )  # type: ignore
+import conversion_sets as csets
+import network_state_snapshots as nss
 import ssh_collect
 from fpdf import FPDF
 from compliance import (
@@ -63,6 +69,7 @@ from compliance import (
 from audit_fixes import execute_audit_action
 from audit_actions import AP_RENAME_ACTION_ID
 from audit_history import load_site_history
+import audit_exceptions as aexceptions
 install_http_logging()
 
 
@@ -83,6 +90,8 @@ def _expand_vlan_id_set(raw: Any, *, base: Optional[Iterable[int]] = None) -> Se
             m = re.match(r"^(\d+)\s*-\s*(\d+)$", item)
             if m:
                 start, end = int(m.group(1)), int(m.group(2))
+                if not (1 <= start <= 4094 and 1 <= end <= 4094):
+                    raise ValueError("VLAN IDs must be between 1 and 4094")
                 lo, hi = (start, end) if start <= end else (end, start)
                 vlan_ids.update(range(lo, hi + 1))
                 continue
@@ -90,7 +99,7 @@ def _expand_vlan_id_set(raw: Any, *, base: Optional[Iterable[int]] = None) -> Se
             val = int(item)
         except (TypeError, ValueError):
             continue
-        if val >= 0:
+        if 1 <= val <= 4094:
             vlan_ids.add(val)
     return vlan_ids
 
@@ -112,7 +121,7 @@ def _format_vlan_id_set(vlans: Iterable[int]) -> str:
 
 
 APP_TITLE = "Switch Port Config Frontend"
-DEFAULT_BASE_URL = "https://api.ac2.mist.com/api/v1"  # adjust region if needed
+DEFAULT_BASE_URL = mist_base_url(os.getenv("MIST_BASE_URL", "https://api.ac2.mist.com"))
 DEFAULT_TZ = "America/New_York"
 DEFAULT_LEGACY_VLAN_IDS: Set[int] = {10} | set(range(500, 600))
 LEGACY_VLAN_IDS: Set[int] = _expand_vlan_id_set(os.getenv("LEGACY_VLANS"), base=DEFAULT_LEGACY_VLAN_IDS)
@@ -175,9 +184,14 @@ PAGE_COPY: dict[str, dict[str, str]] = {
         "title": "Standards",
         "tagline": "Review model-specific firmware standards across recent revisions",
     },
+    "network_snapshot": {
+        "title": "Network Snapshot",
+        "tagline": "Load saved conversion sets, capture pre-migration baselines, and compare current Mist MAC state",
+        "menu_label": "Network Snapshot",
+    },
 }
 
-NAV_LINK_KEYS = ("hardware", "replacements", "config", "rules", "standards", "audit")
+NAV_LINK_KEYS = ("hardware", "replacements", "config", "network_snapshot", "rules", "standards", "audit")
 
 
 class SSHDeviceModel(BaseModel):
@@ -233,6 +247,112 @@ class SSHJobRequest(BaseModel):
         return value
 
 
+class SnapshotRowModel(BaseModel):
+    source_file: str
+    site_id: str
+    device_id: str
+    input_json: Dict[str, Any]
+    member_offset: int = Field(default=0, ge=0)
+    port_offset: int = Field(default=0, ge=0)
+    model_override: Optional[str] = None
+
+    @field_validator("source_file", "site_id", "device_id")
+    @classmethod
+    def _validate_nonempty_field(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("field is required")
+        return cleaned
+
+
+class ConversionSetRequest(BaseModel):
+    project_name: str
+    rows: List[SnapshotRowModel]
+    label: Optional[str] = None
+
+    @field_validator("project_name")
+    @classmethod
+    def _validate_conversion_project_name(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("project_name is required")
+        return cleaned
+
+    @field_validator("rows")
+    @classmethod
+    def _validate_conversion_rows(cls, value: List[SnapshotRowModel]) -> List[SnapshotRowModel]:
+        if not value:
+            raise ValueError("rows must not be empty")
+        return value
+
+
+class BaselineCaptureRequest(BaseModel):
+    project_name: str
+    username: str
+    password: SecretStr
+    devices: List[SSHDeviceModel]
+    rows: List[SnapshotRowModel] = Field(default_factory=list)
+    conversion_set_id: Optional[str] = None
+    base_url: str = DEFAULT_BASE_URL
+    delay_factor: float = Field(default=1.0, ge=0.1, le=10.0)
+    read_timeout: int = Field(default=90, ge=15, le=600)
+    max_workers: int = Field(default=4, ge=1, le=16)
+
+    @field_validator("project_name", "username")
+    @classmethod
+    def _validate_nonempty_text(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("value is required")
+        return cleaned
+
+    @field_validator("devices")
+    @classmethod
+    def _validate_capture_devices(cls, value: List[SSHDeviceModel]) -> List[SSHDeviceModel]:
+        if len(value) > 64:
+            raise ValueError("a maximum of 64 devices can be processed at once")
+        if not value:
+            raise ValueError("devices must not be empty")
+        return value
+
+    @field_validator("rows")
+    @classmethod
+    def _validate_rows(cls, value: List[SnapshotRowModel]) -> List[SnapshotRowModel]:
+        return value
+
+    @model_validator(mode="after")
+    def _validate_rows_or_conversion_set(self):
+        if not self.rows and not str(self.conversion_set_id or "").strip():
+            raise ValueError("rows or conversion_set_id is required")
+        return self
+
+
+    @field_validator("base_url")
+    @classmethod
+    def _trusted_destination(cls, value: str) -> str:
+        return mist_base_url(value)
+
+
+class MistComparisonRequest(BaseModel):
+    project_name: str
+    baseline_run_id: Optional[str] = None
+    base_url: str = DEFAULT_BASE_URL
+
+    @field_validator("project_name")
+    @classmethod
+    def _validate_project_name(cls, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("project_name is required")
+        return cleaned
+
+
+    @field_validator("base_url")
+    @classmethod
+    def _trusted_destination(cls, value: str) -> str:
+        return mist_base_url(value)
+
+
 class TimingEvent(BaseModel):
     event: str = Field(..., min_length=1, max_length=64)
     duration_ms: float = Field(..., ge=0)
@@ -253,7 +373,7 @@ def _page_label(key: str) -> str:
     return data.get("menu_label") or data.get("title") or ""
 
 
-def _render_page(template_name: str, page_key: str) -> HTMLResponse:
+def _render_page(template_name: str, page_key: str, request: Request) -> HTMLResponse:
     tpl_path = TEMPLATES_DIR / template_name
     html = tpl_path.read_text(encoding="utf-8")
     page_data = PAGE_COPY.get(page_key, {})
@@ -268,7 +388,9 @@ def _render_page(template_name: str, page_key: str) -> HTMLResponse:
     tagline = page_data.get("tagline", "")
 
     replacements = {
-        "{{HELP_URL}}": HELP_URL,
+        "{{HELP_URL}}": escape(HELP_URL, quote=True),
+        "{{CSP_NONCE}}": request.scope.get("state", {}).get("csp_nonce", ""),
+        "{{CSRF_TOKEN}}": csrf_token(request),
         "{{DOC_TITLE}}": doc_title,
         "{{BANNER_TITLE}}": banner_title,
         "{{BANNER_TAGLINE}}": tagline,
@@ -355,15 +477,34 @@ def _show_vlan_lookup_keys(filename: str) -> List[str]:
     return list(keys)
 
 
-app = FastAPI(title=APP_TITLE)
+@asynccontextmanager
+async def lifespan(app):
+    from maintenance import maintain
+    stop = threading.Event()
+    def periodic():
+        while not stop.is_set():
+            try:
+                maintain(data_root=getattr(app.state, "evidence_root", None))
+            except Exception:
+                get_user_logger().exception("Artifact maintenance failed")
+            stop.wait(60)
+    thread = threading.Thread(target=periodic, daemon=True, name="artifact-maintenance")
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=2)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+app = FastAPI(title=APP_TITLE, lifespan=lifespan)
+
+
+@app.exception_handler(ValueError)
+async def invalid_input(request: Request, exc: ValueError):
+    return JSONResponse({"detail": str(exc)}, status_code=400)
+
+app.add_middleware(SecurityMiddleware, authenticate=lambda request: current_user(request))
 
 # Mount /static only if folder exists
 static_path = Path(__file__).resolve().parent.parent / "static"
@@ -402,11 +543,10 @@ elif AUTH_METHOD == "local":
     require_push_rights = _auth.require_push_rights  # type: ignore[attr-defined]
 else:
     def current_user(request: Request | None = None):  # type: ignore[override]
-        """Fallback auth stub when AUTH_METHOD is unset."""
-        return {"name": "anon", "can_push": True, "read_only": False}
+        raise HTTPException(status_code=503, detail="Authentication is not configured")
 
-    def require_push_rights(user=current_user()):  # type: ignore[override]
-        return user
+    def require_push_rights(user=None):  # type: ignore[override]
+        return current_user()
 
     @app.middleware("http")
     async def _auth_missing(request: Request, call_next):
@@ -435,7 +575,7 @@ else:
 
 action_logger = get_user_logger()
 
-AUDIT_RUNNER: SiteAuditRunner = build_default_runner()
+SNAPSHOT_BASELINE_JOBS: Dict[str, Dict[str, Any]] = {}
 
 
 def _request_user_label(request: Request) -> str:
@@ -475,8 +615,7 @@ async def _log_user_actions(request: Request, call_next):
     user_label = _request_user_label(request)
     client_host = request.client.host if request.client else "-"
     path = request.url.path
-    query = request.url.query
-    query_suffix = f"?{query}" if query else ""
+    query_suffix = ""
 
     try:
         response = await call_next(request)
@@ -524,33 +663,38 @@ async def api_log_timing(request: Request, payload: TimingEvent):
         user_label,
         client_host,
         payload.duration_ms,
-        metadata_json,
+        json.dumps(sorted(metadata.keys())),
     )
     return {"ok": True}
 
 @app.get("/", response_class=HTMLResponse)
-def index():
-    return _render_page("index.html", "config")
+def index(request: Request):
+    return _render_page("index.html", "config", request)
+
+
+@app.get("/network-snapshot", response_class=HTMLResponse)
+def network_snapshot_page(request: Request):
+    return _render_page("network_snapshot.html", "network_snapshot", request)
 
 
 @app.get("/audit", response_class=HTMLResponse)
-def audit_page():
-    return _render_page("audit.html", "audit")
+def audit_page(request: Request):
+    return _render_page("audit.html", "audit", request)
 
 
 @app.get("/rules", response_class=HTMLResponse)
-def rules_page():
-    return _render_page("rules.html", "rules")
+def rules_page(request: Request):
+    return _render_page("rules.html", "rules", request)
 
 
 @app.get("/replacements", response_class=HTMLResponse)
-def replacements_page():
-    return _render_page("hardwarereplacementrules.html", "replacements")
+def replacements_page(request: Request):
+    return _render_page("hardwarereplacementrules.html", "replacements", request)
 
 
 @app.get("/hardware", response_class=HTMLResponse)
-def hardware_page():
-    return _render_page("hardware.html", "hardware")
+def hardware_page(request: Request):
+    return _render_page("hardware.html", "hardware", request)
 
 
 def _firmware_standards_path() -> Path:
@@ -646,8 +790,8 @@ def _fetch_production_models(base_url: str, headers: Dict[str, str], org_id: str
 
 
 @app.get("/standards", response_class=HTMLResponse)
-def standards_page():
-    return _render_page("standards.html", "standards")
+def standards_page(request: Request):
+    return _render_page("standards.html", "standards", request)
 
 
 @app.get("/api/standards")
@@ -668,6 +812,17 @@ def api_standards_table():
         if isinstance(row, Mapping) and isinstance(row.get("model"), str) and row["model"].strip().lower() in production_models
     ]
     return {"ok": True, "table": table}
+
+
+@app.post("/api/standards/sync")
+def api_sync_standards(request: Request):
+    _ensure_push_allowed(request, dry_run=False)
+    from compliance import _sync_switch_auto_upgrade_custom_versions, _load_firmware_standards_doc
+    _refresh_firmware_standards_if_needed(_firmware_standards_path())
+    succeeded = _sync_switch_auto_upgrade_custom_versions(_load_firmware_standards_doc(_firmware_standards_path()))
+    if not succeeded:
+        raise HTTPException(status_code=502, detail="Organization onboarding policy could not be synchronized; check the configured organization and standards")
+    return {"ok": True}
 
 
 def _load_mist_token() -> str:
@@ -1035,13 +1190,18 @@ def _fetch_site_virtual_chassis_documents(
 
 
 def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) -> SiteContext:
+    unavailable_device_ids: Set[str] = set()
+    unavailable_sources: Set[str] = set()
     raw_site = _mist_get_json(base_url, headers, f"/sites/{site_id}")
     site_doc = raw_site if isinstance(raw_site, dict) else {}
     site_name = _site_display_name(site_doc, fallback=site_id)
     setting_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/setting", optional=True)
     if not isinstance(setting_doc, dict):
+        unavailable_sources.add("setting")
         setting_doc = {}
     templates_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/networktemplates", optional=True)
+    if not isinstance(templates_doc, list):
+        unavailable_sources.add("templates")
     template_list = [t for t in templates_doc or [] if isinstance(t, dict)] if isinstance(templates_doc, list) else []
 
     base_devices_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/devices", optional=True)
@@ -1051,6 +1211,8 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
         f"/sites/{site_id}/devices?type=switch",
         optional=True,
     )
+    if not isinstance(base_devices_doc, list) or not isinstance(switch_devices_doc, list):
+        unavailable_sources.add("devices")
 
     switch_stats_doc = _mist_get_json(
         base_url,
@@ -1062,6 +1224,12 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
         base_url,
         headers,
         f"/sites/{site_id}/stats/devices?type=ap&limit=1000",
+        optional=True,
+    )
+    wired_clients_doc = _mist_get_json(
+        base_url,
+        headers,
+        f"/sites/{site_id}/wired_clients/search?limit=1000",
         optional=True,
     )
 
@@ -1172,6 +1340,8 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
             detailed = None
         if isinstance(detailed, dict):
             detailed_doc = detailed
+        else:
+            unavailable_device_ids.add(device_id)
         merged: Dict[str, Any] = dict(device)
         if detailed_doc:
             merged.update({k: v for k, v in detailed_doc.items() if k not in {"id", "site_id"} or v is not None})
@@ -1196,6 +1366,8 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
         extra_device = dict(stats_doc)
         if not extra_device.get("id") and isinstance(extra_device.get("device_id"), str):
             extra_device.setdefault("id", extra_device["device_id"])
+        if extra_device.get("id"):
+            unavailable_device_ids.add(str(extra_device["id"]))
         device_list.append(extra_device)
     candidate_org_ids = _collect_candidate_org_ids(site_doc, setting_doc, template_list, device_list)
 
@@ -1208,6 +1380,15 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
             filtered_devices.append(device)
 
     device_list = filtered_devices
+    wired_clients: List[Dict[str, Any]] = []
+    if isinstance(wired_clients_doc, list):
+        wired_clients = [item for item in wired_clients_doc if isinstance(item, dict)]
+    elif isinstance(wired_clients_doc, dict):
+        for key in ("results", "items", "data", "clients"):
+            container = wired_clients_doc.get(key)
+            if isinstance(container, list):
+                wired_clients = [item for item in container if isinstance(item, dict)]
+                break
     vc_documents = _fetch_site_virtual_chassis_documents(base_url, headers, site_id, device_list)
 
     if SWITCH_TEMPLATE_ID:
@@ -1242,7 +1423,12 @@ def _fetch_site_context(base_url: str, headers: Dict[str, str], site_id: str) ->
         setting=setting_doc,
         templates=template_list,
         devices=device_list,
+        wired_clients=wired_clients,
         vc_documents=vc_documents,
+        mist_base_url=base_url,
+        mist_headers=dict(headers),
+        unavailable_device_ids=unavailable_device_ids,
+        unavailable_sources=unavailable_sources,
     )
 
 
@@ -1298,9 +1484,9 @@ def api_get_rules():
 @app.post("/api/rules")
 def api_save_rules(request: Request, doc: Dict[str, Any] = Body(...)):
     """Persist rule document and refresh in memory."""
+    _ensure_push_allowed(request, dry_run=False)
     try:
         # Ensure the request is from an authenticated user
-        current_user(request)
         pm.validate_rules_doc(doc)
         RULES_LOCAL_PATH.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         pm.RULES_DOC = pm.load_rules()
@@ -1346,8 +1532,8 @@ def api_get_replacements():
 
 @app.post("/api/replacements")
 def api_save_replacements(request: Request, doc: Dict[str, Any] = Body(...)):
+    _ensure_push_allowed(request, dry_run=False)
     try:
-        current_user(request)
         payload = doc if isinstance(doc, dict) else {}
 
         cleaned_rules: List[Dict[str, str]] = []
@@ -1403,6 +1589,8 @@ def api_start_ssh_job(payload: SSHJobRequest):
             max_workers=max_workers,
         )
         return {"ok": True, "job_id": job.id}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
@@ -1416,8 +1604,216 @@ def api_get_ssh_job(job_id: str):
     return {"ok": True, "job": job.to_dict()}
 
 
+@app.post("/api/conversion-sets")
+def api_save_conversion_set(request: Request, payload: ConversionSetRequest):
+    try:
+        current_user(request)
+        summary = csets.save_conversion_set(
+            payload.project_name,
+            {
+                "label": payload.label or f"{payload.project_name} mapped targets",
+                "rows": [row.model_dump() for row in payload.rows],
+                "saved_by": _request_user_label(request),
+            },
+        )
+        return {"ok": True, "item": summary}
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.get("/api/conversion-sets/{project_key}")
+def api_list_conversion_sets(project_key: str):
+    return {"ok": True, "items": csets.list_conversion_sets(project_key)}
+
+
+@app.get("/api/conversion-sets/{project_key}/{conversion_set_id}")
+def api_get_conversion_set(project_key: str, conversion_set_id: str):
+    record = csets.load_conversion_set(project_key, conversion_set_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="conversion set not found")
+    return {"ok": True, "item": record}
+
+
+@app.post("/api/network-state/baselines/jobs")
+def api_start_network_state_baseline_job(request: Request, payload: BaselineCaptureRequest):
+    try:
+        current_user(request)
+        project_key = nss.sanitize_project_key(payload.project_name)
+        rows_payload: List[Dict[str, Any]] = [row.model_dump() for row in payload.rows]
+        conversion_set_meta: Optional[Dict[str, Any]] = None
+        if payload.conversion_set_id:
+            conversion_doc = csets.load_conversion_set(project_key, str(payload.conversion_set_id))
+            if not conversion_doc:
+                return JSONResponse({"ok": False, "error": "Conversion set not found."}, status_code=404)
+            rows_payload = [
+                dict(row)
+                for row in (conversion_doc.get("rows") if isinstance(conversion_doc.get("rows"), list) else [])
+                if isinstance(row, Mapping)
+            ]
+            conversion_set_meta = {
+                "conversion_set_id": conversion_doc.get("conversion_set_id"),
+                "label": conversion_doc.get("label"),
+                "created_at": conversion_doc.get("created_at"),
+            }
+        if not rows_payload:
+            return JSONResponse({"ok": False, "error": "No row mappings available for baseline capture."}, status_code=400)
+
+        password_bytes = bytearray(payload.password.get_secret_value(), "utf-8")
+        devices = [ssh_collect.DeviceInput(host=item.host, label=item.label) for item in payload.devices]
+        max_workers = max(1, min(payload.max_workers, len(devices)))
+        job = ssh_collect.start_job(
+            devices=devices,
+            username=payload.username,
+            password_bytes=password_bytes,
+            delay_factor=payload.delay_factor,
+            read_timeout=payload.read_timeout,
+            max_workers=max_workers,
+            command_profile="network_snapshot",
+        )
+        SNAPSHOT_BASELINE_JOBS[job.id] = {
+            "project_name": payload.project_name,
+            "project_key": project_key,
+            "operator": _request_user_label(request),
+            "rows": rows_payload,
+            "base_url": payload.base_url.rstrip("/"),
+            "saved_run_id": None,
+            "conversion_set": conversion_set_meta,
+        }
+        return {"ok": True, "job_id": job.id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.get("/api/network-state/baselines/jobs/{job_id}")
+def api_get_network_state_baseline_job(job_id: str):
+    ssh_collect.cleanup_old_jobs()
+    job = ssh_collect.get_job(job_id)
+    meta = SNAPSHOT_BASELINE_JOBS.get(job_id)
+    if not job or not meta:
+        raise HTTPException(status_code=404, detail="job not found")
+
+    saved_run_id = meta.get("saved_run_id")
+    baseline_summary = None
+    if job.status == "complete" and not saved_run_id:
+        token = _load_mist_token()
+        rows = [SnapshotRowModel(**row) for row in meta.get("rows", []) if isinstance(row, Mapping)]
+        port_mappings: List[Dict[str, Any]] = []
+        for row in rows:
+            port_mappings.extend(
+                _derive_snapshot_port_mappings_for_row(
+                    base_url=str(meta.get("base_url") or DEFAULT_BASE_URL),
+                    token=token,
+                    row=row,
+                )
+            )
+
+        job_results = []
+        for result in job.results:
+            job_results.append(
+                {
+                    "host": result.host,
+                    "label": result.label,
+                    "status": result.status,
+                    "error": result.error,
+                    "error_info": result.error_info,
+                    "running_config": result.running_config,
+                    "command_outputs": dict(result.command_outputs),
+                }
+            )
+
+        baseline_run = nss.build_baseline_run(
+            project_name=str(meta.get("project_name") or ""),
+            operator=str(meta.get("operator") or "anonymous"),
+            job_id=job_id,
+            devices=job_results,
+            port_mappings=port_mappings,
+        )
+        if isinstance(meta.get("conversion_set"), Mapping):
+            baseline_run["conversion_set"] = dict(meta["conversion_set"])
+        nss.save_run(str(meta.get("project_key") or ""), baseline_run)
+        baseline_summary = nss.build_baseline_summary(baseline_run)
+        nss.update_project_index(str(meta.get("project_key") or ""), baseline_summary)
+        meta["saved_run_id"] = baseline_run["run_id"]
+        saved_run_id = baseline_run["run_id"]
+    elif saved_run_id:
+        run = nss.load_run(str(meta.get("project_key") or ""), str(saved_run_id))
+        if run:
+            baseline_summary = nss.build_baseline_summary(run)
+
+    response = {"ok": True, "job": job.to_dict(), "run_saved": bool(saved_run_id), "baseline": baseline_summary}
+    return response
+
+
+@app.get("/api/network-state/history/{project_key}")
+def api_network_state_history(project_key: str):
+    return {"ok": True, "history": nss.load_project_history(project_key)}
+
+
+@app.get("/api/network-state/runs/{project_key}/{run_id}")
+def api_network_state_run(project_key: str, run_id: str):
+    run = nss.load_run(project_key, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    return {"ok": True, "run": run}
+
+
+@app.post("/api/network-state/compare")
+def api_compare_network_state(request: Request, payload: MistComparisonRequest):
+    try:
+        current_user(request)
+        project_key = nss.sanitize_project_key(payload.project_name)
+        history = nss.load_project_history(project_key)
+        runs = history.get("runs") if isinstance(history.get("runs"), list) else []
+        baseline_run_id = payload.baseline_run_id
+        if not baseline_run_id:
+            for item in runs:
+                if isinstance(item, Mapping) and str(item.get("run_type") or "") == "baseline":
+                    baseline_run_id = str(item.get("run_id") or "")
+                    break
+        if not baseline_run_id:
+            return JSONResponse({"ok": False, "error": "No baseline run found for this project."}, status_code=400)
+
+        baseline_run = nss.load_run(project_key, baseline_run_id)
+        if not baseline_run:
+            return JSONResponse({"ok": False, "error": "Baseline run not found."}, status_code=404)
+
+        site_ids = sorted(
+            {
+                str(item.get("site_id") or "").strip()
+                for item in baseline_run.get("port_mappings", [])
+                if isinstance(item, Mapping) and str(item.get("site_id") or "").strip()
+            }
+        )
+        token = _load_mist_token()
+        mist_state = _fetch_mist_snapshot_state(
+            base_url=payload.base_url.rstrip("/"),
+            token=token,
+            site_ids=site_ids,
+        )
+        compare_run = nss.compare_baseline_to_mist(
+            project_name=payload.project_name,
+            baseline_run=baseline_run,
+            mist_observations=mist_state.get("observations", []),
+        )
+        compare_run["mist_state"] = {
+            "sites": mist_state.get("sites", []),
+            "observation_count": len(mist_state.get("observations", []) if isinstance(mist_state.get("observations"), list) else []),
+        }
+        compare_run["operator"] = _request_user_label(request)
+        nss.save_run(project_key, compare_run)
+        summary = nss.build_compare_summary(compare_run)
+        nss.update_project_index(project_key, summary)
+        return {"ok": True, "run": compare_run, "summary": summary}
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
 @app.post("/api/showtech")
 async def api_showtech(files: List[UploadFile] = File(...)):
+    if len(files) > 16:
+        raise HTTPException(status_code=400, detail="At most 16 uploads are allowed")
     try:
         mapping = load_mapping()
         results = []
@@ -1680,8 +2076,8 @@ def api_device_types(vendor: str):
 @app.post("/api/device_types")
 def api_add_device_type(request: Request, data: Dict[str, str] = Body(...)):
     """Persist a custom device type to the local overrides file."""
+    _ensure_push_allowed(request, dry_run=False)
     try:
-        current_user(request)
 
         vendor = (data.get("vendor") or "").strip()
         model = (data.get("model") or "").strip()
@@ -1714,7 +2110,7 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
     Returns the list of sites visible to the token. If org_id is provided, scopes to that org.
     """
     token = _load_mist_token()
-    base_url = base_url.rstrip("/")
+    base_url = mist_base_url(base_url)
     headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
 
     try:
@@ -1741,8 +2137,9 @@ def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
     Returns the list of switch devices in the given site.
     """
     token = _load_mist_token()
-    base_url = base_url.rstrip("/")
+    base_url = mist_base_url(base_url)
     headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
+    r = None
     try:
         r = requests.get(f"{base_url}/sites/{site_id}/devices?type=switch", headers=headers, timeout=30)
         r.raise_for_status()
@@ -1767,7 +2164,144 @@ def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
             err_payload = r.json()  # type: ignore[name-defined]
         except Exception:
             err_payload = {"error": str(e)}
-        return JSONResponse({"ok": False, "error": err_payload}, status_code=getattr(r, "status_code", 500))  # type: ignore[name-defined]
+        return JSONResponse({"ok": False, "error": err_payload}, status_code=getattr(r, "status_code", 502))  # type: ignore[name-defined]
+
+
+def _derive_snapshot_port_mappings_for_row(
+    *,
+    base_url: str,
+    token: str,
+    row: SnapshotRowModel,
+) -> List[Dict[str, Any]]:
+    payload_in: Dict[str, Any] = copy.deepcopy(row.input_json)
+    model = row.model_override or get_device_model(base_url, row.site_id, row.device_id, token)
+    member_offset_val = int(row.member_offset or 0)
+    port_offset_val = int(row.port_offset or 0)
+
+    interfaces = payload_in.get("interfaces")
+    if not isinstance(interfaces, list):
+        return []
+
+    temp_map: Dict[str, Dict[str, Any]] = {}
+    for intf in interfaces:
+        if not isinstance(intf, Mapping):
+            continue
+        key = str(intf.get("juniper_if") or intf.get("name") or "").strip()
+        if not key:
+            continue
+        temp_map[key] = dict(intf)
+
+    if not temp_map:
+        return []
+
+    temp_map = remap_members(temp_map, member_offset=member_offset_val, normalize=True)
+    temp_map = remap_ports(temp_map, port_offset=port_offset_val, model=model)
+
+    available_physical_ports: Optional[Set[str]] = None
+    try:
+        available_physical_ports, _ = _get_switch_physical_ports_for_model_with_diagnostics(model)
+    except Exception:
+        available_physical_ports = None
+
+    dynamic_port_map: Dict[str, str] = {}
+    remapped_interfaces = []
+    for ifname, data in temp_map.items():
+        updated = dict(data)
+        updated["juniper_if"] = ifname
+        remapped_interfaces.append(updated)
+    if available_physical_ports is not None:
+        dynamic_port_map = _build_dynamic_destination_port_map(remapped_interfaces, available_physical_ports)
+
+    device_items = api_site_devices(row.site_id, base_url=base_url)
+    device_name = ""
+    site_name = ""
+    if isinstance(device_items, dict):
+        for device in device_items.get("items", []) if isinstance(device_items.get("items"), list) else []:
+            if str(device.get("id") or "") == row.device_id:
+                device_name = str(device.get("name") or "").strip()
+                break
+    sites = _list_sites(base_url.rstrip("/"), _mist_headers(token))
+    for site in sites:
+        if str(site.get("id") or "") == row.site_id:
+            site_name = str(site.get("name") or "").strip()
+            break
+
+    mappings: List[Dict[str, Any]] = []
+    for updated in remapped_interfaces:
+        source_interface = str(updated.get("name") or "").strip()
+        target_port = str(updated.get("juniper_if") or "").strip()
+        if available_physical_ports is not None and pm.MIST_IF_RE.match(target_port):
+            target_port = dynamic_port_map.get(target_port) or _resolve_interface_name_from_available_ports(
+                target_port,
+                available_physical_ports,
+            ) or target_port
+        if not source_interface or not target_port:
+            continue
+        mappings.append(
+            {
+                "source_file": row.source_file,
+                "source_interface": source_interface,
+                "source_device_aliases": sorted({row.source_file.lower(), Path(row.source_file).stem.lower()}),
+                "site_id": row.site_id,
+                "site_name": site_name,
+                "device_id": row.device_id,
+                "device_name": device_name,
+                "target_port": target_port,
+            }
+        )
+    return mappings
+
+
+def _fetch_mist_snapshot_state(
+    *,
+    base_url: str,
+    token: str,
+    site_ids: Iterable[str],
+) -> Dict[str, Any]:
+    headers = _mist_headers(token)
+    normalized_site_ids = [str(site_id or "").strip() for site_id in site_ids if str(site_id or "").strip()]
+    selected_sites = [site for site in _list_sites(base_url, headers) if str(site.get("id") or "") in normalized_site_ids]
+
+    site_devices: Dict[str, List[Dict[str, Any]]] = {}
+    wired_clients: Dict[str, List[Dict[str, Any]]] = {}
+    for site in selected_sites:
+        site_id = str(site.get("id") or "").strip()
+        devices_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/devices?type=switch", optional=True)
+        device_items = [item for item in devices_doc if isinstance(item, dict)] if isinstance(devices_doc, list) else []
+        site_devices[site_id] = [
+            {
+                "id": item.get("id"),
+                "name": item.get("name") or item.get("hostname") or f"{item.get('model', 'device')} {item.get('mac', '')}",
+                "hostname": item.get("hostname"),
+                "mac": item.get("mac"),
+                "model": item.get("model"),
+            }
+            for item in device_items
+        ]
+
+        client_doc = _mist_get_json(base_url, headers, f"/sites/{site_id}/wired_clients/search?limit=1000", optional=True)
+        clients: List[Dict[str, Any]] = []
+        if isinstance(client_doc, list):
+            clients = [item for item in client_doc if isinstance(item, dict)]
+        elif isinstance(client_doc, dict):
+            for key in ("results", "items", "data", "clients"):
+                value = client_doc.get(key)
+                if isinstance(value, list):
+                    clients = [item for item in value if isinstance(item, dict)]
+                    break
+        wired_clients[site_id] = clients
+
+    observations = nss.extract_mist_mac_observations(
+        sites=selected_sites,
+        site_devices=site_devices,
+        wired_clients=wired_clients,
+    )
+    return {
+        "sites": selected_sites,
+        "site_devices": site_devices,
+        "wired_clients": wired_clients,
+        "observations": observations,
+    }
 
 def _discover_org_ids(base_url: str, headers: Dict[str, str]) -> List[str]:
     """Return list of org IDs visible to the token using /self."""
@@ -1798,7 +2332,7 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
     items: List[Dict[str, Any]] = []
     try:
         token = _load_mist_token()
-        base_url = base_url.rstrip("/")
+        base_url = mist_base_url(base_url)
         headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
 
         template_id = SWITCH_TEMPLATE_ID
@@ -1877,27 +2411,10 @@ def api_port_profiles(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = 
         items.sort(key=lambda x: (x.get("name") or "").lower())
         return {"ok": True, "items": items}
     except Exception as e:
-        err_payload: Any
-        try:
-            err_payload = r.json()  # type: ignore[name-defined]
-        except Exception:
-            err_payload = {}
-        msg = ""
-        if isinstance(err_payload, dict):
-            msg = (
-                err_payload.get("error")
-                or err_payload.get("detail")
-                or err_payload.get("message")
-                or json.dumps(err_payload)
-            )
-        else:
-            msg = str(err_payload)
-        if not msg:
-            msg = str(e)
-        return JSONResponse(
-            {"ok": False, "error": msg},
-            status_code=getattr(r, "status_code", 500),
-        )  # type: ignore[name-defined]
+        response = getattr(e, "response", None)
+        status = getattr(response, "status_code", 502)
+        return JSONResponse({"ok": False, "error": "Unable to load Mist port profiles"}, status_code=status if status >= 400 else 502)
+
 
 
 @app.post("/api/audit/run")
@@ -1906,8 +2423,11 @@ def api_audit_run(
     payload: Dict[str, Any] = Body(...),
     base_url: str = DEFAULT_BASE_URL,
 ):
+    current_user(request)
+    include_active = payload.get("include_active_checks") is True
+    if include_active:
+        _ensure_push_allowed(request, dry_run=False)
     try:
-        current_user(request)
 
         site_ids_raw = payload.get("site_ids") or []
         if site_ids_raw and not isinstance(site_ids_raw, list):
@@ -1916,7 +2436,7 @@ def api_audit_run(
         entire_org = bool(payload.get("entire_org"))
         requested_org_id = (payload.get("org_id") or "").strip() or None
 
-        base_url = base_url.rstrip("/")
+        base_url = mist_base_url(base_url)
         token = _load_mist_token()
         headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
 
@@ -1955,7 +2475,14 @@ def api_audit_run(
         timer = perf_counter()
 
         contexts, errors = _gather_site_contexts(base_url, headers, unique_site_ids)
-        audit_result = AUDIT_RUNNER.run(contexts)
+        exception_errors = []
+        try:
+            exception_records = aexceptions.load_records()
+        except aexceptions.ExceptionStoreError as exc:
+            exception_records = []
+            exception_errors.append(str(exc))
+        runner = build_default_runner(include_active_checks=True) if include_active else build_default_runner()
+        audit_result = runner.run(contexts, exception_records=exception_records, origin=base_url)
         duration_ms = int((perf_counter() - timer) * 1000)
         finished_at = datetime.now(tz) if tz else datetime.now()
 
@@ -1976,6 +2503,7 @@ def api_audit_run(
                     "name": ctx.site_name,
                     "org_id": ctx.site.get("org_id") or ctx.setting.get("org_id"),
                     "issues": site_findings.get(ctx.site_id, 0),
+                    "exceptions": audit_result.get("site_exceptions", {}).get(ctx.site_id, 0),
                     "devices": site_devices.get(ctx.site_id, 0),
                     "history": history,
                 }
@@ -1989,6 +2517,9 @@ def api_audit_run(
             "total_devices": audit_result.get("total_devices", 0),
             "total_findings": audit_result.get("total_findings", 0),
             "total_quick_fix_issues": audit_result.get("total_quick_fix_issues", 0),
+            "total_exceptions": audit_result.get("total_exceptions", 0),
+            "site_exceptions": audit_result.get("site_exceptions", {}),
+            "exception_errors": exception_errors,
             "errors": errors,
             "sites": summary_sites,
             "site_findings": site_findings,
@@ -2004,6 +2535,10 @@ def api_audit_run(
         ) or "none"
 
         action_logger.info(
+            "user=%s action=audit_exception_summary actionable=%s exceptions=%s store_errors=%s",
+            _request_user_label(request), summary["total_findings"], summary["total_exceptions"], len(exception_errors),
+        )
+        action_logger.info(
             "user=%s action=audit_run sites=%s devices=%s issues=%s errors=%s started=%s duration_ms=%s site_issue_breakdown=%s site_device_breakdown=%s",
             _request_user_label(request),
             len(unique_site_ids),
@@ -2014,6 +2549,10 @@ def api_audit_run(
             duration_ms,
             breakdown,
             device_breakdown,
+            extra={"event_type": "audit_run", "audit_summary": {
+                "issues": {site["name"]: site["issues"] for site in summary_sites},
+                "devices": {site["name"]: site["devices"] for site in summary_sites},
+            }},
         )
 
         return summary
@@ -2045,14 +2584,84 @@ def api_audit_run(
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
+@app.get("/api/audit/exceptions")
+def api_audit_exceptions(request: Request, base_url: str = DEFAULT_BASE_URL,
+                         org_id: Optional[str] = None, site_ids: Optional[str] = None):
+    current_user(request)
+    try:
+        records = aexceptions.load_records()
+        scope = set(site_ids.split(",")) if site_ids else None
+        return {"ok": True, "exceptions": [record for record in records
+                if record["origin"] == base_url.rstrip("/")
+                and (not org_id or record["org_id"] == org_id)
+                and (scope is None or record["site_id"] in scope)]}
+    except aexceptions.ExceptionStoreError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+
+
+@app.post("/api/audit/exceptions")
+def api_add_audit_exception(request: Request, payload: Dict[str, Any] = Body(...),
+                            base_url: str = DEFAULT_BASE_URL):
+    # Authorization stays outside the generic error handling so 401/403 survive.
+    _ensure_push_allowed(request, dry_run=False)
+    try:
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not reason.strip() or len(reason.strip()) > 2000:
+            raise ValueError("A reason of 1–2000 characters is required")
+        site_id, check_id = payload.get("site_id"), payload.get("check_id")
+        if not isinstance(site_id, str) or not site_id.strip() or not isinstance(check_id, str):
+            raise ValueError("site_id and check_id are required")
+        if check_id not in aexceptions.SUPPORTED_CHECK_IDS:
+            raise ValueError("This audit check does not support exceptions")
+        checks = build_default_runner(check_ids=[check_id], refresh_standards=False).checks
+        if not checks:
+            raise ValueError("Unknown audit check")
+        headers = {"Authorization": f"Token {_load_mist_token()}", "Accept": "application/json"}
+        context = _fetch_site_context(base_url.rstrip("/"), headers, site_id)
+        if context.unavailable_sources or payload.get("device_id") in context.unavailable_device_ids:
+            return JSONResponse({"ok": False, "error": "Current configuration is incomplete; approval was not saved. Retry the audit."}, status_code=502)
+        result = SiteAuditRunner(checks).run([context], exception_records=[], origin=base_url)
+        finding = next((finding for check in result["checks"] for finding in check["findings"]
+                        if finding.get("exception_candidate", {}).get("fingerprint") == payload.get("fingerprint")
+                        and finding.get("exception_candidate", {}).get("path") == payload.get("path")
+                        and finding.get("device_id") == payload.get("device_id")), None)
+        if finding is None:
+            return JSONResponse({"ok": False, "error": "The deviation or standard changed. Run the audit again before approving."}, status_code=409)
+        record = aexceptions.approve(finding["exception_candidate"], reason, _request_user_label(request),
+                                     site_name=context.site_name, device_name=finding.get("device_name", ""))
+        action_logger.info("user=%s action=audit_exception_approve id=%s site=%s check=%s path=%s",
+                           _request_user_label(request), record["id"], site_id, check_id, record["path"])
+        return {"ok": True, "exception": record}
+    except aexceptions.ExceptionStoreError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except requests.RequestException:
+        return JSONResponse({"ok": False, "error": "Cannot verify current configuration; approval was not saved."}, status_code=502)
+
+
+@app.post("/api/audit/exceptions/{exception_id}/revoke")
+def api_revoke_audit_exception(exception_id: str, request: Request):
+    _ensure_push_allowed(request, dry_run=False)
+    try:
+        record = aexceptions.revoke(exception_id, _request_user_label(request))
+        action_logger.info("user=%s action=audit_exception_revoke id=%s site=%s check=%s path=%s",
+                           _request_user_label(request), record["id"], record["site_id"], record["check_id"], record["path"])
+        return {"ok": True, "exception": record}
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "Exception not found"}, status_code=404)
+    except aexceptions.ExceptionStoreError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+
+
 @app.post("/api/audit/fix")
 def api_audit_fix(
     request: Request,
     payload: Dict[str, Any] = Body(...),
     base_url: str = DEFAULT_BASE_URL,
 ):
+    _ensure_push_allowed(request, dry_run=False)
     try:
-        _ensure_push_allowed(request, dry_run=False)
 
         action_id = str(payload.get("action_id") or "").strip()
         if not action_id:
@@ -2120,7 +2729,7 @@ def api_audit_fix(
             pause = pause_default
 
         token = _load_mist_token()
-        base_url = base_url.rstrip("/")
+        base_url = mist_base_url(base_url)
         result = execute_audit_action(
             action_id,
             base_url,
@@ -2130,6 +2739,7 @@ def api_audit_fix(
             pause=pause,
             device_map=device_map if device_map else None,
             metadata=metadata,
+            context_loader=_gather_site_contexts,
         )
 
         totals = result.get("totals", {}) if isinstance(result, dict) else {}
@@ -2146,6 +2756,8 @@ def api_audit_fix(
             totals.get("failed", 0),
         )
         return result
+    except aexceptions.ExceptionStoreError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     except requests.HTTPError as exc:
@@ -2183,6 +2795,8 @@ async def api_convert(
     Converts one or more Cisco configs into the normalized JSON that the push script consumes.
     """
     results = []
+    if len(files) > 16:
+        raise HTTPException(status_code=400, detail="At most 16 uploads are allowed")
     vlan_lookup: Dict[str, str] = {}
     if show_vlan_map:
         try:
@@ -2195,10 +2809,13 @@ async def api_convert(
         tmpdir_path = Path(tmpdir)
         for uf in files:
             contents = await uf.read()
-            in_path = tmpdir_path / uf.filename
+            filename = uf.filename or ""
+            if not filename or Path(filename).name != filename or any(c in filename for c in ("/", "\\", ":", "\x00")) or filename in {".", ".."}:
+                raise HTTPException(status_code=400, detail="Upload filename must not contain a path")
+            in_path = tmpdir_path / filename
             in_path.write_bytes(contents)
 
-            out_path = convert_one_file(
+            out_path = await run_in_threadpool(convert_one_file,
                 input_path=in_path,
                 uplink_module=uplink_module,
                 strict_overflow=strict_overflow,
@@ -2311,6 +2928,8 @@ def _build_payload_for_row(
         if not m:
             return [val]
         start, end = int(m.group(1)), int(m.group(2))
+        if not (0 <= start <= 255 and 0 <= end <= 255):
+            raise ValueError("Interface range must be between 0 and 255")
         prefix = val[: m.start()]
         suffix = val[m.end():]
         rng = range(start, end + 1) if start <= end else range(end, start + 1)
@@ -5713,15 +6332,16 @@ async def api_push(
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Invalid input_json: {e}"}, status_code=400)
 
+    _ensure_push_allowed(request, dry_run=dry_run)
     token = _load_mist_token()
-    base_url = base_url.rstrip("/")
+    base_url = mist_base_url(base_url)
 
     try:
         row_result = _build_payload_for_row(
             base_url=base_url, tz=tz, token=token,
             site_id=site_id, device_id=device_id,
             payload_in=payload_in, model_override=model_override,
-            excludes=excludes, member_offset=member_offset, port_offset=port_offset, normalize_modules=normalize_modules,
+            excludes=excludes, exclude_uplinks=False, member_offset=member_offset, port_offset=port_offset, normalize_modules=normalize_modules,
             dry_run=dry_run,
         )
         status = 200 if row_result.get("ok") else 400
@@ -5760,7 +6380,7 @@ async def api_push_batch(
     If the same triple appears more than once, those rows are rejected with a clear error.
     """
     token = _load_mist_token()
-    base_url = base_url.rstrip("/")
+    base_url = mist_base_url(base_url)
 
     stage_site_deployment = bool(stage_site_deployment)
     push_site_deployment = bool(push_site_deployment)

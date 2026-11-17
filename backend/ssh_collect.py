@@ -19,10 +19,13 @@ import re
 import threading
 import time
 import uuid
+import os
+import shutil
+from security import acquire_job_slot, release_job_slot, renew_job_slot, security_db
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Mapping
 
 try:
     from netmiko import ConnectHandler  # type: ignore
@@ -140,6 +143,7 @@ class JobState:
 
 
 _JOBS: Dict[str, JobState] = {}
+JOB_ROOT = Path(__file__).resolve().parent.parent / "tmp_ssh_jobs"
 
 
 def get_job(job_id: str) -> Optional[JobState]:
@@ -148,7 +152,7 @@ def get_job(job_id: str) -> Optional[JobState]:
 
 def sanitize_label(value: str) -> str:
     safe = "".join(ch for ch in value if ch.isalnum() or ch in ("-", "_", "."))
-    return safe or "device"
+    return safe.strip(".")[:100] or "device"
 
 
 def _extract_hostname(command_outputs: Dict[str, str] | None) -> Optional[str]:
@@ -192,6 +196,75 @@ def build_showtech_text(outputs: Dict[str, str]) -> str:
         sections.append(f"{'-' * 26} {title} {'-' * 26}")
         sections.append(data)
     return "\n".join(sections)
+
+
+def _default_commands(*, read_timeout: int) -> Dict[str, Dict[str, int | str]]:
+    return {
+        "show inventory": {"filename": "show_inventory.txt", "timeout": read_timeout},
+        "show interface status": {
+            "filename": "show_interface_status.txt",
+            "timeout": max(read_timeout, 60),
+        },
+        "show interfaces": {
+            "filename": "show_interfaces.txt",
+            "timeout": max(read_timeout, 120),
+        },
+        "show vlan": {
+            "filename": "show_vlan.txt",
+            "timeout": max(read_timeout, 60),
+        },
+        "show vlan brief": {
+            "filename": "show_vlan_brief.txt",
+            "timeout": max(read_timeout, 60),
+        },
+        "show running-config": {
+            "filename": "show_running_config.txt",
+            "timeout": max(read_timeout, 120),
+        },
+    }
+
+
+def _network_snapshot_commands(*, read_timeout: int) -> Dict[str, Dict[str, int | str]]:
+    commands = _default_commands(read_timeout=read_timeout)
+    commands.update(
+        {
+            "show mac address-table": {
+                "filename": "show_mac_address_table.txt",
+                "timeout": max(read_timeout, 120),
+            },
+            "show arp": {
+                "filename": "show_arp.txt",
+                "timeout": max(read_timeout, 60),
+            },
+            "show cdp neighbors detail": {
+                "filename": "show_cdp_neighbors_detail.txt",
+                "timeout": max(read_timeout, 90),
+            },
+            "show lldp neighbors detail": {
+                "filename": "show_lldp_neighbors_detail.txt",
+                "timeout": max(read_timeout, 90),
+            },
+            "show etherchannel summary": {
+                "filename": "show_etherchannel_summary.txt",
+                "timeout": max(read_timeout, 60),
+            },
+            "show spanning-tree summary": {
+                "filename": "show_spanning_tree_summary.txt",
+                "timeout": max(read_timeout, 60),
+            },
+            "show version": {
+                "filename": "show_version.txt",
+                "timeout": max(read_timeout, 60),
+            },
+        }
+    )
+    return commands
+
+
+def _command_profile(profile: Optional[str], *, read_timeout: int) -> Dict[str, Dict[str, int | str]]:
+    if (profile or "").strip().lower() == "network_snapshot":
+        return _network_snapshot_commands(read_timeout=read_timeout)
+    return _default_commands(read_timeout=read_timeout)
 
 
 def _describe_exception(exc: Exception) -> Dict[str, str]:
@@ -250,6 +323,7 @@ def _collect_one_device(
     password_bytes: bytes,
     delay_factor: float,
     read_timeout: int,
+    command_profile: Optional[str] = None,
 ) -> DeviceResult:
     if ConnectHandler is None:  # pragma: no cover - handled in start_job
         _raise_missing_netmiko()
@@ -274,7 +348,12 @@ def _collect_one_device(
             "fast_cli": False,
             "timeout": read_timeout,
             "global_delay_factor": delay_factor,
+            "ssh_strict": True,
+            "system_host_keys": True,
         }
+        known_hosts = os.getenv("SSH_KNOWN_HOSTS_FILE", "").strip()
+        if known_hosts:
+            params.update(alt_host_keys=True, alt_key_file=known_hosts)
         conn = ConnectHandler(**params)
         transport = getattr(conn, "protocol", "ssh")
         if str(transport).lower() != "ssh":
@@ -300,29 +379,7 @@ def _collect_one_device(
             # continue even if terminal length fails
             pass
 
-        commands = {
-            "show inventory": {"filename": "show_inventory.txt", "timeout": read_timeout},
-            "show interface status": {
-                "filename": "show_interface_status.txt",
-                "timeout": max(read_timeout, 60),
-            },
-            "show interfaces": {
-                "filename": "show_interfaces.txt",
-                "timeout": max(read_timeout, 120),
-            },
-            "show vlan": {
-                "filename": "show_vlan.txt",
-                "timeout": max(read_timeout, 60),
-            },
-            "show vlan brief": {
-                "filename": "show_vlan_brief.txt",
-                "timeout": max(read_timeout, 60),
-            },
-            "show running-config": {
-                "filename": "show_running_config.txt",
-                "timeout": max(read_timeout, 120),
-            },
-        }
+        commands = _command_profile(command_profile, read_timeout=read_timeout)
 
         for command, meta in commands.items():
             output = conn.send_command(
@@ -396,18 +453,29 @@ def start_job(
     delay_factor: float,
     read_timeout: int,
     max_workers: int,
+    command_profile: Optional[str] = None,
 ) -> JobState:
     if ConnectHandler is None:
         _raise_missing_netmiko()
 
     job_id = uuid.uuid4().hex
-    job_dir = Path(Path.cwd() / "tmp_ssh_jobs")
-    job_dir.mkdir(parents=True, exist_ok=True)
+    device_list = [DeviceInput(host=d.host.strip(), label=(d.label or "").strip() or d.host.strip()) for d in devices if d.host.strip()]
+    if not 1 <= len(device_list) <= 64:
+        raise ValueError("SSH collection requires 1–64 devices")
+    max_workers = max(1, min(int(max_workers), 8))
+    acquire_job_slot(job_id)
+    job_dir = JOB_ROOT
     base_dir = job_dir / job_id
-    base_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        job_dir.mkdir(parents=True, exist_ok=True)
+        base_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        release_job_slot(job_id)
+        for index in range(len(password_bytes)):
+            password_bytes[index] = 0
+        raise
 
     job = JobState(id=job_id, created=time.time(), status="pending", temp_dir=base_dir)
-    device_list = [DeviceInput(host=d.host.strip(), label=(d.label or "").strip() or d.host.strip()) for d in devices if d.host.strip()]
     job.total = len(device_list)
     _JOBS[job_id] = job
 
@@ -434,10 +502,12 @@ def start_job(
                         password_bytes=bytes(password_bytes),
                         delay_factor=delay_factor,
                         read_timeout=read_timeout,
+                        command_profile=command_profile,
                     )
                     futures[future] = device
 
                 for fut in as_completed(futures):
+                    renew_job_slot(job_id)
                     device = futures[fut]
                     try:
                         result = fut.result()
@@ -469,12 +539,25 @@ def start_job(
             with job._lock:
                 job.status = "complete"
                 job.message = f"Finished {job.completed} device(s)"
+        except Exception as exc:
+            with job._lock:
+                job.status = "complete"
+                job.error = f"Collection job failed ({type(exc).__name__})"
+                job.message = "Collection could not finish"
         finally:
             for i in range(len(password_bytes)):
                 password_bytes[i] = 0
+            release_job_slot(job_id)
 
     thread = threading.Thread(target=_run, name=f"ssh-job-{job_id}", daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except Exception:
+        release_job_slot(job_id)
+        _JOBS.pop(job_id, None)
+        for index in range(len(password_bytes)):
+            password_bytes[index] = 0
+        raise
     return job
 
 
@@ -482,18 +565,18 @@ def cleanup_old_jobs(max_age: float = 3600.0) -> None:
     now = time.time()
     to_remove: List[str] = []
     for job_id, job in list(_JOBS.items()):
-        if now - job.created > max_age:
+        if now - job.created > max_age and job.status == "complete":
             to_remove.append(job_id)
     for job_id in to_remove:
         job = _JOBS.pop(job_id, None)
-        if job and job.temp_dir and job.temp_dir.exists():
-            try:
-                for child in job.temp_dir.rglob("*"):
-                    if child.is_file():
-                        try:
-                            child.unlink()
-                        except Exception:
-                            pass
-                job.temp_dir.rmdir()
-            except Exception:
-                pass
+    root = JOB_ROOT.resolve()
+    active = {job.id for job in _JOBS.values() if job.status != "complete"}
+    with security_db() as db:
+        active.update(row[0] for row in db.execute("SELECT id FROM work_leases WHERE expires>?", (now,)))
+    if root.exists():
+        for target in root.iterdir():
+            resolved = target.resolve()
+            if (re.fullmatch(r"[0-9a-f]{32}", target.name) and target.name not in active
+                    and not target.is_symlink() and resolved.is_relative_to(root)
+                    and resolved.is_dir() and now - resolved.stat().st_mtime > max_age):
+                shutil.rmtree(resolved)

@@ -120,7 +120,7 @@ function Ensure-Requirements {
     Pip $venvPython install -r $reqPath
   } else {
     Write-Host "requirements.txt not found; installing core deps..." -ForegroundColor Yellow
-    Pip $venvPython install fastapi==0.115.0 uvicorn==0.30.6 python-multipart==0.0.9 jinja2==3.1.4 requests 'ciscoconfparse>=1.6.52' python-dotenv
+    Pip $venvPython install fastapi==0.163.1 uvicorn==0.54.0 python-multipart==0.0.34 jinja2==3.1.6 requests 'ciscoconfparse>=1.6.52' python-dotenv
   }
 }
 
@@ -155,7 +155,9 @@ function Ensure-Env {
 
   $lines = @(
     "AUTH_METHOD=$auth",
-    "SESSION_SECRET=change_me",
+    "SESSION_SECRET=$([guid]::NewGuid().ToString('N'))$([guid]::NewGuid().ToString('N'))",
+    "SESSION_HTTPS_ONLY=false",
+    "APP_HOST=127.0.0.1",
     "MIST_TOKEN=$token",
     "MIST_BASE_URL=$base",
     "MIST_ORG_ID=$org",
@@ -183,7 +185,16 @@ function Ensure-Env {
     $user = Read-Host "Local username"
     $pwdSecure = Read-Host "Local password (input hidden)" -AsSecureString
     $pwd = [System.Net.NetworkCredential]::new("", $pwdSecure).Password
-    $lines += "LOCAL_USERS=${user}:${pwd}"
+    while ($pwd.Length -lt 12) {
+      $pwdSecure = Read-Host "Choose at least 12 characters (input hidden)" -AsSecureString
+      $pwd = [System.Net.NetworkCredential]::new("", $pwdSecure).Password
+    }
+    $passwordPython = Join-Path $projectDir ".venv/Scripts/python.exe"
+    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $pwdHash = $pwd | & $passwordPython (Join-Path $projectDir "backend/security_setup.py") --hash-password
+    if ($LASTEXITCODE -ne 0) { throw "Password hashing failed" }
+    $pwd = $null
+    $lines += "LOCAL_USERS=${user}:${pwdHash}"
     $lines += "LOCAL_PUSH_USERS=$user"
   }
 
@@ -268,8 +279,8 @@ function Start-App {
     }
   }
 
-  Write-Host "Starting API on http://0.0.0.0:$port ..." -ForegroundColor Green
-  & $venvPython -m uvicorn app:app --host 0.0.0.0 --port $port --app-dir "$backendDir"
+  Write-Host "Starting API on http://127.0.0.1:$port ..." -ForegroundColor Green
+  & $venvPython -m uvicorn app:app --host 127.0.0.1 --port $port --app-dir "$backendDir"
 }
 
 # ---------- Main ----------
@@ -285,6 +296,8 @@ $venvPython = Join-Path $venvPath "Scripts\python.exe"
 
 Ensure-Requirements -projectDir $projectDir -venvPython $venvPython
 $envPort = Ensure-Env -projectDir $projectDir
+& $venvPython (Join-Path $projectDir "backend/security_setup.py")
+if ($LASTEXITCODE -ne 0) { throw "Security configuration upgrade failed" }
 Ensure-PortRules -projectDir $projectDir
 Ensure-StandardFwVersions -projectDir $projectDir
 Ensure-TmpDirs -projectDir $projectDir
@@ -296,7 +309,7 @@ if ($NoStart) {
   Write-Host "`nSetup complete. To start later run:" -ForegroundColor Cyan
   $backendDir = Join-Path $projectDir "backend"
   $venvPython = Join-Path $venvPath "Scripts\python.exe"
-  Write-Host "  `"$venvPython`" -m uvicorn app:app --host 0.0.0.0 --port $Port --app-dir `"$backendDir`"" -ForegroundColor White
+  Write-Host "  `"$venvPython`" -m uvicorn app:app --host 127.0.0.1 --port $Port --app-dir `"$backendDir`"" -ForegroundColor White
 } else {
   Start-App -projectDir $projectDir -venvPath $venvPath -port $Port
 }

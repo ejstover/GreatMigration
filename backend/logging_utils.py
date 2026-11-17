@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 from datetime import datetime, date
 from logging.handlers import SysLogHandler
 from pathlib import Path
@@ -10,8 +11,23 @@ from typing import Optional, TextIO
 
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+os.chmod(LOG_DIR, 0o700)
 
 _LOGGER_NAME = "great_migration.user_actions"
+
+
+class SafeFormatter(logging.Formatter):
+    """Keep every event on one physical line, including untrusted identities."""
+    def format(self, record):
+        rendered = logging.makeLogRecord(record.__dict__.copy())
+        summary = getattr(record, "audit_summary", None)
+        if getattr(record, "event_type", None) == "audit_run" and isinstance(summary, dict):
+            prefix = "event=audit_run audit_data=" + json.dumps(summary, ensure_ascii=True, separators=(",", ":")) + " "
+        else:
+            prefix = "event=application "
+        rendered.msg = prefix + record.getMessage()
+        rendered.args = ()
+        return super().format(rendered).replace("\r", "\\r").replace("\n", "\\n").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
 
 
 class DailyFileHandler(logging.Handler):
@@ -88,7 +104,7 @@ def _configure_logger() -> logging.Logger:
     if logger.handlers:
         return logger
 
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+    formatter = SafeFormatter("%(asctime)s | %(levelname)s | %(message)s")
 
     file_handler = DailyFileHandler(LOG_DIR)
     file_handler.setFormatter(formatter)

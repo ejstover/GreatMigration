@@ -32,6 +32,8 @@ from typing import List, Dict, Any, Optional
 from ciscoconfparse import CiscoConfParse
 
 
+TARGET_MODELS = ("ex4100-24mp", "ex4100-48mp")
+
 # ----------------------------
 # Parsing & classification (number-driven)
 # ----------------------------
@@ -82,13 +84,17 @@ def parse_allowed_list(val: Optional[str]) -> List[int]:
             a, b = tok.split("-", 1)
             try:
                 a, b = int(a), int(b)
+                if not (1 <= a <= 4094 and 1 <= b <= 4094):
+                    continue
                 for v in range(min(a, b), max(a, b) + 1):
                     out.add(v)
             except ValueError:
                 pass
         else:
             try:
-                out.add(int(tok))
+                value = int(tok)
+                if 1 <= value <= 4094:
+                    out.add(value)
             except ValueError:
                 pass
     return sorted(out)
@@ -297,6 +303,8 @@ def convert_one_file(
         if nums:
             member_numbers.append(nums[0])
     derived_vc_members = max(member_numbers) if member_numbers else 1
+    if derived_vc_members > 64:
+        raise ValueError("A maximum of 64 chassis members is supported")
     if derived_vc_members < 1:
         derived_vc_members = 1
 
@@ -418,15 +426,21 @@ def convert_one_file(
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
 
-    print(f"✅ VC members: {derived_vc_members} | Models: {member_models} | Interfaces: {len(interfaces)} | ↳ {output_file}")
+    import sys
+    message = f"[OK] VC members: {derived_vc_members} | Models: {member_models} | Interfaces: {len(interfaces)} | -> {output_file}"
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(message.encode(encoding, errors="backslashreplace").decode(encoding))
     if overflow_count:
-        print(f"  ⚠️  Access-port overflows vs inferred model: {overflow_count} (see 'mapping_overflow': true)")
+        print(f"  [WARNING]  Access-port overflows vs inferred model: {overflow_count} (see 'mapping_overflow': true)")
     return output_file
 
 # ----------------------------
 # Main (single-file or bulk directory)
 # ----------------------------
 def main():
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
     ap = argparse.ArgumentParser(description="CiscoConfParse → JSON (number-driven; per-member model inference).")
     ap.add_argument("input_file", nargs="?", help="Path to a Cisco config text file")
     ap.add_argument(
@@ -478,10 +492,10 @@ def main():
     files = sorted([p for p in bulk_dir.iterdir() if p.is_file() and p.suffix.lower() in exts])
 
     if not files:
-        print(f"ℹ️  No .txt/.cfg/.conf files found in {bulk_dir}")
+        print(f"[INFO]  No .txt/.cfg/.conf files found in {bulk_dir}")
         return
 
-    print(f"📦 Bulk converting {len(files)} files in: {bulk_dir}")
+    print(f"[BULK] Bulk converting {len(files)} files in: {bulk_dir}")
     ok = 0
     failed = 0
     for p in files:
@@ -497,9 +511,9 @@ def main():
             ok += 1
         except Exception as e:
             failed += 1
-            print(f"❌ {p.name}: {e}")
+            print(f"[ERROR] {p.name}: {e}")
 
-    print(f"✅ Done. Converted: {ok} | Failed: {failed}")
+    print(f"[OK] Done. Converted: {ok} | Failed: {failed}")
 
 if __name__ == "__main__":
     main()

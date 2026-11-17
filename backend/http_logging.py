@@ -5,6 +5,8 @@ import json
 from typing import Any, Mapping, Optional
 
 import requests
+from urllib.parse import urlsplit
+from security import validate_mist_request
 
 from logging_utils import get_user_logger
 
@@ -37,21 +39,19 @@ def install_http_logging() -> None:
 
     def _logged_request(self: requests.sessions.Session, method: str, url: str, **kwargs: Any):
         method_upper = (method or "").upper()
-        _LOGGER.info("HTTP %s %s", method_upper, url)
-
-        sent_payload = _extract_sent_payload(kwargs)
-        if method_upper != "GET" and sent_payload is not None:
-            _LOGGER.info("HTTP %s %s payload_sent=%s", method_upper, url, _format_payload(sent_payload))
-
+        headers = dict(self.headers)
+        headers.update(kwargs.get("headers") or {})
+        if any(key.lower() == "authorization" and str(value).startswith("Token ") for key, value in headers.items()):
+            validate_mist_request(url)
+            kwargs["allow_redirects"] = False
+            if kwargs.get("verify") is False:
+                raise ValueError("TLS verification is required for Mist")
+        # Never derive credentials from the host's .netrc or proxy environment.
+        self.trust_env = False
+        parsed = urlsplit(url)
+        _LOGGER.info("HTTP method=%s host=%s", method_upper, parsed.hostname)
         response = _ORIGINAL_SESSION_REQUEST(self, method, url, **kwargs)
-
-        if method_upper == "GET":
-            try:
-                response_payload = response.json()
-            except Exception:
-                response_payload = response.text
-            _LOGGER.info("HTTP %s %s payload_received=%s", method_upper, url, _format_payload(response_payload))
-
+        _LOGGER.info("HTTP method=%s host=%s status=%s", method_upper, parsed.hostname, response.status_code)
         return response
 
     requests.sessions.Session.request = _logged_request

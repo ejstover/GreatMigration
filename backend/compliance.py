@@ -7,13 +7,19 @@ import copy
 import json
 import os
 import re
+import time
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from urllib.parse import urlparse
 
 import requests
+try:
+    import websocket as websocket_client
+except ImportError:  # pragma: no cover - optional runtime dependency
+    websocket_client = None
 
 from http_logging import install_http_logging
 
@@ -26,6 +32,7 @@ from audit_actions import (
     SET_VIRTUAL_CHASSIS_ROLES_ACTION_ID,
 )
 from logging_utils import get_user_logger
+from audit_exception_evidence import expand_finding
 
 
 logger = get_user_logger()
@@ -43,7 +50,12 @@ class SiteContext:
     setting: Dict[str, Any] = field(default_factory=dict)
     templates: Sequence[Dict[str, Any]] = field(default_factory=list)
     devices: Sequence[Dict[str, Any]] = field(default_factory=list)
+    wired_clients: Sequence[Dict[str, Any]] = field(default_factory=list)
     vc_documents: Sequence[Dict[str, Any]] = field(default_factory=list)
+    mist_base_url: str = ""
+    mist_headers: Dict[str, str] = field(default_factory=dict)
+    unavailable_device_ids: Set[str] = field(default_factory=set)
+    unavailable_sources: Set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -58,6 +70,7 @@ class Finding:
     device_name: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
     actions: Optional[List[Dict[str, Any]]] = None
+    exception_candidate: Optional[Dict[str, Any]] = None
 
     def as_dict(self, default_severity: str) -> Dict[str, Any]:
         data: Dict[str, Any] = {
@@ -74,6 +87,8 @@ class Finding:
             data["details"] = self.details
         if self.actions:
             data["actions"] = self.actions
+        if self.exception_candidate is not None:
+            data["exception_candidate"] = self.exception_candidate
         return data
 
 
@@ -106,6 +121,53 @@ def _normalize_site_name(site: Dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value
     return site.get("id") or ""
+
+
+def _extract_context_org_id(context: SiteContext) -> str:
+    for container in (context.site, context.setting):
+        if not isinstance(container, Mapping):
+            continue
+        value = container.get("org_id")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _mist_request_json(
+    base_url: str,
+    headers: Mapping[str, str],
+    path: str,
+    *,
+    params: Optional[Mapping[str, Any]] = None,
+) -> Any:
+    url = f"{base_url.rstrip('/')}{path}"
+    resp = requests.get(url, headers=dict(headers), params=params, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _coerce_sle_score(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        result = float(value)
+    else:
+        return None
+    if result < 0 or result > 1:
+        return None
+    return result
+
+
+def _sum_numeric_series(values: Any) -> float:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+        return 0.0
+    total = 0.0
+    for item in values:
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, (int, float)):
+            total += float(item)
+    return total
 
 
 def _collect_site_variables(context: SiteContext) -> Dict[str, Any]:
@@ -316,28 +378,28 @@ def _extract_switch_standard_one_versions(doc: Mapping[str, Any]) -> Dict[str, s
     return versions
 
 
-def _sync_switch_auto_upgrade_custom_versions(doc: Mapping[str, Any]) -> None:
+def _sync_switch_auto_upgrade_custom_versions(doc: Mapping[str, Any]) -> bool:
     token = (os.getenv("MIST_TOKEN") or "").strip()
     if not token:
         logger.info("action=switch_auto_upgrade_sync status=skipped reason=missing_token")
-        return
+        return False
 
     base_url = _mist_api_base_url()
     org_id = _resolve_mist_org_id(token, base_url)
     if not org_id:
         logger.info("action=switch_auto_upgrade_sync status=skipped reason=missing_org")
-        return
+        return False
 
     standard_one_by_model = _extract_switch_standard_one_versions(doc)
     if not standard_one_by_model:
         logger.info("action=switch_auto_upgrade_sync status=skipped reason=missing_standard_one_versions")
-        return
+        return False
 
     try:
         org_models = _fetch_org_switch_models(token, base_url, org_id)
     except requests.RequestException as exc:
         logger.warning("action=switch_auto_upgrade_sync status=failed reason=inventory_lookup error=%s", exc)
-        return
+        return False
 
     custom_versions = {
         model: version
@@ -346,7 +408,7 @@ def _sync_switch_auto_upgrade_custom_versions(doc: Mapping[str, Any]) -> None:
     }
     if not custom_versions:
         logger.info("action=switch_auto_upgrade_sync status=skipped reason=no_matching_org_models")
-        return
+        return False
 
     headers = {"Authorization": f"Token {token}", "Content-Type": "application/json"}
     setting_url = f"{base_url}/orgs/{org_id}/setting"
@@ -356,7 +418,7 @@ def _sync_switch_auto_upgrade_custom_versions(doc: Mapping[str, Any]) -> None:
         current_payload = current_resp.json()
     except requests.RequestException as exc:
         logger.warning("action=switch_auto_upgrade_sync status=failed reason=setting_lookup error=%s", exc)
-        return
+        return False
 
     switch_payload = current_payload.get("switch") if isinstance(current_payload, Mapping) else {}
     auto_upgrade = switch_payload.get("auto_upgrade") if isinstance(switch_payload, Mapping) else {}
@@ -372,7 +434,7 @@ def _sync_switch_auto_upgrade_custom_versions(doc: Mapping[str, Any]) -> None:
 
     if existing_custom_versions == custom_versions:
         logger.info("action=switch_auto_upgrade_sync status=skipped reason=unchanged")
-        return
+        return True
 
     if isinstance(auto_upgrade, Mapping):
         updated_auto_upgrade = dict(auto_upgrade)
@@ -386,15 +448,14 @@ def _sync_switch_auto_upgrade_custom_versions(doc: Mapping[str, Any]) -> None:
         put_resp.raise_for_status()
     except requests.RequestException as exc:
         logger.warning("action=switch_auto_upgrade_sync status=failed reason=setting_update error=%s", exc)
-        return
+        return False
 
     logger.info(
         "action=switch_auto_upgrade_sync status=updated org_id=%s models=%s",
         org_id,
         len(custom_versions),
     )
-
-
+    return True
 
 
 def _mist_api_base_url() -> str:
@@ -680,8 +741,7 @@ def _refresh_firmware_standards_if_needed(path: Optional[Path] = None) -> Dict[s
     if any_changes:
         _save_firmware_standards_doc(updated, path)
         new_standard_one = _extract_switch_standard_one_versions(updated)
-        if new_standard_one != previous_standard_one:
-            _sync_switch_auto_upgrade_custom_versions(updated)
+        # Organization policy changes require the explicit, push-gated sync endpoint.
         model_counts = {
             key: len(value) for key, value in models.items() if isinstance(value, Mapping)
         }
@@ -694,10 +754,10 @@ def _refresh_firmware_standards_if_needed(path: Optional[Path] = None) -> Dict[s
     return doc
 
 
-def _load_allowed_versions_from_standard_doc(device_type: str) -> Tuple[str, ...]:
+def _load_allowed_versions_from_standard_doc(device_type: str, *, refresh: bool = True) -> Tuple[str, ...]:
     """Return distinct allowed versions for a device type across all models."""
 
-    by_model = _load_allowed_versions_by_model_from_standard_doc(device_type)
+    by_model = _load_allowed_versions_by_model_from_standard_doc(device_type, refresh=refresh)
     versions: List[str] = []
     seen: Set[str] = set()
     for allowed_versions in by_model.values():
@@ -860,8 +920,8 @@ def _virtual_chassis_fix_precheck_message(
     return [f"{label}: {reason}"]
 
 
-def _load_allowed_versions_by_model_from_standard_doc(device_type: str) -> Dict[str, Tuple[str, ...]]:
-    doc = _refresh_firmware_standards_if_needed()
+def _load_allowed_versions_by_model_from_standard_doc(device_type: str, *, refresh: bool = True) -> Dict[str, Tuple[str, ...]]:
+    doc = _refresh_firmware_standards_if_needed() if refresh else _load_firmware_standards_doc()
     models = doc.get("models") if isinstance(doc.get("models"), Mapping) else {}
     type_blob = models.get(device_type) if isinstance(models, Mapping) else {}
     if not isinstance(type_blob, Mapping):
@@ -938,6 +998,7 @@ class RequiredSiteVariablesCheck(ComplianceCheck):
                     site_id=context.site_id,
                     site_name=context.site_name,
                     message=f"Site variable '{key}' is not defined.",
+                    details={"variable_key": key},
                     actions=[action] if action else None,
                 )
             )
@@ -1205,6 +1266,13 @@ def _normalize_port_label(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _port_ids_equal(left: Any, right: str) -> bool:
+    if not isinstance(right, str) or not right.strip():
+        return False
+    left_label = _normalize_port_label(left)
+    return bool(left_label and left_label == right.strip())
 
 
 def _extract_port_number(label: Optional[str]) -> Optional[int]:
@@ -1666,7 +1734,7 @@ def _diff_configs(
                 continue
             new_path = f"{path}.{key}" if path else str(key)
             if key not in actual:
-                diffs.append({"path": new_path, "expected": exp_value, "actual": None})
+                diffs.append({"path": new_path, "expected": exp_value, "actual": None, "actual_present": False})
                 continue
             diffs.extend(
                 _diff_configs(
@@ -1682,7 +1750,7 @@ def _diff_configs(
             if key in expected:
                 continue
             new_path = f"{path}.{key}" if path else str(key)
-            diffs.append({"path": new_path, "expected": None, "actual": act_value})
+            diffs.append({"path": new_path, "expected": None, "actual": act_value, "expected_present": False})
         return diffs
     if isinstance(expected, list) and isinstance(actual, list):
         diffs: List[Dict[str, Any]] = []
@@ -1690,9 +1758,9 @@ def _diff_configs(
         for idx in range(length):
             new_path = f"{path}[{idx}]" if path else f"[{idx}]"
             if idx >= len(expected):
-                diffs.append({"path": new_path, "expected": None, "actual": actual[idx]})
+                diffs.append({"path": new_path, "expected": None, "actual": actual[idx], "expected_present": False})
             elif idx >= len(actual):
-                diffs.append({"path": new_path, "expected": expected[idx], "actual": None})
+                diffs.append({"path": new_path, "expected": expected[idx], "actual": None, "actual_present": False})
             else:
                 diffs.extend(
                     _diff_configs(
@@ -2387,14 +2455,18 @@ def _is_plausible_neighbor_name(value: str) -> bool:
     return bool(re.search(r"IDF\d+|MDF", text))
 
 
-def _extract_name_from_mapping(data: Mapping[str, Any]) -> Optional[str]:
+def _extract_name_from_mapping(data: Mapping[str, Any], *, require_plausible: bool = True) -> Optional[str]:
     for key in NEIGHBOR_NAME_KEYS:
         value = data.get(key)
-        if isinstance(value, str) and _is_plausible_neighbor_name(value):
-            return value.strip()
+        if isinstance(value, str):
+            text = value.strip()
+            if text and (not require_plausible or _is_plausible_neighbor_name(text)):
+                return text
     # Some APIs return the neighbor directly as a string value
-    if isinstance(data.get("neighbor"), str) and _is_plausible_neighbor_name(data["neighbor"]):
-        return data["neighbor"].strip()
+    if isinstance(data.get("neighbor"), str):
+        text = data["neighbor"].strip()
+        if text and (not require_plausible or _is_plausible_neighbor_name(text)):
+            return text
     return None
 
 
@@ -2484,6 +2556,580 @@ def _extract_neighbor_system_name(device: Mapping[str, Any]) -> Optional[str]:
     return None
 
 
+PHYSICAL_SWITCH_PORT_RE = re.compile(r"^(?:ge|xe|et|mge)-\d+/\d+/\d+$", re.IGNORECASE)
+INFRA_NEIGHBOR_TOKEN_RE = re.compile(
+    r"(?:\b(?:sw|switch|idf\d*|mdf|dist|distribution|core|agg|gateway|gw|router|firewall|fw|wan|ssr|stack|vc)\b)",
+    re.IGNORECASE,
+)
+UPLINK_USAGE_TOKENS: Tuple[str, ...] = ("uplink", "trunk", "wan", "internet", "core", "distribution")
+DISABLED_PROFILE_TOKENS: Tuple[str, ...] = ("disable", "disabled", "unused", "shutdown", "parking", "parked")
+CLIENT_EVIDENCE_KEYS: Tuple[str, ...] = (
+    "client_count",
+    "clients",
+    "num_clients",
+    "mac_table",
+    "learned_macs",
+    "macs",
+    "wired_clients",
+)
+POE_EVIDENCE_KEYS: Tuple[str, ...] = (
+    "poe",
+    "poe_active",
+    "poe_enabled",
+    "poe_watts",
+    "poe_usage",
+    "power_draw",
+    "power_used",
+)
+ERROR_EVIDENCE_KEYS: Tuple[str, ...] = (
+    "crc",
+    "crc_errors",
+    "drops",
+    "error",
+    "errors",
+    "input_errors",
+    "output_errors",
+    "rx_errors",
+    "tx_errors",
+)
+SPEED_KEYS: Tuple[str, ...] = ("speed", "link_speed", "negotiated_speed", "bandwidth")
+DUPLEX_KEYS: Tuple[str, ...] = ("duplex", "link_duplex")
+RX_BYTE_KEYS: Tuple[str, ...] = ("rx_bytes", "bytes_rx", "in_bytes", "input_bytes", "rx_octets", "in_octets")
+TX_BYTE_KEYS: Tuple[str, ...] = ("tx_bytes", "bytes_tx", "out_bytes", "output_bytes", "tx_octets", "out_octets")
+CABLE_TEST_EXCLUDED_ROLES: Tuple[str, ...] = ("core", "core-vc-star")
+CABLE_TEST_ACTIVE_TRAFFIC_BYTES_THRESHOLD = 1024.0
+
+
+def _is_physical_switch_port_id(port_id: str) -> bool:
+    return bool(PHYSICAL_SWITCH_PORT_RE.fullmatch((port_id or "").strip()))
+
+
+def _iter_port_records(value: Any, port_id: str, visited: Optional[Set[int]] = None) -> Iterable[Mapping[str, Any]]:
+    if visited is None:
+        visited = set()
+    obj_id = id(value)
+    if obj_id in visited:
+        return
+    visited.add(obj_id)
+
+    if isinstance(value, Mapping):
+        if any(
+            _port_ids_equal(value.get(key), port_id)
+            for key in ("port_id", "name", "port", "interface", "if_name", "id")
+        ):
+            yield value
+
+        for key, nested in value.items():
+            if _port_ids_equal(key, port_id) and isinstance(nested, Mapping):
+                yield nested
+            yield from _iter_port_records(nested, port_id, visited)
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _iter_port_records(item, port_id, visited)
+
+
+def _extract_neighbor_names(value: Any, names: Optional[Set[str]] = None, visited: Optional[Set[int]] = None) -> Set[str]:
+    if names is None:
+        names = set()
+    if visited is None:
+        visited = set()
+    obj_id = id(value)
+    if obj_id in visited:
+        return names
+    visited.add(obj_id)
+
+    if isinstance(value, Mapping):
+        direct = _extract_name_from_mapping(value, require_plausible=False)
+        if direct:
+            names.add(direct)
+        for nested in value.values():
+            _extract_neighbor_names(nested, names, visited)
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            _extract_neighbor_names(item, names, visited)
+    return names
+
+
+def _is_infrastructure_neighbor_name(name: str) -> bool:
+    text = (name or "").strip()
+    if not text:
+        return False
+    return bool(INFRA_NEIGHBOR_TOKEN_RE.search(text))
+
+
+def _coerce_number(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip().replace(",", "")
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _is_truthy_metric(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    number = _coerce_number(value)
+    if number is not None:
+        return number > 0
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "none", "off", "disabled", "down"}
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return bool(value)
+
+
+def _normalize_speed_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip().lower()
+    number = _coerce_number(value)
+    if number is None:
+        return str(value).strip().lower()
+    if number >= 1_000_000_000:
+        return f"{int(number / 1_000_000_000)}g"
+    if number >= 1_000_000:
+        return f"{int(number / 1_000_000)}m"
+    return str(int(number))
+
+
+def _is_low_speed(value: Any) -> bool:
+    text = _normalize_speed_text(value)
+    if not text:
+        return False
+    if re.search(r"(^|[^0-9])10(?:m|mb|mbps)\b", text):
+        return True
+    if re.search(r"(^|[^0-9])100(?:m|mb|mbps)\b", text):
+        return True
+    if text in {"10", "100"}:
+        return True
+    return False
+
+
+def _is_half_duplex(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().lower() == "half"
+
+
+def _collect_client_evidence(mapping: Mapping[str, Any]) -> bool:
+    for key in CLIENT_EVIDENCE_KEYS:
+        if key not in mapping:
+            continue
+        if _is_truthy_metric(mapping.get(key)):
+            return True
+    return False
+
+
+def _normalize_switch_role(role: Any) -> str:
+    if not isinstance(role, str):
+        return ""
+    return role.strip().lower()
+
+
+def _is_excluded_switch_role_for_cable_test(device: Mapping[str, Any]) -> bool:
+    return _normalize_switch_role(device.get("role")) in CABLE_TEST_EXCLUDED_ROLES
+
+
+def _collect_wired_client_map(wired_clients: Sequence[Mapping[str, Any]]) -> Dict[Tuple[str, str], List[Dict[str, Any]]]:
+    indexed: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for client in wired_clients:
+        if not isinstance(client, Mapping):
+            continue
+        device_mac = str(client.get("device_mac") or "").strip().lower()
+        port_id = _normalize_port_label(client.get("port_id") or client.get("port") or client.get("interface"))
+        if not device_mac or not port_id:
+            continue
+        indexed.setdefault((device_mac, port_id), []).append(dict(client))
+    return indexed
+
+
+def _classify_profile_text(profile_text: str) -> Optional[str]:
+    text = (profile_text or "").strip().lower()
+    if not text:
+        return None
+    if any(token in text for token in DISABLED_PROFILE_TOKENS):
+        return "disabled_or_unused_profile"
+    if any(token in text for token in UPLINK_USAGE_TOKENS):
+        return "uplink_or_trunk_profile"
+    return None
+
+
+def _extract_mapping_numeric_value(mapping: Mapping[str, Any], candidate_keys: Sequence[str]) -> Optional[float]:
+    for key in candidate_keys:
+        if key in mapping:
+            number = _coerce_number(mapping.get(key))
+            if number is not None:
+                return number
+    for key, value in mapping.items():
+        key_text = str(key).lower()
+        if key_text in candidate_keys:
+            number = _coerce_number(value)
+            if number is not None:
+                return number
+    return None
+
+
+def _collect_port_profile_text(device: Mapping[str, Any], port_id: str) -> str:
+    config = _extract_device_switch_config(dict(device)) if isinstance(device, dict) else None
+    if not isinstance(config, Mapping):
+        return ""
+    port_config = config.get("port_config")
+    if not isinstance(port_config, Mapping):
+        return ""
+    entry = port_config.get(port_id)
+    if not isinstance(entry, Mapping):
+        return ""
+    values: List[str] = []
+    for key in ("usage", "profile", "port_profile", "name", "description"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip().lower())
+    return " ".join(values)
+
+
+def _collect_port_evidence(
+    device: Mapping[str, Any],
+    port_id: str,
+    if_entry: Mapping[str, Any],
+    wired_client_map: Optional[Mapping[Tuple[str, str], Sequence[Mapping[str, Any]]]] = None,
+) -> Dict[str, Any]:
+    records = [if_entry]
+    records.extend(record for record in _iter_port_records(device, port_id) if record is not if_entry)
+
+    speed: Any = if_entry.get("speed")
+    duplex: Any = if_entry.get("duplex")
+    poe_active = False
+    has_client_evidence = False
+    neighbor_names: Set[str] = set()
+    error_counters: Dict[str, Any] = {}
+    rx_bytes: Optional[float] = None
+    tx_bytes: Optional[float] = None
+
+    device_mac = str(device.get("mac") or "").strip().lower()
+    wired_client_records: List[Dict[str, Any]] = []
+    if wired_client_map and device_mac:
+        wired_client_records = [dict(item) for item in wired_client_map.get((device_mac, port_id), []) if isinstance(item, Mapping)]
+        if wired_client_records:
+            has_client_evidence = True
+
+    for record in records:
+        for key in SPEED_KEYS:
+            if not speed and key in record and record.get(key) is not None:
+                speed = record.get(key)
+        for key in DUPLEX_KEYS:
+            if not duplex and key in record and record.get(key) is not None:
+                duplex = record.get(key)
+
+        for key in POE_EVIDENCE_KEYS:
+            if key in record and _is_truthy_metric(record.get(key)):
+                poe_active = True
+                break
+
+        if _collect_client_evidence(record):
+            has_client_evidence = True
+
+        for key in ("neighbor", "neighbors", "lldp", "lldp_stats", "uplink", "ports", "interfaces"):
+            if key in record:
+                neighbor_names.update(_extract_neighbor_names(record.get(key)))
+
+        for key, value in record.items():
+            key_text = str(key).lower()
+            if any(token in key_text for token in ERROR_EVIDENCE_KEYS) and _is_truthy_metric(value):
+                error_counters[key_text] = value
+
+        if rx_bytes is None:
+            rx_bytes = _extract_mapping_numeric_value(record, RX_BYTE_KEYS)
+        if tx_bytes is None:
+            tx_bytes = _extract_mapping_numeric_value(record, TX_BYTE_KEYS)
+
+    has_lldp_neighbor = bool(neighbor_names)
+    profile_text = _collect_port_profile_text(device, port_id)
+    traffic_classification = "low"
+    if (rx_bytes is not None and rx_bytes >= CABLE_TEST_ACTIVE_TRAFFIC_BYTES_THRESHOLD) or (
+        tx_bytes is not None and tx_bytes >= CABLE_TEST_ACTIVE_TRAFFIC_BYTES_THRESHOLD
+    ):
+        traffic_classification = "active"
+
+    return {
+        "speed": speed,
+        "duplex": duplex,
+        "poe_active": poe_active,
+        "has_client_evidence": has_client_evidence,
+        "wired_client_records": wired_client_records,
+        "neighbor_names": sorted(neighbor_names),
+        "has_lldp_neighbor": has_lldp_neighbor,
+        "profile_text": profile_text,
+        "error_counters": error_counters,
+        "rx_bytes": rx_bytes,
+        "tx_bytes": tx_bytes,
+        "traffic_classification": traffic_classification,
+    }
+
+
+def _build_switch_cable_test_candidates(
+    device: Mapping[str, Any],
+    wired_client_map: Optional[Mapping[Tuple[str, str], Sequence[Mapping[str, Any]]]] = None,
+) -> Dict[str, Any]:
+    candidates: List[Dict[str, Any]] = []
+    skipped_ports: List[Dict[str, Any]] = []
+    considered_ports: List[str] = []
+    if _is_excluded_switch_role_for_cable_test(device):
+        return {
+            "candidate_ports": [],
+            "candidate_ports_considered": [],
+            "skipped_ports": [{"reason": "switch_role_excluded", "role": device.get("role")}],
+        }
+    if_stat = device.get("if_stat")
+    if not isinstance(if_stat, Mapping):
+        return {
+            "candidate_ports": [],
+            "candidate_ports_considered": [],
+            "skipped_ports": [{"reason": "missing_if_stat"}],
+        }
+
+    for key, value in sorted(if_stat.items(), key=lambda item: str(item[0])):
+        if not isinstance(value, Mapping):
+            continue
+        if not value.get("up"):
+            continue
+        raw_port_id = value.get("port_id") if isinstance(value.get("port_id"), str) else key
+        port_id = str(raw_port_id).split(".", 1)[0].strip()
+        if not _is_physical_switch_port_id(port_id):
+            continue
+
+        considered_ports.append(port_id)
+        evidence = _collect_port_evidence(device, port_id, value, wired_client_map)
+        profile_text = evidence["profile_text"]
+        profile_classification = _classify_profile_text(profile_text)
+        if profile_classification == "disabled_or_unused_profile":
+            skipped_ports.append({"port": port_id, "reason": profile_classification, "profile": profile_text})
+            continue
+        if profile_classification == "uplink_or_trunk_profile":
+            skipped_ports.append({"port": port_id, "reason": profile_classification, "profile": profile_text})
+            continue
+        if evidence["has_client_evidence"]:
+            skipped_ports.append({"port": port_id, "reason": "wired_client_present"})
+            continue
+        if evidence["has_lldp_neighbor"]:
+            skipped_ports.append({"port": port_id, "reason": "lldp_or_cdp_neighbor_present", "neighbors": evidence["neighbor_names"]})
+            continue
+
+        suspicious_reasons: List[str] = []
+        if _is_low_speed(evidence["speed"]):
+            suspicious_reasons.append("low_speed")
+        if _is_half_duplex(evidence["duplex"]):
+            suspicious_reasons.append("half_duplex")
+        if evidence["error_counters"]:
+            suspicious_reasons.append("port_errors")
+
+        if evidence["traffic_classification"] == "active":
+            suspicious_reasons.append("active_traffic_without_lldp_or_client")
+        else:
+            suspicious_reasons.append("low_traffic_without_lldp_or_client")
+        suspicious_reasons.append("missing_neighbor_or_l2_evidence")
+        if evidence["poe_active"]:
+            suspicious_reasons.append("poe_without_normal_neighbor_or_l2_evidence")
+
+        if suspicious_reasons:
+            candidates.append(
+                {
+                    "port": port_id,
+                    "reasons": suspicious_reasons,
+                    "evidence": {
+                        "speed": evidence["speed"],
+                        "duplex": evidence["duplex"],
+                        "poe_active": evidence["poe_active"],
+                        "has_client_evidence": evidence["has_client_evidence"],
+                        "wired_client_present": evidence["has_client_evidence"],
+                        "wired_client_records": evidence["wired_client_records"],
+                        "has_lldp_neighbor": evidence["has_lldp_neighbor"],
+                        "neighbor_names": evidence["neighbor_names"],
+                        "profile_text": profile_text,
+                        "error_counters": evidence["error_counters"],
+                        "rx_bytes": evidence["rx_bytes"],
+                        "tx_bytes": evidence["tx_bytes"],
+                        "traffic_classification": evidence["traffic_classification"],
+                    },
+                }
+            )
+        else:
+            skipped_ports.append({"port": port_id, "reason": "normal_operating_signals"})
+
+    return {
+        "candidate_ports": candidates,
+        "candidate_ports_considered": considered_ports,
+        "skipped_ports": skipped_ports,
+    }
+
+
+def _mist_ws_stream_url(base_url: str) -> str:
+    parsed = urlparse(base_url.rstrip("/"))
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    netloc = parsed.netloc
+    if netloc.startswith("api."):
+        netloc = "api-ws." + netloc[len("api.") :]
+    elif not netloc.startswith("api-ws."):
+        netloc = f"api-ws.{netloc}"
+    return f"{scheme}://{netloc}/api-ws/v1/stream"
+
+
+def _open_mist_command_stream(
+    base_url: str,
+    headers: Mapping[str, str],
+    *,
+    timeout: float,
+):
+    if websocket_client is None:
+        raise RuntimeError("websocket-client is not installed")
+    return websocket_client.create_connection(
+        _mist_ws_stream_url(base_url),
+        timeout=timeout,
+        header=[f"{key}: {value}" for key, value in headers.items()],
+    )
+
+
+def _extract_mist_stream_data(payload: str) -> Optional[Mapping[str, Any]]:
+    if not isinstance(payload, str):
+        return None
+    try:
+        event = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(event, Mapping):
+        return None
+
+    data = event.get("data")
+    if isinstance(data, Mapping):
+        return data
+    if isinstance(data, str):
+        try:
+            nested = json.loads(data)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(nested, Mapping):
+            return None
+        nested_data = nested.get("data")
+        if isinstance(nested_data, Mapping):
+            return nested_data
+    return None
+
+
+def _collect_mist_cable_test_output(
+    ws: Any,
+    channel: str,
+    session_id: str,
+    *,
+    timeout: float = 30.0,
+) -> str:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        payload = ws.recv()
+        if not isinstance(payload, str):
+            continue
+        data = _extract_mist_stream_data(payload)
+        if not isinstance(data, Mapping):
+            continue
+        if str(data.get("session") or "").strip() != session_id:
+            continue
+        raw = data.get("raw")
+        if isinstance(raw, str) and raw.strip():
+            return raw
+    raise TimeoutError(f"Timed out waiting for Mist cable test output on {channel}")
+
+
+def _parse_cable_test_output(raw_output: str, port_id: str) -> Dict[str, Any]:
+    lines = [line.strip() for line in str(raw_output or "").splitlines() if line.strip()]
+    lower = raw_output.lower()
+    verdict = "unknown"
+    if " open" in lower or lower.startswith("open"):
+        verdict = "open"
+    elif "short" in lower:
+        verdict = "short"
+    elif "fault" in lower or "fail" in lower:
+        verdict = "fault"
+    elif "normal" in lower or "successfully executed" in lower or "ok" in lower:
+        verdict = "normal"
+
+    status_match = re.search(r"test status\s*:\s*(.+)", raw_output, re.IGNORECASE)
+    pair_results: List[Dict[str, Any]] = []
+    pair_re = re.compile(
+        r"(?:pair\s+)?(?P<pair>[A-D1-4]+)\s*[:\-]\s*(?P<state>[A-Za-z ]+?)(?:,\s*(?P<length>\d+(?:\.\d+)?)\s*(?P<unit>m|meter|meters|ft|feet))?$",
+        re.IGNORECASE,
+    )
+    for line in lines:
+        match = pair_re.search(line)
+        if not match:
+            continue
+        pair_results.append(
+            {
+                "pair": match.group("pair"),
+                "state": match.group("state").strip(),
+                "length": float(match.group("length")) if match.group("length") else None,
+                "unit": match.group("unit"),
+            }
+        )
+
+    return {
+        "port": port_id,
+        "status": status_match.group(1).strip() if status_match else None,
+        "verdict": verdict,
+        "pair_results": pair_results,
+        "raw_output": raw_output,
+    }
+
+
+def _is_abnormal_cable_test_result(result: Mapping[str, Any]) -> bool:
+    verdict = str(result.get("verdict") or "").strip().lower()
+    return verdict not in {"", "normal"}
+
+
+def _run_switch_port_cable_test(
+    base_url: str,
+    headers: Mapping[str, str],
+    site_id: str,
+    device_id: str,
+    port_id: str,
+    *,
+    timeout: float = 30.0,
+) -> Dict[str, Any]:
+    url = f"{base_url.rstrip('/')}/sites/{site_id}/devices/{device_id}/cable_test"
+    channel = f"/sites/{site_id}/devices/{device_id}/cmd"
+    ws = _open_mist_command_stream(base_url, headers, timeout=timeout)
+    try:
+        ws.send(json.dumps({"subscribe": channel}))
+        resp = requests.post(url, headers=dict(headers), json={"port": port_id}, timeout=timeout)
+        resp.raise_for_status()
+        payload = resp.json() if resp.content else {}
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("Mist cable test response did not return a JSON object")
+        session_id = str(payload.get("session") or payload.get("session_id") or "").strip()
+        if not session_id:
+            raise RuntimeError("Mist cable test response did not include a session identifier")
+        raw_output = _collect_mist_cable_test_output(
+            ws,
+            channel,
+            session_id,
+            timeout=timeout,
+        )
+    finally:
+        ws.close()
+    parsed = _parse_cable_test_output(raw_output, port_id)
+    return {
+        "port": port_id,
+        "session_id": session_id,
+        "verdict": parsed.get("verdict"),
+        "parsed": parsed,
+        "raw_output": raw_output,
+    }
+
+
 def _parse_switch_location(
     name: str, pattern: Optional[re.Pattern[str]]
 ) -> Optional[Tuple[str, str, str]]:
@@ -2542,7 +3188,9 @@ class FirmwareManagementCheck(ComplianceCheck):
         self,
         allowed_switch_versions: Optional[Sequence[str]] = None,
         allowed_ap_versions: Optional[Sequence[str]] = None,
+        refresh_standards: bool = True,
     ) -> None:
+        self.refresh_standards = refresh_standards
         self._dynamic_switch_versions = allowed_switch_versions is None
         self._dynamic_ap_versions = allowed_ap_versions is None
         self.allowed_switch_versions: Tuple[str, ...] = tuple(allowed_switch_versions or ())
@@ -2554,12 +3202,13 @@ class FirmwareManagementCheck(ComplianceCheck):
         self._refresh_allowed_versions()
 
     def _refresh_allowed_versions(self) -> None:
+        options = {} if self.refresh_standards else {"refresh": False}
         if self._dynamic_switch_versions:
-            self.allowed_switch_versions_by_model = _load_allowed_versions_by_model_from_standard_doc("switch")
-            self.allowed_switch_versions = _load_allowed_versions_from_standard_doc("switch")
+            self.allowed_switch_versions_by_model = _load_allowed_versions_by_model_from_standard_doc("switch", **options)
+            self.allowed_switch_versions = _load_allowed_versions_from_standard_doc("switch", **options)
         if self._dynamic_ap_versions:
-            self.allowed_ap_versions_by_model = _load_allowed_versions_by_model_from_standard_doc("ap")
-            self.allowed_ap_versions = _load_allowed_versions_from_standard_doc("ap")
+            self.allowed_ap_versions_by_model = _load_allowed_versions_by_model_from_standard_doc("ap", **options)
+            self.allowed_ap_versions = _load_allowed_versions_from_standard_doc("ap", **options)
         self._allowed_switch_set = {value for value in self.allowed_switch_versions}
         self._allowed_ap_set = {value for value in self.allowed_ap_versions}
 
@@ -2772,6 +3421,161 @@ class SwitchPowerSupplyHealthCheck(ComplianceCheck):
                         + "."
                     ),
                     details={"psu_issues": failed_psus},
+                )
+            )
+
+        return findings
+
+
+class SwitchCableTestCheck(ComplianceCheck):
+    id = "switch_cable_test"
+    name = "Switch cable test"
+    description = "Run Mist cable tests on suspicious active switch ports and report abnormal results."
+    severity = "warning"
+
+    def __init__(self, *, timeout: float = 15.0) -> None:
+        self.timeout = timeout
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        base_url = (context.mist_base_url or "").strip()
+        headers = context.mist_headers if isinstance(context.mist_headers, Mapping) else {}
+        if not base_url or not headers:
+            return []
+
+        findings: List[Finding] = []
+        wired_client_map = _collect_wired_client_map(context.wired_clients)
+        for device in context.devices:
+            if not isinstance(device, dict) or not _is_switch(device):
+                continue
+
+            device_id = str(device.get("id") or "").strip()
+            if not device_id:
+                continue
+
+            candidate_info = _build_switch_cable_test_candidates(device, wired_client_map)
+            candidate_ports = candidate_info.get("candidate_ports") or []
+            if not candidate_ports:
+                continue
+
+            started = time.monotonic()
+            abnormal_results: List[Dict[str, Any]] = []
+            tested_ports: List[str] = []
+            completed_ports: List[str] = []
+            result_records: List[Dict[str, Any]] = []
+            execution_failures: List[Dict[str, Any]] = []
+
+            for candidate in candidate_ports:
+                if not isinstance(candidate, Mapping):
+                    continue
+                port_id = str(candidate.get("port") or "").strip()
+                if not port_id:
+                    continue
+                tested_ports.append(port_id)
+                try:
+                    result = _run_switch_port_cable_test(
+                        base_url,
+                        headers,
+                        context.site_id,
+                        device_id,
+                        port_id,
+                        timeout=self.timeout,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "action=switch_cable_test status=failed site_id=%s device_id=%s port=%s error=%s",
+                        context.site_id,
+                        device_id,
+                        port_id,
+                        exc,
+                    )
+                    failure_record = {
+                        "port": port_id,
+                        "verdict": "execution_error",
+                        "error": str(exc),
+                        "candidate_reasons": list(candidate.get("reasons") or []),
+                    }
+                    result_records.append(failure_record)
+                    execution_failures.append(failure_record)
+                    continue
+
+                record = {
+                    "port": port_id,
+                    "verdict": result.get("verdict"),
+                    "session_id": result.get("session_id"),
+                    "candidate_reasons": list(candidate.get("reasons") or []),
+                    "parsed": result.get("parsed"),
+                    "raw_output": result.get("raw_output"),
+                }
+                completed_ports.append(port_id)
+                result_records.append(record)
+                if _is_abnormal_cable_test_result(result):
+                    abnormal_results.append(record)
+
+            duration_ms = int((time.monotonic() - started) * 1000)
+            device_name = _normalize_site_name(device) or device_id
+            logger.info(
+                "action=switch_cable_test status=completed site_id=%s device_id=%s tested=%s completed=%s abnormal=%s failures=%s duration_ms=%s timeout_s=%s",
+                context.site_id,
+                device_id,
+                len(tested_ports),
+                len(completed_ports),
+                len(abnormal_results),
+                len(execution_failures),
+                duration_ms,
+                self.timeout,
+            )
+
+            if not abnormal_results and not execution_failures:
+                continue
+
+            abnormal_ports = sorted(
+                {
+                    str(item.get("port") or "").strip()
+                    for item in abnormal_results
+                    if item.get("port")
+                }
+            )
+            execution_failure_ports = sorted(
+                {
+                    str(item.get("port") or "").strip()
+                    for item in execution_failures
+                    if item.get("port")
+                }
+            )
+            details = {
+                "tested_ports": tested_ports,
+                "completed_ports": completed_ports,
+                "abnormal_result_ports": abnormal_ports,
+                "execution_failure_ports": execution_failure_ports,
+                "candidate_ports_considered": candidate_info.get("candidate_ports_considered") or [],
+                "skipped_ports": candidate_info.get("skipped_ports") or [],
+                "results": result_records,
+                "execution_failures": execution_failures,
+                "timeout_seconds": self.timeout,
+                "duration_ms": duration_ms,
+            }
+
+            if abnormal_results:
+                message = (
+                    f"Switch '{device_name}' has suspicious cable-test results on "
+                    + ", ".join(abnormal_ports)
+                    + "."
+                )
+            else:
+                count = len(execution_failure_ports)
+                message = (
+                    f"Switch '{device_name}' cable-test execution did not return Mist output for "
+                    f"{count} suspicious port{'s' if count != 1 else ''}."
+                )
+
+            findings.append(
+                Finding(
+                    site_id=context.site_id,
+                    site_name=context.site_name,
+                    device_id=device_id,
+                    device_name=device_name,
+                    message=message,
+                    details=details,
                 )
             )
 
@@ -3236,13 +4040,218 @@ class DeviceDocumentationCheck(ComplianceCheck):
         return findings
 
 
+class SiteSleSummaryCheck(ComplianceCheck):
+    id = "site_sle_summary"
+    name = "Site SLE summary"
+    description = "Surface degraded wired and wireless SLE metrics and the classifiers affecting them."
+    severity = "warning"
+
+    _SLE_CONFIG: Dict[str, Dict[str, Any]] = {
+        "wifi": {
+            "label": "Wireless",
+            "metrics": (
+                "ap-availability",
+                "ap-health",
+                "capacity",
+                "coverage",
+                "roaming",
+                "successful-connect",
+                "throughput",
+                "time-to-connect",
+            ),
+        },
+        "wired": {
+            "label": "Wired",
+            "metrics": (
+                "switch-bandwidth",
+                "switch-health",
+                "switch-throughput",
+            ),
+        },
+    }
+
+    def __init__(self, duration: str = "1d") -> None:
+        self.duration = duration
+        self._sle_rollup_cache: Dict[Tuple[str, str, str], Dict[str, Dict[str, Any]]] = {}
+        self._metric_summary_cache: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+
+    def prepare_run(self) -> None:
+        self._sle_rollup_cache.clear()
+        self._metric_summary_cache.clear()
+
+    def _get_site_rollup(
+        self,
+        base_url: str,
+        headers: Mapping[str, str],
+        org_id: str,
+        sle_type: str,
+        site_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        cache_key = (base_url, org_id, sle_type)
+        if cache_key not in self._sle_rollup_cache:
+            payload = _mist_request_json(
+                base_url,
+                headers,
+                f"/orgs/{org_id}/insights/sites-sle",
+                params={"sle": sle_type, "duration": self.duration, "limit": 1000},
+            )
+            rows = payload.get("results") if isinstance(payload, Mapping) else []
+            by_site: Dict[str, Dict[str, Any]] = {}
+            if isinstance(rows, list):
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    row_site_id = row.get("site_id")
+                    if not isinstance(row_site_id, str) or not row_site_id.strip():
+                        continue
+                    by_site[row_site_id.strip()] = row
+            self._sle_rollup_cache[cache_key] = by_site
+        return self._sle_rollup_cache.get(cache_key, {}).get(site_id)
+
+    def _get_metric_summary(
+        self,
+        base_url: str,
+        headers: Mapping[str, str],
+        site_id: str,
+        metric: str,
+    ) -> Dict[str, Any]:
+        cache_key = (base_url, site_id, metric)
+        if cache_key not in self._metric_summary_cache:
+            payload = _mist_request_json(
+                base_url,
+                headers,
+                f"/sites/{site_id}/sle/site/{site_id}/metric/{metric}/summary",
+                params={"duration": self.duration},
+            )
+            self._metric_summary_cache[cache_key] = payload if isinstance(payload, dict) else {}
+        return self._metric_summary_cache[cache_key]
+
+    def _extract_impacting_classifiers(self, summary: Mapping[str, Any]) -> List[Dict[str, Any]]:
+        classifiers = summary.get("classifiers")
+        if not isinstance(classifiers, list):
+            return []
+
+        results: List[Dict[str, Any]] = []
+        for classifier in classifiers:
+            if not isinstance(classifier, Mapping):
+                continue
+            name = classifier.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+
+            impact = classifier.get("impact") if isinstance(classifier.get("impact"), Mapping) else {}
+            samples = classifier.get("samples") if isinstance(classifier.get("samples"), Mapping) else {}
+            degraded_total = _sum_numeric_series(samples.get("degraded"))
+            duration_total = _sum_numeric_series(samples.get("duration"))
+            total_total = _sum_numeric_series(samples.get("total"))
+            num_users = float(impact.get("num_users") or 0) if isinstance(impact.get("num_users"), (int, float)) else 0.0
+            num_aps = float(impact.get("num_aps") or 0) if isinstance(impact.get("num_aps"), (int, float)) else 0.0
+
+            if degraded_total <= 0 and duration_total <= 0 and num_users <= 0 and num_aps <= 0:
+                continue
+
+            results.append(
+                {
+                    "name": name.strip(),
+                    "degraded_total": degraded_total,
+                    "duration_total": duration_total,
+                    "total_total": total_total,
+                    "impact": {
+                        "num_users": int(num_users),
+                        "num_aps": int(num_aps),
+                        "total_users": int(impact.get("total_users") or 0)
+                        if isinstance(impact.get("total_users"), (int, float))
+                        else 0,
+                        "total_aps": int(impact.get("total_aps") or 0)
+                        if isinstance(impact.get("total_aps"), (int, float))
+                        else 0,
+                    },
+                }
+            )
+
+        results.sort(
+            key=lambda item: (
+                item.get("degraded_total", 0),
+                item.get("duration_total", 0),
+                item.get("impact", {}).get("num_users", 0),
+                item.get("impact", {}).get("num_aps", 0),
+            ),
+            reverse=True,
+        )
+        return results
+
+    def run(self, context: SiteContext) -> List[Finding]:
+        base_url = (context.mist_base_url or "").strip()
+        headers = context.mist_headers if isinstance(context.mist_headers, Mapping) else {}
+        org_id = _extract_context_org_id(context)
+        if not base_url or not headers or not org_id:
+            return []
+
+        findings: List[Finding] = []
+        for sle_type, sle_config in self._SLE_CONFIG.items():
+            try:
+                rollup = self._get_site_rollup(base_url, headers, org_id, sle_type, context.site_id)
+            except requests.RequestException as exc:
+                logger.warning(
+                    "action=site_sle_summary status=failed site_id=%s sle=%s error=%s",
+                    context.site_id,
+                    sle_type,
+                    exc,
+                )
+                continue
+
+            if not isinstance(rollup, Mapping):
+                continue
+
+            scope_label = str(sle_config.get("label") or sle_type).strip()
+            metrics = sle_config.get("metrics") if isinstance(sle_config.get("metrics"), Sequence) else ()
+            for metric in metrics:
+                score = _coerce_sle_score(rollup.get(metric))
+                if score is None or score >= 0.999999:
+                    continue
+
+                impacting_classifiers: List[Dict[str, Any]] = []
+                try:
+                    summary = self._get_metric_summary(base_url, headers, context.site_id, metric)
+                except requests.RequestException as exc:
+                    logger.warning(
+                        "action=site_sle_metric_summary status=failed site_id=%s metric=%s error=%s",
+                        context.site_id,
+                        metric,
+                        exc,
+                    )
+                    summary = {}
+                if summary:
+                    impacting_classifiers = self._extract_impacting_classifiers(summary)
+
+                findings.append(
+                    Finding(
+                        site_id=context.site_id,
+                        site_name=context.site_name,
+                        message=f"{scope_label} SLE '{metric}' is degraded at {score:.1%}.",
+                        details={
+                            "sle_scope": scope_label.lower(),
+                            "sle_type": sle_type,
+                            "metric": metric,
+                            "score": score,
+                            "score_percent": round(score * 100, 2),
+                            "impacting_classifiers": impacting_classifiers,
+                            "summary_window": self.duration,
+                        },
+                    )
+                )
+
+        return findings
+
+
 class SiteAuditRunner:
     """Runs a suite of compliance checks across one or more sites."""
 
     def __init__(self, checks: Sequence[ComplianceCheck]):
         self.checks: List[ComplianceCheck] = list(checks)
 
-    def run(self, contexts: Sequence[SiteContext]) -> Dict[str, Any]:
+    def run(self, contexts: Sequence[SiteContext], *, exception_records: Optional[Sequence[Mapping[str, Any]]] = None,
+            origin: str = "") -> Dict[str, Any]:
         results: List[Dict[str, Any]] = []
         total_sites = len(contexts)
         total_devices = 0
@@ -3258,11 +4267,31 @@ class SiteAuditRunner:
         total_findings = 0
         site_findings: Dict[str, int] = {context.site_id: 0 for context in contexts}
         total_quick_fix_issues = 0
+        site_exceptions: Dict[str, int] = {context.site_id: 0 for context in contexts}
+        total_exceptions = 0
+        exception_index = {record["fingerprint"]: record for record in (exception_records or [])
+                           if not record.get("revoked_at")}
         for check in self.checks:
             check.prepare_run()
             check_findings: List[Finding] = []
+            approved_exceptions: List[Dict[str, Any]] = []
             for context in contexts:
                 site_findings_for_check = check.run(context)
+                if exception_records is not None:
+                    expanded = [part for finding in site_findings_for_check
+                                for part in expand_finding(check, context, finding, origin)]
+                    site_findings_for_check = []
+                    for finding in expanded:
+                        record = exception_index.get(finding.exception_candidate["fingerprint"]) if finding.exception_candidate else None
+                        if record:
+                            payload = finding.as_dict(check.severity)
+                            payload.pop("actions", None)
+                            payload["exception"] = dict(record)
+                            approved_exceptions.append(payload)
+                            site_exceptions[context.site_id] += 1
+                            total_exceptions += 1
+                        else:
+                            site_findings_for_check.append(finding)
                 check_findings.extend(site_findings_for_check)
                 site_findings[context.site_id] = site_findings.get(context.site_id, 0) + len(
                     site_findings_for_check
@@ -3304,8 +4333,20 @@ class SiteAuditRunner:
                     "failing_sites": failing_site_ids,
                     "passing_sites": max(total_sites - len(failing_site_ids), 0),
                     "actions": actions,
+                    "approved_exceptions": approved_exceptions,
                 }
             )
+        if exception_records is not None:
+            from audit_exception_guard import filter_suggested_actions
+            approved = [f["exception"] for result in results for f in result["approved_exceptions"]]
+            total_quick_fix_issues = 0
+            for result in results:
+                result["actions"] = filter_suggested_actions(result["actions"], approved)
+                for payload in result["findings"]:
+                    payload["actions"] = filter_suggested_actions(payload.get("actions"), approved, payload["site_id"])
+                    if any(str(action.get("button_label", "")).strip().lower() == "1 click fix now"
+                           for action in payload["actions"]):
+                        total_quick_fix_issues += 1
         return {
             "checks": results,
             "total_sites": total_sites,
@@ -3314,15 +4355,19 @@ class SiteAuditRunner:
             "total_quick_fix_issues": total_quick_fix_issues,
             "site_findings": site_findings,
             "site_devices": site_devices,
+            "site_exceptions": site_exceptions,
+            "total_exceptions": total_exceptions,
         }
 
 
 DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
     RequiredSiteVariablesCheck(),
     SwitchTemplateConfigurationCheck(),
+    SiteSleSummaryCheck(),
     ConfigurationOverridesCheck(),
-    FirmwareManagementCheck(),
+    FirmwareManagementCheck(refresh_standards=False),
     CloudManagementCheck(),
+    SwitchCableTestCheck(),
     SwitchPowerSupplyHealthCheck(),
     SpareSwitchPresenceCheck(),
     VirtualChassisRoleCheck(),
@@ -3331,5 +4376,10 @@ DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
 )
 
 
-def build_default_runner() -> SiteAuditRunner:
-    return SiteAuditRunner(DEFAULT_CHECKS)
+def build_default_runner(check_ids: Optional[Iterable[str]] = None, *, refresh_standards: bool = True, include_active_checks: bool = False) -> SiteAuditRunner:
+    # Checks keep per-run state and read local policy during construction.
+    return SiteAuditRunner([FirmwareManagementCheck(refresh_standards=refresh_standards)
+                            if isinstance(check, FirmwareManagementCheck) else type(check)()
+                            for check in DEFAULT_CHECKS
+                            if (check_ids is None or check.id in check_ids)
+                            and (include_active_checks or not isinstance(check, SwitchCableTestCheck))])
