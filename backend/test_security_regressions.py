@@ -127,6 +127,66 @@ def test_outbound_hook_blocks_token_leak_redirects_and_payload_logs(monkeypatch)
     assert "hidden" not in str(log.call_args_list)
 
 
+@pytest.mark.parametrize("vendor", ["../Juniper", "Juniper/../../other", "%2e%2e", "Juniper?ref=other", "//example.invalid", "x" * 65])
+def test_device_library_vendor_cannot_change_request_path(web, monkeypatch, vendor):
+    app, client, _ = web
+    sign_in(client)
+    outbound = Mock()
+    monkeypatch.setattr(app.requests, "get", outbound)
+    response = client.get("/api/device_types", params={"vendor": vendor})
+    assert response.status_code == 400
+    outbound.assert_not_called()
+
+
+def test_device_library_vendor_still_accepts_supported_directory(web, monkeypatch):
+    app, client, _ = web
+    sign_in(client)
+    response_data = Mock()
+    response_data.json.return_value = [{"name": "EX4100.yaml", "type": "file"}]
+    outbound = Mock(return_value=response_data)
+    monkeypatch.setattr(app.requests, "get", outbound)
+    monkeypatch.setattr(app, "NETBOX_LOCAL_DT", "")
+    response = client.get("/api/device_types", params={"vendor": "Juniper"})
+    assert response.status_code == 200
+    assert response.json()["items"] == ["EX4100"]
+    assert outbound.call_args.args[0] == app.NETBOX_DT_URL + "/Juniper"
+
+
+@pytest.mark.parametrize("route", ["rules", "sites", "push", "showtech"])
+def test_unexpected_errors_do_not_disclose_exception_details(web, monkeypatch, tmp_path, route):
+    app, client, _ = web
+    sign_in(client)
+    private_detail = "synthetic-private-path-and-credential"
+
+    def fail(*args, **kwargs):
+        raise RuntimeError(private_detail)
+
+    if route == "rules":
+        target = tmp_path / private_detail
+        target.write_text("invalid JSON")
+        monkeypatch.setattr(app, "RULES_LOCAL_PATH", target)
+        response = client.get("/api/rules")
+    elif route == "sites":
+        monkeypatch.setattr(app, "_list_sites", fail)
+        response = client.get("/api/sites")
+    elif route == "push":
+        monkeypatch.setattr(app, "_build_payload_for_row", fail)
+        response = client.post("/api/push", data={"site_id": "site", "device_id": "device", "input_json": "{}"})
+    else:
+        monkeypatch.setattr(app, "parse_showtech", fail)
+        response = client.post("/api/showtech", files={"files": ("switch.txt", b"synthetic config")})
+    assert response.status_code == 500
+    assert private_detail not in response.text
+    assert response.json()["error"] == "Internal operation failed; consult the server logs."
+
+
+def test_vlan_table_parser_handles_long_malformed_rows(web):
+    app, _, _ = web
+    raw = "VLAN Name Status Ports\n" + "0" * 100_000 + " invalid active\n" + " " * 100_000 + "\n"
+    raw += "  10 users active Gi1/0/1\n1002 fddi-default active\nVLAN Type\n"
+    assert app._parse_show_vlan_text(raw) == [{"id": 10, "name": "users"}]
+
+
 def test_legacy_privileged_cookie_is_rejected(web):
     _, client, _ = web
     forged = TimestampSigner("change_me").sign(base64.b64encode(json.dumps({"user": {"name": "forged", "can_push": True}}).encode())).decode()

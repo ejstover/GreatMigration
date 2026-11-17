@@ -421,16 +421,13 @@ def _parse_show_vlan_text(raw: Any) -> List[Dict[str, Any]]:
             continue
         if line.strip().lower().startswith("vlan type"):
             break
-        m = re.match(r"\s*(\d+)\s+([^\s]+)", line)
-        if not m:
+        fields = line.split(None, 2)
+        if len(fields) < 2 or not re.fullmatch(r"[0-9]{1,4}", fields[0]):
             continue
-        try:
-            vid = int(m.group(1))
-        except Exception:
-            continue
+        vid = int(fields[0])
         if vid in {1002, 1003, 1004, 1005}:
             continue
-        name = m.group(2).strip() or str(vid)
+        name = fields[1]
         entries.append({"id": vid, "name": name})
 
     return entries
@@ -576,6 +573,12 @@ else:
 action_logger = get_user_logger()
 
 SNAPSHOT_BASELINE_JOBS: Dict[str, Dict[str, Any]] = {}
+
+
+def _internal_error(exc: Exception) -> str:
+    # Exception messages can contain credentials, local paths, or upstream bodies.
+    action_logger.error("action=operation_failed error_type=%s", type(exc).__name__)
+    return "Internal operation failed; consult the server logs."
 
 
 def _request_user_label(request: Request) -> str:
@@ -1478,7 +1481,7 @@ def api_get_rules():
         data = json.loads(rules_path.read_text(encoding="utf-8"))
         return {"ok": True, "doc": data}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.post("/api/rules")
@@ -1494,7 +1497,7 @@ def api_save_rules(request: Request, doc: Dict[str, Any] = Body(...)):
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.get("/api/replacements")
@@ -1567,7 +1570,7 @@ def api_save_replacements(request: Request, doc: Dict[str, Any] = Body(...)):
         REPLACEMENTS_PATH.write_text(json.dumps(cleaned_doc, indent=2), encoding="utf-8")
         return {"ok": True}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.post("/api/ssh/jobs")
@@ -1592,7 +1595,7 @@ def api_start_ssh_job(payload: SSHJobRequest):
     except HTTPException:
         raise
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.get("/api/ssh/jobs/{job_id}")
@@ -1618,7 +1621,7 @@ def api_save_conversion_set(request: Request, payload: ConversionSetRequest):
         )
         return {"ok": True, "item": summary}
     except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(exc)}, status_code=500)
 
 
 @app.get("/api/conversion-sets/{project_key}")
@@ -1683,7 +1686,7 @@ def api_start_network_state_baseline_job(request: Request, payload: BaselineCapt
     except HTTPException:
         raise
     except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(exc)}, status_code=500)
 
 
 @app.get("/api/network-state/baselines/jobs/{job_id}")
@@ -1807,7 +1810,7 @@ def api_compare_network_state(request: Request, payload: MistComparisonRequest):
         nss.update_project_index(project_key, summary)
         return {"ok": True, "run": compare_run, "summary": summary}
     except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(exc)}, status_code=500)
 
 
 @app.post("/api/showtech")
@@ -1842,7 +1845,7 @@ async def api_showtech(files: List[UploadFile] = File(...)):
             )
         return {"ok": True, "results": results}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 def _safe_project_filename_fragment(value: str, max_length: int = 64) -> str:
@@ -2053,6 +2056,8 @@ def api_showtech_pdf(data: Dict[str, Any] = Body(...)):
 
 @app.get("/api/device_types")
 def api_device_types(vendor: str):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", vendor):
+        raise HTTPException(status_code=400, detail="Vendor must be a single library directory name")
     try:
         r = requests.get(f"{NETBOX_DT_URL}/{vendor}", timeout=30)
         r.raise_for_status()
@@ -2070,7 +2075,7 @@ def api_device_types(vendor: str):
         items.sort(key=lambda x: x.lower())
         return {"ok": True, "items": items}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.post("/api/device_types")
@@ -2101,7 +2106,7 @@ def api_add_device_type(request: Request, data: Dict[str, str] = Body(...)):
 
         return {"ok": True, "items": models}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.get("/api/sites")
@@ -2128,7 +2133,7 @@ def api_sites(base_url: str = DEFAULT_BASE_URL, org_id: Optional[str] = None):
             err_payload = str(exc)
         return JSONResponse({"ok": False, "error": err_payload}, status_code=status)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.get("/api/site_devices")
@@ -2163,7 +2168,7 @@ def api_site_devices(site_id: str, base_url: str = DEFAULT_BASE_URL):
         try:
             err_payload = r.json()  # type: ignore[name-defined]
         except Exception:
-            err_payload = {"error": str(e)}
+            err_payload = {"error": "Unable to retrieve Mist device data."}
         return JSONResponse({"ok": False, "error": err_payload}, status_code=getattr(r, "status_code", 502))  # type: ignore[name-defined]
 
 
@@ -2581,7 +2586,7 @@ def api_audit_run(
             _request_user_label(request),
             exc,
         )
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(exc)}, status_code=500)
 
 
 @app.get("/api/audit/exceptions")
@@ -6349,7 +6354,7 @@ async def api_push(
     except PortConfigError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": f"Server error: {e}"}, status_code=500)
+        return JSONResponse({"ok": False, "error": _internal_error(e)}, status_code=500)
 
 
 @app.post("/api/push_batch")
@@ -6562,7 +6567,7 @@ async def api_push_batch(
             except PortConfigError as e:
                 results.append({"ok": False, "row_index": i, "error": str(e)})
             except Exception as e:
-                results.append({"ok": False, "row_index": i, "error": f"Server error: {e}"})
+                results.append({"ok": False, "row_index": i, "error": _internal_error(e)})
 
     phase_status: Dict[str, Dict[str, Any]] = {}
 

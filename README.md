@@ -32,6 +32,7 @@ Most workflows support non-destructive review before any push action is availabl
 - [Configuration reference](#configuration-reference)
 - [Firewall requirements](#firewall-requirements)
 - [Operational tips](#operational-tips)
+- [Secure deployment and verification](#secure-deployment-and-verification)
 
 ---
 
@@ -424,7 +425,7 @@ If you prefer to configure the tool manually:
 - `AUTH_METHOD=local` uses the scrypt-hashed account database in `LOCAL_USERS_FILE`. Legacy plaintext entries are migrated by the setup utility.
 - `AUTH_METHOD=ldap` uses LDAP bind/search plus group DNs.
 - Push rights come from `PUSH_GROUP_DN` (LDAP) or each local account's `can_push` field.
-- Shared deployments require HTTPS; keep `SESSION_HTTPS_ONLY=true`. See [security deployment and verification](SECURITY_REMEDIATION.md) for certificate, SSH trust, retention, migration, and test instructions.
+- Shared deployments require HTTPS; keep `SESSION_HTTPS_ONLY=true`. See [secure deployment and verification](#secure-deployment-and-verification) for certificate, SSH trust, retention, migration, and test instructions.
 
 ### Mist connectivity
 
@@ -462,9 +463,9 @@ Allow these flows in controlled environments:
 | Outbound  | TCP 443 | Mist API endpoint (`api.ac2.mist.com` or regional host) | Read inventory, run audits/fixes, and perform pushes. |
 | Outbound  | TCP 443 | `api.github.com` and optional `NETBOX_DT_URL` | Pull device type metadata used in conversion workflows. |
 | Outbound  | TCP 22 | Managed switches | SSH collection and SSH-driven network workflows. |
-| Outbound* | TCP 389/636 | LDAP/AD servers | Required only when using LDAP auth. |
+| Outbound | TCP 636 (or configured LDAPS port) | LDAP/AD servers | Required only when using LDAP auth. |
 
-*Use LDAPS (`636`) whenever possible.
+LDAP requires LDAPS with a trusted certificate; unencrypted LDAP is rejected.
 
 ---
 
@@ -472,8 +473,92 @@ Allow these flows in controlled environments:
 
 - **Start read-only**: validate inventory, rules, and audits before allowing push access.
 - **Use stage/test first**: treat push as a final approved step, not the first step.
-- **Keep policy files version-controlled**: `port_rules.json`, `device_map.json`, and related mappings.
+- **Back up local policy securely**: keep `port_rules.json`, `device_map.json`, and related mappings in a private configuration store, outside this public repository.
 - **Review logs after every change window**: local logs and Mist audit logs should agree.
 - **Re-run quickstart periodically**: this updates dependencies and keeps local setup aligned.
 
 GreatMigration is designed to reduce migration risk by making change intent visible, reviewable, and role-controlled.
+
+## Secure deployment and verification
+
+### Installation and account migration
+
+Run `python backend/security_setup.py` before starting an existing installation.
+Quick-start runs this automatically. Setup replaces weak session signing keys,
+migrates legacy local accounts to `backend/data/local_users.json` with salted
+scrypt password hashes, removes plaintext account entries from `.env`, and scrubs
+legacy HTTP payload logs. It preserves the Mist token and unrelated settings.
+Existing sessions require a new login.
+
+Use `python backend/security_setup.py --add-user USERNAME --push` to create or
+update a push-enabled account; omit `--push` for read-only access. Passwords are
+entered through a hidden prompt. Use `--revoke-sessions` to revoke all sessions.
+Local account or role edits take effect on the next request; LDAP sessions
+revalidate directory access on every request. Sessions expire after one hour.
+
+### Hosting, credentials, and trusted connections
+
+- Keep access restricted to trusted operators on a management network. All
+  authenticated users share installation evidence and the configured Mist service
+  account. Use separate installations when those users must be isolated.
+- Quick-start binds to loopback. For shared hosting, configure `APP_ALLOWED_HOSTS`
+  with exact public hostnames, terminate HTTPS at a trusted reverse proxy, and keep
+  `SESSION_HTTPS_ONLY=true`. Configure Uvicorn to trust forwarded headers only from
+  that proxy. Loopback HTTP development requires `SESSION_HTTPS_ONLY=false`.
+- `MIST_BASE_URL` selects the region; `MIST_ALLOWED_HOSTS` adds exact approved API
+  hostnames. Requests with the Mist token require an approved HTTPS API origin and
+  certificate verification; credentialed redirects are disabled.
+- LDAP requires `ldaps://`, a trusted certificate (optionally configured through
+  `LDAP_CA_CERTS_FILE`), and a service account for session authorization checks.
+  Directory validation failures deny access.
+- SSH requires verified keys in the normal known-hosts file or
+  `SSH_KNOWN_HOSTS_FILE`. Verify fingerprints through a trusted channel before
+  adding keys; do not disable host-key checks.
+- Restrict `.env`, local account databases, sessions, evidence, logs, and backups
+  to the service account and administrators, including Windows filesystem ACLs.
+  Use a Mist token scoped to the operations and organizations the installation
+  needs. Never commit live credentials or customer configurations.
+
+### Evidence retention and resource limits
+
+Defaults are 16 MiB per request, 16 uploads, eight in-flight requests per process,
+two shared SSH jobs, eight workers per SSH job, one-hour temporary SSH retention,
+and 30-day saved evidence retention. `MAX_REQUEST_BYTES`, `MAX_INFLIGHT_REQUESTS`,
+`MAX_SSH_JOBS`, and `NETWORK_DATA_RETENTION_DAYS` configure the corresponding limits.
+Background maintenance removes expired evidence and orphaned SSH captures.
+Retention excludes local accounts, sessions, and audit exceptions; retain secure
+backups of policy files and approved exceptions separately. These limits do not
+replace reverse-proxy connection limits or host disk monitoring.
+
+### Development verification
+
+Install tools with `python -m pip install -r backend/requirements-dev.txt`, then
+`python -m playwright install chromium`. Run:
+
+```text
+python -m pytest backend -q
+python -m ruff check backend quickstart.py tests --select E9,F63,F7,F82
+python -m pip_audit -r backend/requirements.txt
+python -m pip_audit -r backend/requirements-dev.txt
+python -m pip check
+npm ci --ignore-scripts
+npm run build:css
+git diff --exit-code -- static/app.css
+npm audit
+```
+
+The suite uses synthetic infrastructure and isolated storage, including browser
+and SSH transport tests. Automated tests must never use production credentials or
+make production network changes. Windows and Linux CI run these checks.
+
+Runtime frontend assets are committed so Node is needed only for development.
+After changing templates, rebuild CSS as above. When updating Sortable, copy
+`Sortable.min.js` and its license from the pinned `node_modules/sortablejs`
+package's `Sortable.min.js` and `LICENSE` into `static/vendor/`. Verify both files
+match the package before committing. Keep dependency changes, lockfiles, and
+generated assets together in the same pull request.
+
+Pull requests also run dependency review and redacted secret scanning. Weekly
+audits and Dependabot updates help detect newly disclosed vulnerabilities; they
+do not certify the application as vulnerability-free. See [SECURITY.md](SECURITY.md)
+for supported versions and private vulnerability reporting.

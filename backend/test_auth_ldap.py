@@ -1,6 +1,9 @@
 import sys
 from pathlib import Path
 
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from ldap3.utils.conv import escape_filter_chars
 
 
@@ -191,3 +194,45 @@ def test_is_member_of_group_escapes_filter_characters(monkeypatch):
         "))"
     )
     assert conn.search_calls == [("DC=example,DC=com", expected_filter)]
+
+
+@pytest.mark.parametrize("failure", ["bind", "missing_user", "unauthorized"])
+def test_failed_ldap_login_can_be_retried_without_reloading(monkeypatch, failure):
+    """Every rejected login must render a usable CSRF token and retain CSP."""
+    import re
+    from security import SecurityMiddleware
+
+    auth = _setup_auth(monkeypatch, can_push=False)
+    lookup = auth._search_user
+
+    def bind(username, password):
+        if failure == "bind":
+            raise ValueError("Synthetic invalid credentials")
+        return object()
+
+    monkeypatch.setattr(auth, "_bind_as", bind)
+    if failure == "missing_user":
+        monkeypatch.setattr(auth, "_search_user", lambda *args: None)
+
+    app = FastAPI()
+    app.add_middleware(SecurityMiddleware, authenticate=auth.current_user)
+    auth.install_auth(app)
+    with TestClient(app) as client:
+        page = client.get("/login")
+        token = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+        rejected = client.post("/login", data={"username": "alice", "password": "wrong", "csrf_token": token})
+        assert rejected.status_code == (403 if failure == "unauthorized" else 401)
+        assert "{{CSRF_TOKEN}}" not in rejected.text
+        assert "{{CSP_NONCE}}" not in rejected.text
+        token = re.search(r'name="csrf_token" value="([^"]+)"', rejected.text).group(1)
+        assert re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token)
+        assert "form-action 'self'" in rejected.headers["content-security-policy"]
+
+        # Reuse the form on the error page, without a GET /login in between.
+        _setup_auth(monkeypatch, can_push=True)
+        monkeypatch.setattr(auth, "_search_user", lookup)
+        accepted = client.post("/login", data={"username": "alice", "password": "correct", "csrf_token": token},
+                               follow_redirects=False)
+        assert accepted.status_code == 302
+        assert accepted.headers["location"] == "/"
+        assert client.get("/me").json()["user"]["can_push"] is True
