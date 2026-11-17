@@ -1,5 +1,5 @@
 @import "tailwindcss" source(none);
-@config "../tailwind.config.cjs";
+@import "./tailwind.colors.css";
 @source "../templates";
 @source "../backend/auth_local.py";
 @source "../backend/auth_ldap.py";
