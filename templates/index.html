@@ -6,8 +6,10 @@
   <title>{{DOC_TITLE}}</title>
   <link rel="icon" type="image/png" href="/static/logo.png" />
 
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>tailwind.config = { darkMode: 'media' };</script>
+  <link rel="stylesheet" href="/static/app.css" />
+  <meta name="csrf-token" content="{{CSRF_TOKEN}}" />
+  <script src="/static/security.js" defer></script>
+
 
   <style>
     pre { white-space: pre-wrap; word-wrap: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }
@@ -31,6 +33,7 @@
       <a href="/hardware" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_HARDWARE}}</a>
       <a href="/replacements" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_REPLACEMENTS}}</a>
       <a href="/" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_CONFIG}}</a>
+      <a href="/network-snapshot" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_NETWORK_SNAPSHOT}}</a>
       <a href="/rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_RULES}}</a>
       <a href="/standards" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_STANDARDS}}</a>
       <a href="/audit" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_AUDIT}}</a>
@@ -276,6 +279,24 @@
       <div id="rows_warning" class="hidden rounded-lg border p-3 mb-3 status-error text-sm dark:bg-rose-950"></div>
       <div id="batch_rows" class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow divide-y dark:divide-slate-700"></div>
 
+      <div class="mt-5 rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900/50">
+        <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div class="max-w-2xl">
+            <p class="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">Snapshot Prep</p>
+            <h3 class="mt-1 text-base font-semibold text-slate-900 dark:text-slate-100">Save this mapped conversion set for the Network Snapshot page</h3>
+            <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Once rows are mapped to Mist sites and switches, save the target mapping here and then open <a href="/network-snapshot" class="font-semibold text-amber-700 underline decoration-amber-300 underline-offset-2 dark:text-amber-300">Network Snapshot</a> to capture the pre-migration baseline and run post-cutover MAC validation.</p>
+          </div>
+          <div class="grid gap-3 md:grid-cols-[minmax(16rem,1fr)_auto]">
+            <label class="flex flex-col gap-1">
+              <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Project name</span>
+              <input id="conversion_set_project_name" type="text" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="Campus Core Upgrade" />
+            </label>
+            <button id="save_conversion_set_btn" type="button" class="inline-flex items-center justify-center rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700">Save Conversion Set</button>
+          </div>
+        </div>
+        <div id="save_conversion_set_status" class="mt-3 text-sm text-slate-600 dark:text-slate-300"></div>
+      </div>
+
       <div class="flex items-center gap-3 mt-4">
         <button id="push_batch_btn" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700">Run selected automation</button>
         <div id="batch_status" class="text-sm text-slate-600 dark:text-slate-300 ml-2"></div>
@@ -288,7 +309,7 @@
   </div>
   </div>
 
-    <script>
+    <script nonce="{{CSP_NONCE}}">
       const menuBtn = document.getElementById('menu_btn');
       const menu = document.getElementById('menu');
       const main = document.getElementById('main');
@@ -320,7 +341,7 @@
       logoutBtn?.classList.remove('hidden');
       logoutBtn?.addEventListener('click', (e) => {
         e.preventDefault();
-        window.location.href = '/logout';
+        window.secureLogout();
       });
 
       if (readOnly) {
@@ -364,6 +385,9 @@
     const batchStatus = document.getElementById('batch_status');
     const batchOutput = document.getElementById('batch_output');
     const batchPhaseStatus = document.getElementById('batch_phase_status');
+    const conversionSetProjectName = document.getElementById('conversion_set_project_name');
+    const saveConversionSetBtn = document.getElementById('save_conversion_set_btn');
+    const saveConversionSetStatus = document.getElementById('save_conversion_set_status');
 
     const strictOverflow = document.getElementById('strict_overflow');
     const tz = document.getElementById('tz');
@@ -397,9 +421,20 @@
     const liveChangeCheckboxes = [sitePush, applyTempConfig, finalizeAssignments, removeTempConfig].filter(Boolean);
 
     // --- Utils ---
-    function show(el){ el.classList.remove('hidden'); }
-    function hide(el){ el.classList.add('hidden'); }
+    function show(el){ if (el) el.classList.remove('hidden'); }
+    function hide(el){ if (el) el.classList.add('hidden'); }
     function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
+    function getSnapshotRowsPayload(){
+      return rows.map(r => ({
+        source_file: convertedItems[r.idx]?.source_file || `Row ${r.idx + 1}`,
+        site_id: r.site_id,
+        device_id: r.device_id,
+        input_json: convertedItems[r.idx]?.json || {},
+        member_offset: r.member_offset,
+        port_offset: r.port_offset,
+        model_override: r.model_override || ''
+      }));
+    }
 
     function isPreviewOnly(){
       return !liveChangeCheckboxes.some(cb => cb && cb.checked);
@@ -592,6 +627,47 @@
     const savedSshUser = localStorage.getItem('ssh_username');
     if (savedSshUser && sshUsernameInput) sshUsernameInput.value = savedSshUser;
 
+    saveConversionSetBtn?.addEventListener('click', async () => {
+      const projectName = (conversionSetProjectName?.value || '').trim();
+      const payloadRows = getSnapshotRowsPayload();
+      if (!projectName){
+        saveConversionSetStatus.textContent = 'Project name is required before saving a conversion set.';
+        return;
+      }
+      if (!payloadRows.length){
+        saveConversionSetStatus.textContent = 'Convert and map at least one row before saving a conversion set.';
+        return;
+      }
+      if (payloadRows.some(row => !row.site_id || !row.device_id)){
+        saveConversionSetStatus.textContent = 'Each row needs a site and device before the mapping can be saved.';
+        return;
+      }
+
+      saveConversionSetBtn.disabled = true;
+      saveConversionSetBtn.classList.add('opacity-70', 'cursor-not-allowed');
+      saveConversionSetStatus.textContent = 'Saving conversion set…';
+      try {
+        const res = await fetch('/api/conversion-sets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project_name: projectName,
+            label: `${projectName} mapped targets`,
+            rows: payloadRows
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data?.error || `Request failed with status ${res.status}`);
+        const item = data.item || {};
+        saveConversionSetStatus.innerHTML = `Saved <strong>${escapeHtml(item.label || item.conversion_set_id || 'conversion set')}</strong>. Open <a href="/network-snapshot" class="font-semibold text-amber-700 underline decoration-amber-300 underline-offset-2 dark:text-amber-300">Network Snapshot</a> to capture the baseline.`;
+      } catch (err){
+        saveConversionSetStatus.textContent = `Unable to save conversion set: ${err?.message || err}`;
+      } finally {
+        saveConversionSetBtn.disabled = false;
+        saveConversionSetBtn.classList.remove('opacity-70', 'cursor-not-allowed');
+      }
+    });
+
     if (sshToggleBtn && sshPasswordInput){
       sshToggleBtn.addEventListener('click', () => {
         const hidden = sshPasswordInput.type === 'password';
@@ -774,6 +850,7 @@
       batchStatus.textContent = '';
       syncPushBtnLabel();
       resetSshFailurePanel();
+      if (saveConversionSetStatus) saveConversionSetStatus.textContent = '';
     });
 
     // --- Sites/Devices ---

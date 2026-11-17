@@ -1,19 +1,20 @@
 # auth_ldap.py
 import os
 import secrets
+import ssl
+from html import escape
 from typing import Optional, Dict, Any, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
-from starlette.middleware.sessions import SessionMiddleware
+from session_store import SessionMiddleware
+from security import session_secret, csrf_token
 from ldap3 import Server, Connection, ALL, Tls, NTLM, SUBTREE
 from ldap3.utils.conv import escape_filter_chars
 
 from logging_utils import get_user_logger
 
-SESSION_SECRET = os.getenv("SESSION_SECRET")
-if not SESSION_SECRET:
-    SESSION_SECRET = secrets.token_urlsafe(32)
+SESSION_SECRET = session_secret()
 SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", "true").strip().lower() in {"1", "true", "yes", "on"}
 LDAP_SERVER_URL = os.getenv("LDAP_SERVER_URL", "ldaps://dc01.testdomain.local:636")
 LDAP_SEARCH_BASE = os.getenv("LDAP_SEARCH_BASE", "DC=testdomain,DC=local")
@@ -49,7 +50,10 @@ action_logger = get_user_logger()
 
 def _server() -> Server:
     use_ssl = LDAP_SERVER_URL.lower().startswith("ldaps://")
-    return Server(LDAP_SERVER_URL, use_ssl=use_ssl, get_info=ALL, connect_timeout=8)
+    if not use_ssl:
+        raise ValueError("LDAP_SERVER_URL must use ldaps:// with a trusted certificate")
+    tls = Tls(validate=ssl.CERT_REQUIRED, ca_certs_file=os.getenv("LDAP_CA_CERTS_FILE") or None)
+    return Server(LDAP_SERVER_URL, use_ssl=True, tls=tls, get_info=ALL, connect_timeout=8)
 
 def _bind_as(username: str, password: str) -> Connection:
     """Bind as the user. username is raw (e.g., 'alice'), we render per template."""
@@ -74,13 +78,14 @@ def _search_user(conn: Connection, username: str) -> Optional[Dict[str, Any]]:
     """Find user entry by UPN or sAMAccountName."""
     # Two filters to be robust
     upn = LDAP_BIND_TEMPLATE.format(username=username)
-    search_filter = f"(|(userPrincipalName={upn})(sAMAccountName={username}))"
+    search_filter = f"(|(userPrincipalName={escape_filter_chars(upn)})(sAMAccountName={escape_filter_chars(username)}))"
     attrs = [
         "distinguishedName",
         "displayName",
         "mail",
         "userPrincipalName",
         "memberOf",
+        "userAccountControl",
     ]
     for base in _iter_search_bases():
         ok = conn.search(
@@ -96,6 +101,11 @@ def _search_user(conn: Connection, username: str) -> Optional[Dict[str, Any]]:
         return None
 
     e = conn.entries[0]
+    try:
+        if int(e.userAccountControl.value) & 2:
+            return None
+    except AttributeError:
+        pass
     def _list(attr):
         try:
             return [str(x) for x in getattr(e, attr).values]
@@ -186,7 +196,7 @@ def _is_member_of_group(user_dn: str, group_dn: str, search_conn: Connection) ->
     return False
 
 def _html_login(error: Optional[str] = None) -> str:
-    msg = f'<p class="text-sm text-rose-600 dark:text-rose-400 mt-2">{error}</p>' if error else ''
+    msg = f'<p class="text-sm text-rose-600 dark:text-rose-400 mt-2">{escape(error)}</p>' if error else ''
     hint = 'user@testdomain.local' if '{username}@' in LDAP_BIND_TEMPLATE else 'TESTDOMAIN\\user'
     return f"""
 <!doctype html>
@@ -195,11 +205,10 @@ def _html_login(error: Optional[str] = None) -> str:
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Sign in</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>tailwind.config = {{ darkMode: 'media' }};</script>
+    <link rel="stylesheet" href="/static/app.css" />
   </head>
   <body class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100" style="background-image: url('/static/logo.png'); background-position: center; background-repeat: no-repeat; background-size: 1500px;">
-    <a href="{HELP_URL}" target="_blank" rel="noopener" class="fixed top-4 right-4 text-white/80 hover:text-white" aria-label="Help">
+    <a href="{escape(HELP_URL, quote=True)}" target="_blank" rel="noopener" class="fixed top-4 right-4 text-white/80 hover:text-white" aria-label="Help">
       <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM10 5a3 3 0 00-3 3 .75.75 0 101.5 0A1.5 1.5 0 0110 6.5a1.5 1.5 0 011.5 1.5c0 .401-.08.558-.494.969-.458.451-1.168 1.15-1.168 2.531h1.5c0-.822.447-1.2.903-1.642.571-.56 1.009-1.078 1.009-1.858A3 3 0 0010 5zm0 8a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/></svg>
     </a>
     <div class="min-h-screen flex items-center justify-center p-6">
@@ -208,6 +217,7 @@ def _html_login(error: Optional[str] = None) -> str:
         <p class="text-sm text-slate-600 dark:text-slate-300">Use your corporate AD credentials</p>
         {msg}
         <form method="post" action="/login" class="mt-4 space-y-3">
+          <input type="hidden" name="csrf_token" value="{{{{CSRF_TOKEN}}}}" />
           <div>
             <label class="block text-sm font-medium mb-1">Username</label>
             <input name="username" autocomplete="username" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" required />
@@ -225,88 +235,106 @@ def _html_login(error: Optional[str] = None) -> str:
 </html>
 """
 
+def _login_response(request, error=None, status_code=200):
+    html = _html_login(error).replace("{{CSRF_TOKEN}}", csrf_token(request)).replace("{{CSP_NONCE}}", getattr(request, "scope", {}).get("state", {}).get("csp_nonce", ""))
+    return HTMLResponse(html, status_code=status_code)
+
+
 @router.get("/login", response_class=HTMLResponse)
-def get_login():
-    return HTMLResponse(_html_login())
+def get_login(request: Request):
+    return _login_response(request)
 
 @router.post("/login")
 def post_login(request: Request, username: str = Form(...), password: str = Form(...)):
-    # 1) Bind as user to verify credentials
-    try:
-        user_conn = _bind_as(username, password)
-    except Exception:
-        client_host = request.client.host if request.client else "-"
-        action_logger.warning("ldap_login_failed user=%s client=%s reason=bind_failed", username, client_host)
-        return HTMLResponse(_html_login("Invalid username or password."), status_code=401)
-
-    # 2) Find user entry (with groups)
-    entry = _search_user(user_conn, username)
-    if not entry:
-        client_host = request.client.host if request.client else "-"
-        action_logger.warning("ldap_login_failed user=%s client=%s reason=user_not_found", username, client_host)
-        return HTMLResponse(_html_login("User not found in directory."), status_code=401)
-
-    # 3) If we need recursive group check, bind service (or reuse user bind if permitted)
+    user_conn = None
     svc_conn = None
-    if PUSH_GROUP_DN or READONLY_GROUP_DNS:
+    try:
+        # 1) Bind as user to verify credentials
+        try:
+            user_conn = _bind_as(username, password)
+        except Exception:
+            client_host = request.client.host if request.client else "-"
+            action_logger.warning("ldap_login_failed user=%s client=%s reason=bind_failed", username, client_host)
+            return HTMLResponse(_html_login("Invalid username or password."), status_code=401)
+
+        # 2) Find user entry (with groups)
+        entry = _search_user(user_conn, username)
+        if not entry:
+            client_host = request.client.host if request.client else "-"
+            action_logger.warning("ldap_login_failed user=%s client=%s reason=user_not_found", username, client_host)
+            return HTMLResponse(_html_login("User not found in directory."), status_code=401)
+
+        # 3) If we need recursive group check, bind service (or reuse user bind if permitted)
         try:
             svc_conn = _bind_service()
         except Exception:
             svc_conn = None
+        if svc_conn is None:
+            return _login_response(request, "LDAP service account is required for session validation.", 503)
 
-    membership_conn = svc_conn or user_conn
+        membership_conn = svc_conn or user_conn
 
-    can_push = False
-    if PUSH_GROUP_DN:
-        try:
-            can_push = _is_member_of_group(entry["dn"], PUSH_GROUP_DN, membership_conn)
-        except Exception:
-            can_push = False
+        can_push = False
+        if PUSH_GROUP_DN:
+            try:
+                can_push = _is_member_of_group(entry["dn"], PUSH_GROUP_DN, membership_conn)
+            except Exception:
+                can_push = False
 
-    is_read_only = False
-    if READONLY_GROUP_DNS:
-        try:
-            for group_dn in READONLY_GROUP_DNS:
-                if _is_member_of_group(entry["dn"], group_dn, membership_conn):
-                    is_read_only = True
-                    break
-        except Exception:
-            is_read_only = False
+        is_read_only = False
+        if READONLY_GROUP_DNS:
+            try:
+                for group_dn in READONLY_GROUP_DNS:
+                    if _is_member_of_group(entry["dn"], group_dn, membership_conn):
+                        is_read_only = True
+                        break
+            except Exception:
+                is_read_only = False
 
-    has_group_requirement = bool(PUSH_GROUP_DN or READONLY_GROUP_DNS)
-    if has_group_requirement and not (can_push or is_read_only):
+        has_group_requirement = bool(PUSH_GROUP_DN or READONLY_GROUP_DNS)
+        if has_group_requirement and not (can_push or is_read_only):
+            client_host = request.client.host if request.client else "-"
+            action_logger.warning(
+                "ldap_login_failed user=%s client=%s reason=not_in_allowed_group",
+                username,
+                client_host,
+            )
+            return HTMLResponse(
+                _html_login("Your account is not authorized for Mist pushes."),
+                status_code=403,
+            )
+
+        # 4) Store session
+        read_only_flag = not can_push
+        request.session.clear()
+        request.session["login_nonce"] = secrets.token_urlsafe(24)
+        request.session["user"] = {
+            "name": entry.get("displayName") or username,
+            "email": entry.get("mail") or entry.get("upn") or "",
+            "dn": entry["dn"],
+            "upn": entry.get("upn") or "",
+            "can_push": bool(can_push),
+            "read_only": read_only_flag,
+            "login_name": username,
+        }
+        csrf_token(request)
         client_host = request.client.host if request.client else "-"
-        action_logger.warning(
-            "ldap_login_failed user=%s client=%s reason=not_in_allowed_group",
-            username,
+        action_logger.info(
+            "ldap_login_success user=%s client=%s can_push=%s read_only=%s",
+            entry.get("displayName") or username,
             client_host,
+            bool(can_push),
+            read_only_flag,
         )
-        return HTMLResponse(
-            _html_login("Your account is not authorized for Mist pushes."),
-            status_code=403,
-        )
+        return RedirectResponse("/", status_code=302)
+    finally:
+        for conn in (svc_conn, user_conn):
+            close = getattr(conn, "unbind", None)
+            if close:
+                close()
 
-    # 4) Store session
-    read_only_flag = bool(is_read_only and not can_push)
-    request.session["user"] = {
-        "name": entry.get("displayName") or username,
-        "email": entry.get("mail") or entry.get("upn") or "",
-        "dn": entry["dn"],
-        "upn": entry.get("upn") or "",
-        "can_push": bool(can_push),
-        "read_only": read_only_flag,
-    }
-    client_host = request.client.host if request.client else "-"
-    action_logger.info(
-        "ldap_login_success user=%s client=%s can_push=%s read_only=%s",
-        entry.get("displayName") or username,
-        client_host,
-        bool(can_push),
-        read_only_flag,
-    )
-    return RedirectResponse("/", status_code=302)
 
-@router.get("/logout")
+@router.post("/logout")
 def logout(request: Request):
     user = request.session.get("user", {})
     client_host = request.client.host if request.client else "-"
@@ -318,10 +346,35 @@ def logout(request: Request):
 
 # ----- Dependencies you can use to protect routes -----
 def current_user(request: Request) -> Dict[str, Any]:
+    cached = getattr(request, "scope", {}).get("state", {}).get("authenticated_user")
+    if cached:
+        return cached
     u = request.session.get("user")
     if not u:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Auth required")
-    return u
+    conn = None
+    try:
+        conn = _bind_service()
+        if conn is None:
+            raise ValueError("LDAP service account is required for session validation")
+        entry = _search_user(conn, u.get("login_name", ""))
+        if not entry or entry["dn"].casefold() != u.get("dn", "").casefold():
+            raise ValueError("Directory account is unavailable")
+        push = bool(PUSH_GROUP_DN and _is_member_of_group(entry["dn"], PUSH_GROUP_DN, conn))
+        readonly = any(_is_member_of_group(entry["dn"], group, conn) for group in READONLY_GROUP_DNS)
+        if (PUSH_GROUP_DN or READONLY_GROUP_DNS) and not (push or readonly):
+            raise ValueError("Directory authorization was revoked")
+        u = dict(u, can_push=push, read_only=not push)
+        request.session["user"] = u
+        return u
+    except Exception:
+        request.session.clear()
+        raise HTTPException(status_code=401, detail="Directory authorization unavailable; sign in again")
+    finally:
+        if conn is not None:
+            close = getattr(conn, "unbind", None)
+            if close:
+                close()
 
 def require_push_rights(user = Depends(current_user)):
     if not user.get("can_push"):
@@ -344,7 +397,7 @@ def me(user = Depends(current_user)):
 def install_auth(app):
     """Call this from app.py to enable sessions + routes."""
     # Add SessionMiddleware if not already present
-    app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", https_only=SESSION_HTTPS_ONLY)
+    app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", https_only=SESSION_HTTPS_ONLY, max_age=3600)
     app.include_router(router)
 
 __all__ = ["install_auth", "current_user", "require_push_rights"]

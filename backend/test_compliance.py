@@ -15,11 +15,13 @@ from compliance import (
     ConfigurationOverridesCheck,
     FirmwareManagementCheck,
     CloudManagementCheck,
+    SwitchCableTestCheck,
     SwitchPowerSupplyHealthCheck,
     SpareSwitchPresenceCheck,
     VirtualChassisRoleCheck,
     DeviceNamingConventionCheck,
     DeviceDocumentationCheck,
+    SiteSleSummaryCheck,
     SiteAuditRunner,
     DEFAULT_REQUIRED_SITE_VARIABLES,
     DNS_OVERRIDE_TEMPLATE_NAME,
@@ -216,6 +218,178 @@ def test_switch_template_check_allows_lab_site_with_prod_template():
         devices=[],
     )
     check = SwitchTemplateConfigurationCheck()
+    assert check.run(ctx) == []
+
+
+def test_site_sle_summary_check_flags_degraded_metrics_and_classifiers(monkeypatch):
+    ctx = SiteContext(
+        site_id="site-1",
+        site_name="HQ",
+        site={"org_id": "org-1"},
+        setting={},
+        templates=[],
+        devices=[],
+        mist_base_url="https://example.com/api/v1",
+        mist_headers={"Authorization": "Token abc"},
+    )
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, headers=None, params=None, timeout=30):
+        if url.endswith("/orgs/org-1/insights/sites-sle") and params.get("sle") == "wifi":
+            return FakeResponse(
+                {
+                    "results": [
+                        {
+                            "site_id": "site-1",
+                            "ap-availability": 1,
+                            "ap-health": 0.82,
+                            "capacity": 1,
+                            "coverage": 1,
+                            "roaming": 1,
+                            "successful-connect": 1,
+                            "throughput": 1,
+                            "time-to-connect": 1,
+                        }
+                    ]
+                }
+            )
+        if url.endswith("/orgs/org-1/insights/sites-sle") and params.get("sle") == "wired":
+            return FakeResponse(
+                {
+                    "results": [
+                        {
+                            "site_id": "site-1",
+                            "switch-bandwidth": 1,
+                            "switch-health": 0.91,
+                            "switch-throughput": 1,
+                        }
+                    ]
+                }
+            )
+        if url.endswith("/sites/site-1/sle/site/site-1/metric/ap-health/summary"):
+            return FakeResponse(
+                {
+                    "classifiers": [
+                        {
+                            "name": "wifi-interference",
+                            "impact": {"num_users": 12, "num_aps": 2, "total_users": 24, "total_aps": 4},
+                            "samples": {
+                                "degraded": [10.5, 0, 1.5],
+                                "duration": [5.0, 0, 1.0],
+                                "total": [100, 100, 100],
+                            },
+                        },
+                        {
+                            "name": "weak-signal",
+                            "impact": {"num_users": 0, "num_aps": 0, "total_users": 24, "total_aps": 4},
+                            "samples": {
+                                "degraded": [0, 0, 0],
+                                "duration": [0, 0, 0],
+                                "total": [100, 100, 100],
+                            },
+                        },
+                    ]
+                }
+            )
+        if url.endswith("/sites/site-1/sle/site/site-1/metric/switch-health/summary"):
+            return FakeResponse({"classifiers": []})
+        raise AssertionError(f"Unexpected URL {url} params={params}")
+
+    monkeypatch.setattr(compliance.requests, "get", fake_get)
+
+    check = SiteSleSummaryCheck()
+    findings = check.run(ctx)
+
+    assert len(findings) == 2
+    wireless_finding = next(f for f in findings if "ap-health" in f.message)
+    wired_finding = next(f for f in findings if "switch-health" in f.message)
+
+    assert wireless_finding.details["score_percent"] == 82.0
+    assert wireless_finding.details["impacting_classifiers"] == [
+        {
+            "name": "wifi-interference",
+            "degraded_total": 12.0,
+            "duration_total": 6.0,
+            "total_total": 300.0,
+            "impact": {
+                "num_users": 12,
+                "num_aps": 2,
+                "total_users": 24,
+                "total_aps": 4,
+            },
+        }
+    ]
+    assert wired_finding.details["impacting_classifiers"] == []
+
+
+def test_site_sle_summary_check_ignores_healthy_metrics(monkeypatch):
+    ctx = SiteContext(
+        site_id="site-1",
+        site_name="HQ",
+        site={"org_id": "org-1"},
+        setting={},
+        templates=[],
+        devices=[],
+        mist_base_url="https://example.com/api/v1",
+        mist_headers={"Authorization": "Token abc"},
+    )
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, headers=None, params=None, timeout=30):
+        if url.endswith("/orgs/org-1/insights/sites-sle") and params.get("sle") == "wifi":
+            return FakeResponse(
+                {
+                    "results": [
+                        {
+                            "site_id": "site-1",
+                            "ap-availability": 1,
+                            "ap-health": 1,
+                            "capacity": 1,
+                            "coverage": 1,
+                            "roaming": 1,
+                            "successful-connect": 1,
+                            "throughput": 1,
+                            "time-to-connect": 1,
+                        }
+                    ]
+                }
+            )
+        if url.endswith("/orgs/org-1/insights/sites-sle") and params.get("sle") == "wired":
+            return FakeResponse(
+                {
+                    "results": [
+                        {
+                            "site_id": "site-1",
+                            "switch-bandwidth": 1,
+                            "switch-health": 1,
+                            "switch-throughput": 1,
+                        }
+                    ]
+                }
+            )
+        raise AssertionError(f"Unexpected URL {url} params={params}")
+
+    monkeypatch.setattr(compliance.requests, "get", fake_get)
+
+    check = SiteSleSummaryCheck()
     assert check.run(ctx) == []
 
 
@@ -754,7 +928,7 @@ def test_refresh_preserves_existing_device_type_when_fetch_empty(monkeypatch, tm
     assert written["models"]["switch"]["EX2300"][0]["version"] == "20.4R3-S5"
     assert written["models"]["ap"]["AP32"][0]["version"] == "0.12.10000"
 
-def test_refresh_standards_syncs_org_switch_auto_upgrade_custom_versions(monkeypatch, tmp_path):
+def test_explicit_sync_updates_org_switch_auto_upgrade_custom_versions(monkeypatch, tmp_path):
     standards_path = tmp_path / "standard_fw_versions.json"
     monkeypatch.setattr(compliance, "_firmware_standards_path", lambda: standards_path)
 
@@ -799,7 +973,9 @@ def test_refresh_standards_syncs_org_switch_auto_upgrade_custom_versions(monkeyp
     monkeypatch.setattr(compliance.requests, "get", _fake_get)
     monkeypatch.setattr(compliance.requests, "put", _fake_put)
 
-    compliance._refresh_firmware_standards_if_needed(standards_path)
+    doc = compliance._refresh_firmware_standards_if_needed(standards_path)
+    assert put_calls == [], "Read-only refresh must never change organization policy"
+    compliance._sync_switch_auto_upgrade_custom_versions(doc)
 
     assert len(put_calls) == 1
     assert put_calls[0]["url"].endswith('/orgs/org-1/setting')
@@ -2771,3 +2947,455 @@ def test_site_audit_runner_categorizes_findings():
     assert len(check["findings"]) == 2
     assert [f["message"] for f in check["site_level_findings"]] == ["Site-level issue"]
     assert [f["device_id"] for f in check["device_level_findings"]] == ["dev-1"]
+
+
+def test_switch_cable_test_candidate_builder_balances_suspicious_vs_normal_ports():
+    device = {
+        "id": "sw-candidate-1",
+        "type": "switch",
+        "role": "access",
+        "mac": "aa:bb:cc:dd:ee:ff",
+        "if_stat": {
+            "ge-0/0/1.0": {"port_id": "ge-0/0/1", "up": True, "speed": "100M", "duplex": "full", "rx_bytes": 512, "tx_bytes": 256},
+            "ge-0/0/2.0": {"port_id": "ge-0/0/2", "up": True, "speed": "1G", "duplex": "full", "rx_bytes": 4096, "tx_bytes": 256},
+            "ge-0/0/3.0": {"port_id": "ge-0/0/3", "up": True, "speed": "1G", "duplex": "full"},
+            "ge-0/0/4.0": {"port_id": "ge-0/0/4", "up": True, "speed": "1G", "duplex": "full"},
+            "ge-0/0/5.0": {"port_id": "ge-0/0/5", "up": True, "speed": "1G", "duplex": "full"},
+        },
+        "device_stats": {"ports": [{"port_id": "ge-0/0/3", "neighbors": [{"system_name": "AP-01"}]}]},
+        "switch_config": {
+            "port_config": {
+                "ge-0/0/4": {"profile": "Unused - Disabled"},
+                "ge-0/0/5": {"usage": "uplink trunk"},
+            },
+        },
+    }
+
+    result = compliance._build_switch_cable_test_candidates(
+        device,
+        {
+            ("aa:bb:cc:dd:ee:ff", "ge-0/0/2"): [
+                {"device_mac": "aa:bb:cc:dd:ee:ff", "port_id": "ge-0/0/2", "mac": "11:22:33:44:55:66"}
+            ]
+        },
+    )
+
+    assert result["candidate_ports_considered"] == ["ge-0/0/1", "ge-0/0/2", "ge-0/0/3", "ge-0/0/4", "ge-0/0/5"]
+    reasons_by_port = {entry["port"]: set(entry["reasons"]) for entry in result["candidate_ports"]}
+    assert set(reasons_by_port) == {"ge-0/0/1"}
+    assert "low_speed" in reasons_by_port["ge-0/0/1"]
+    assert "low_traffic_without_lldp_or_client" in reasons_by_port["ge-0/0/1"]
+    assert "missing_neighbor_or_l2_evidence" in reasons_by_port["ge-0/0/1"]
+    skipped = {entry["port"]: entry["reason"] for entry in result["skipped_ports"] if entry.get("port")}
+    assert skipped["ge-0/0/2"] == "wired_client_present"
+    assert skipped["ge-0/0/3"] == "lldp_or_cdp_neighbor_present"
+    assert skipped["ge-0/0/4"] == "disabled_or_unused_profile"
+    assert skipped["ge-0/0/5"] == "uplink_or_trunk_profile"
+
+
+def test_mist_ws_stream_url_uses_api_ws_host():
+    assert compliance._mist_ws_stream_url("https://api.ac2.mist.com/api/v1") == "wss://api-ws.ac2.mist.com/api-ws/v1/stream"
+    assert compliance._mist_ws_stream_url("https://api.mist.com/api/v1") == "wss://api-ws.mist.com/api-ws/v1/stream"
+
+
+def test_extract_mist_stream_data_handles_nested_json_string():
+    payload = json.dumps(
+        {
+            "event": "data",
+            "channel": "/sites/site-1/devices/dev-1/cmd",
+            "data": json.dumps(
+                {
+                    "event": "data",
+                    "channel": "/sites/site-1/devices/dev-1/cmd",
+                    "data": {
+                        "session": "sess-1",
+                        "raw": "Interface TDR detail:\nTest status : Test successfully executed ge-0/0/0\n",
+                    },
+                }
+            ),
+        }
+    )
+
+    data = compliance._extract_mist_stream_data(payload)
+
+    assert data == {
+        "session": "sess-1",
+        "raw": "Interface TDR detail:\nTest status : Test successfully executed ge-0/0/0\n",
+    }
+
+
+def test_switch_cable_test_candidate_builder_flags_half_duplex_and_poe_without_evidence():
+    device = {
+        "id": "sw-candidate-2",
+        "type": "switch",
+        "if_stat": {
+            "ge-0/0/5.0": {"port_id": "ge-0/0/5", "up": True, "speed": "1G", "duplex": "half"},
+            "ge-0/0/6.0": {"port_id": "ge-0/0/6", "up": True, "speed": "1G", "duplex": "full"},
+        },
+        "ports": [
+            {"port_id": "ge-0/0/6", "poe_usage": 7.5},
+        ],
+    }
+
+    result = compliance._build_switch_cable_test_candidates(device)
+    reasons_by_port = {entry["port"]: set(entry["reasons"]) for entry in result["candidate_ports"]}
+
+    assert "half_duplex" in reasons_by_port["ge-0/0/5"]
+    assert "poe_without_normal_neighbor_or_l2_evidence" in reasons_by_port["ge-0/0/6"]
+
+
+def test_switch_cable_test_candidate_builder_excludes_core_roles():
+    device = {
+        "id": "sw-core-1",
+        "type": "switch",
+        "role": "Core-VC-Star",
+        "if_stat": {
+            "ge-0/0/1.0": {"port_id": "ge-0/0/1", "up": True, "speed": "100M", "duplex": "full"},
+        },
+    }
+
+    result = compliance._build_switch_cable_test_candidates(device)
+
+    assert result["candidate_ports"] == []
+    assert result["candidate_ports_considered"] == []
+    assert result["skipped_ports"] == [{"reason": "switch_role_excluded", "role": "Core-VC-Star"}]
+
+
+def test_switch_cable_test_candidate_builder_flags_active_traffic_without_client_or_neighbor():
+    device = {
+        "id": "sw-traffic-1",
+        "type": "switch",
+        "if_stat": {
+            "ge-0/0/7.0": {"port_id": "ge-0/0/7", "up": True, "speed": "1G", "duplex": "full", "rx_bytes": 2048, "tx_bytes": 128},
+        },
+    }
+
+    result = compliance._build_switch_cable_test_candidates(device)
+
+    assert len(result["candidate_ports"]) == 1
+    assert "active_traffic_without_lldp_or_client" in result["candidate_ports"][0]["reasons"]
+
+
+def test_switch_cable_test_check_reports_abnormal_results_by_device(monkeypatch):
+    ctx = SiteContext(
+        site_id="site-cable-1",
+        site_name="Cable Site",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "sw-1",
+                "name": "Switch 1",
+                "type": "switch",
+                "if_stat": {
+                    "ge-0/0/10.0": {"port_id": "ge-0/0/10", "up": True, "speed": "100M", "duplex": "full"},
+                },
+            }
+        ],
+        mist_base_url="https://api.example.test/api/v1",
+        mist_headers={"Authorization": "Token abc"},
+    )
+
+    monkeypatch.setattr(
+        compliance,
+        "_run_switch_port_cable_test",
+        lambda *args, **kwargs: {
+            "port": "ge-0/0/10",
+            "session_id": "sess-1",
+            "verdict": "open",
+            "parsed": {"verdict": "open", "status": "Cable open", "raw_output": "pair A: open"},
+            "raw_output": "pair A: open",
+        },
+    )
+
+    findings = SwitchCableTestCheck().run(ctx)
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.device_id == "sw-1"
+    assert "ge-0/0/10" in finding.message
+    assert finding.details["tested_ports"] == ["ge-0/0/10"]
+    assert finding.details["completed_ports"] == ["ge-0/0/10"]
+    assert finding.details["abnormal_result_ports"] == ["ge-0/0/10"]
+    assert finding.details["execution_failure_ports"] == []
+    assert finding.details["timeout_seconds"] == 15.0
+    assert finding.details["results"][0]["verdict"] == "open"
+    assert finding.details["execution_failures"] == []
+
+
+def test_switch_cable_test_check_uses_wired_client_search_to_skip_normal_ports(monkeypatch):
+    ctx = SiteContext(
+        site_id="site-cable-clients",
+        site_name="Cable Site Clients",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "sw-client-1",
+                "name": "Switch Client 1",
+                "type": "switch",
+                "mac": "aa:bb:cc:dd:ee:ff",
+                "if_stat": {
+                    "ge-0/0/20.0": {"port_id": "ge-0/0/20", "up": True, "speed": "100M", "duplex": "full"},
+                    "ge-0/0/21.0": {"port_id": "ge-0/0/21", "up": True, "speed": "100M", "duplex": "full"},
+                },
+            }
+        ],
+        wired_clients=[
+            {"device_mac": "aa:bb:cc:dd:ee:ff", "port_id": "ge-0/0/20", "mac": "11:22:33:44:55:66"},
+        ],
+        mist_base_url="https://api.example.test/api/v1",
+        mist_headers={"Authorization": "Token abc"},
+    )
+
+    observed_ports = []
+
+    def fake_run(*args, **kwargs):
+        observed_ports.append(args[4])
+        return {
+            "port": args[4],
+            "session_id": "sess-client",
+            "verdict": "normal",
+            "parsed": {"verdict": "normal", "status": "Test successfully executed", "raw_output": "normal"},
+            "raw_output": "normal",
+        }
+
+    monkeypatch.setattr(compliance, "_run_switch_port_cable_test", fake_run)
+
+    assert SwitchCableTestCheck().run(ctx) == []
+    assert observed_ports == ["ge-0/0/21"]
+
+
+def test_switch_cable_test_check_ignores_all_normal_results(monkeypatch):
+    ctx = SiteContext(
+        site_id="site-cable-2",
+        site_name="Cable Site 2",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "sw-2",
+                "name": "Switch 2",
+                "type": "switch",
+                "if_stat": {
+                    "ge-0/0/11.0": {"port_id": "ge-0/0/11", "up": True, "speed": "100M", "duplex": "full"},
+                },
+            }
+        ],
+        mist_base_url="https://api.example.test/api/v1",
+        mist_headers={"Authorization": "Token abc"},
+    )
+
+    monkeypatch.setattr(
+        compliance,
+        "_run_switch_port_cable_test",
+        lambda *args, **kwargs: {
+            "port": "ge-0/0/11",
+            "session_id": "sess-2",
+            "verdict": "normal",
+            "parsed": {"verdict": "normal", "status": "Test successfully executed", "raw_output": "normal"},
+            "raw_output": "normal",
+        },
+    )
+
+    assert SwitchCableTestCheck().run(ctx) == []
+
+
+def test_switch_cable_test_check_reports_execution_errors(monkeypatch):
+    ctx = SiteContext(
+        site_id="site-cable-3",
+        site_name="Cable Site 3",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "sw-3",
+                "name": "Switch 3",
+                "type": "switch",
+                "if_stat": {
+                    "ge-0/0/12.0": {"port_id": "ge-0/0/12", "up": True, "speed": "100M", "duplex": "full"},
+                },
+            }
+        ],
+        mist_base_url="https://api.example.test/api/v1",
+        mist_headers={"Authorization": "Token abc"},
+    )
+
+    def _raise_timeout(*args, **kwargs):
+        raise TimeoutError("ws timeout")
+
+    monkeypatch.setattr(compliance, "_run_switch_port_cable_test", _raise_timeout)
+
+    findings = SwitchCableTestCheck().run(ctx)
+
+    assert len(findings) == 1
+    assert "did not return Mist output" in findings[0].message
+    assert findings[0].details["completed_ports"] == []
+    assert findings[0].details["abnormal_result_ports"] == []
+    assert findings[0].details["execution_failure_ports"] == ["ge-0/0/12"]
+    assert findings[0].details["execution_failures"] == [
+        {
+            "port": "ge-0/0/12",
+            "verdict": "execution_error",
+            "error": "ws timeout",
+            "candidate_reasons": ["low_speed", "low_traffic_without_lldp_or_client", "missing_neighbor_or_l2_evidence"],
+        }
+    ]
+    assert findings[0].details["results"][0]["verdict"] == "execution_error"
+
+
+def test_switch_cable_test_check_reports_mixed_abnormal_and_execution_failures(monkeypatch):
+    ctx = SiteContext(
+        site_id="site-cable-4",
+        site_name="Cable Site 4",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "sw-4",
+                "name": "Switch 4",
+                "type": "switch",
+                "if_stat": {
+                    "ge-0/0/13.0": {"port_id": "ge-0/0/13", "up": True, "speed": "100M", "duplex": "full"},
+                    "ge-0/0/14.0": {"port_id": "ge-0/0/14", "up": True, "speed": "100M", "duplex": "full"},
+                },
+            }
+        ],
+        mist_base_url="https://api.example.test/api/v1",
+        mist_headers={"Authorization": "Token abc"},
+    )
+
+    def fake_run(base_url, headers, site_id, device_id, port_id, timeout=15.0):
+        assert timeout == 15.0
+        if port_id == "ge-0/0/13":
+            return {
+                "port": port_id,
+                "session_id": "sess-13",
+                "verdict": "open",
+                "parsed": {"verdict": "open", "status": "Cable open", "raw_output": "pair A: open"},
+                "raw_output": "pair A: open",
+            }
+        raise TimeoutError("ws timeout")
+
+    monkeypatch.setattr(compliance, "_run_switch_port_cable_test", fake_run)
+
+    findings = SwitchCableTestCheck().run(ctx)
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert "suspicious cable-test results on ge-0/0/13" in finding.message
+    assert finding.details["tested_ports"] == ["ge-0/0/13", "ge-0/0/14"]
+    assert finding.details["completed_ports"] == ["ge-0/0/13"]
+    assert finding.details["abnormal_result_ports"] == ["ge-0/0/13"]
+    assert finding.details["execution_failure_ports"] == ["ge-0/0/14"]
+
+
+def test_switch_cable_test_check_uses_fifteen_second_timeout(monkeypatch):
+    observed = {}
+    ctx = SiteContext(
+        site_id="site-cable-5",
+        site_name="Cable Site 5",
+        site={},
+        setting={},
+        templates=[],
+        devices=[
+            {
+                "id": "sw-5",
+                "name": "Switch 5",
+                "type": "switch",
+                "if_stat": {
+                    "ge-0/0/15.0": {"port_id": "ge-0/0/15", "up": True, "speed": "100M", "duplex": "full"},
+                },
+            }
+        ],
+        mist_base_url="https://api.example.test/api/v1",
+        mist_headers={"Authorization": "Token abc"},
+    )
+
+    def fake_run(*args, **kwargs):
+        observed["timeout"] = kwargs.get("timeout")
+        return {
+            "port": "ge-0/0/15",
+            "session_id": "sess-15",
+            "verdict": "normal",
+            "parsed": {"verdict": "normal", "status": "ok", "raw_output": "normal"},
+            "raw_output": "normal",
+        }
+
+    monkeypatch.setattr(compliance, "_run_switch_port_cable_test", fake_run)
+
+    assert SwitchCableTestCheck().run(ctx) == []
+    assert observed["timeout"] == 15.0
+
+
+def test_run_switch_port_cable_test_subscribes_before_post_and_reads_nested_stream(monkeypatch):
+    events = []
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.closed = False
+
+        def send(self, payload):
+            events.append(("send", json.loads(payload)))
+
+        def recv(self):
+            return json.dumps(
+                {
+                    "event": "data",
+                    "channel": "/sites/site-1/devices/dev-1/cmd",
+                    "data": json.dumps(
+                        {
+                            "event": "data",
+                            "channel": "/sites/site-1/devices/dev-1/cmd",
+                            "data": {
+                                "session": "sess-99",
+                                "raw": "Interface TDR detail:\nTest status : Test successfully executed ge-0/0/1\n",
+                            },
+                        }
+                    ),
+                }
+            )
+
+        def close(self):
+            self.closed = True
+            events.append(("close", None))
+
+    class FakeResponse:
+        content = b'{"session":"sess-99"}'
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"session": "sess-99"}
+
+    def fake_open(base_url, headers, *, timeout):
+        events.append(("open", timeout))
+        return FakeWebSocket()
+
+    def fake_post(url, headers=None, json=None, timeout=0):
+        events.append(("post", {"url": url, "json": json, "timeout": timeout}))
+        return FakeResponse()
+
+    monkeypatch.setattr(compliance, "_open_mist_command_stream", fake_open)
+    monkeypatch.setattr(compliance.requests, "post", fake_post)
+
+    result = compliance._run_switch_port_cable_test(
+        "https://api.example.test/api/v1",
+        {"Authorization": "Token abc"},
+        "site-1",
+        "dev-1",
+        "ge-0/0/1",
+        timeout=15.0,
+    )
+
+    assert events[0] == ("open", 15.0)
+    assert events[1] == ("send", {"subscribe": "/sites/site-1/devices/dev-1/cmd"})
+    assert events[2][0] == "post"
+    assert result["session_id"] == "sess-99"
+    assert result["verdict"] == "normal"

@@ -1975,7 +1975,7 @@ def _execute_set_virtual_chassis_roles_action(
     }
 
 
-def execute_audit_action(
+def _execute_audit_action_unchecked(
     action_id: str,
     base_url: str,
     token: str,
@@ -2036,6 +2036,21 @@ def execute_audit_action(
             metadata=metadata,
         )
     raise ValueError(f"Unsupported action_id: {action_id}")
+
+
+def execute_audit_action(
+    action_id: str, base_url: str, token: str, site_ids: Sequence[str], *,
+    dry_run: bool = False, pause: float = 0.2,
+    device_map: Optional[Mapping[str, Sequence[str]]] = None,
+    metadata: Optional[Mapping[str, Any]] = None, context_loader=None,
+) -> Dict[str, Any]:
+    from audit_exceptions import locked_records
+    from audit_exception_guard import guarded_execute
+
+    with locked_records() as records:
+        return guarded_execute(_execute_audit_action_unchecked, action_id, base_url, token, site_ids,
+                               records=records, context_loader=context_loader, dry_run=dry_run,
+                               pause=pause, device_map=device_map, metadata=metadata)
 
 
 __all__ = ["execute_audit_action"]

@@ -26,7 +26,7 @@ def _setup_auth(monkeypatch, *, can_push: bool, read_only: bool = False, readonl
         "mail": "alice@example.com",
         "upn": "alice@example.com",
     })
-    monkeypatch.setattr(auth_ldap, "_bind_service", lambda: None)
+    monkeypatch.setattr(auth_ldap, "_bind_service", lambda: dummy_conn)
 
     push_dn = "CN=Push,OU=Groups,DC=example,DC=com" if push_group else None
     readonly_dns = readonly_groups

@@ -130,6 +130,8 @@ def test_fetch_site_context_merges_device_details(monkeypatch, app_module):
 
     template_ids = {t.get("id") for t in context.templates if isinstance(t, dict)}
     assert "template-1" in template_ids
+    assert context.mist_base_url == "https://example.com/api/v1"
+    assert context.mist_headers == {"Authorization": "token"}
 
 
 def test_fetch_site_context_filters_recent_last_seen(monkeypatch, app_module):

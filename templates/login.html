@@ -5,8 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Sign in</title>
   <link rel="icon" type="image/png" href="/static/logo.png" />
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>tailwind.config = { darkMode: 'media' };</script>
+  <link rel="stylesheet" href="/static/app.css" />
+  <meta name="csrf-token" content="{{CSRF_TOKEN}}" />
+  <script src="/static/security.js" defer></script>
+
   </head>
   <body class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100 overflow-x-hidden" style="background-image: url('/static/logo.png'); background-position: center; background-repeat: no-repeat; background-size: 1500px;">
     <nav id="menu" class="fixed inset-y-0 left-0 w-64 bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100 transform -translate-x-full transition-transform duration-300 z-50 shadow-lg p-4 space-y-2">
@@ -66,7 +68,7 @@
     </div>
     </div>
     </div>
-    <script>
+    <script nonce="{{CSP_NONCE}}">
       const menuBtn = document.getElementById('menu_btn');
       const menu = document.getElementById('menu');
       const main = document.getElementById('main');
@@ -90,7 +92,7 @@
       userGreeting.textContent = `Hey ${data.user.name}!`;
       userGreeting.classList.remove('hidden');
       logoutBtn?.classList.remove('hidden');
-      logoutBtn?.addEventListener('click', (e) => { e.preventDefault(); window.location.href = '/logout'; });
+      logoutBtn?.addEventListener('click', (e) => { e.preventDefault(); window.secureLogout(); });
     }).catch(() => { /* unauthenticated */ });
   </script>
 </body>

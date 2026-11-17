@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "scripts": {
+    "build:css": "tailwindcss -i static/tailwind.css -o static/app.css --minify"
+  },
+  "devDependencies": {
+    "tailwindcss": "3.4.17",
+    "sortablejs": "1.15.6"
+  }
+}

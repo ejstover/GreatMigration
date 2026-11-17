@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import secrets
 import sys
 import subprocess
 import json
@@ -144,10 +145,10 @@ def ensure_requirements(project_dir: Path, venv_python: Path):
         pip(
             venv_python,
             "install",
-            "fastapi==0.115.0",
-            "uvicorn==0.30.6",
-            "python-multipart==0.0.9",
-            "jinja2==3.1.4",
+            "fastapi==0.163.1",
+            "uvicorn==0.54.0",
+            "python-multipart==0.0.34",
+            "jinja2==3.1.6",
             "requests",
             "ciscoconfparse>=1.6.52",
             "python-dotenv",
@@ -175,7 +176,9 @@ def ensure_env_file(project_dir: Path) -> int | None:
 
     lines = [
         f"AUTH_METHOD={auth}",
-        "SESSION_SECRET=change_me",
+        f"SESSION_SECRET={secrets.token_urlsafe(48)}",
+        "SESSION_HTTPS_ONLY=false",
+        "APP_HOST=127.0.0.1",
         f"MIST_TOKEN={token}",
         f"MIST_BASE_URL={base}",
         f"MIST_ORG_ID={org}",
@@ -204,8 +207,11 @@ def ensure_env_file(project_dir: Path) -> int | None:
             ])
     else:
         user = input("Local username: ").strip()
-        pwd = getpass("Local password (input hidden): ").strip()
-        lines.append(f"LOCAL_USERS={user}:{pwd}")
+        pwd = getpass("Local password, at least 12 characters (input hidden): ")
+        while len(pwd) < 12:
+            pwd = getpass("Choose at least 12 characters (input hidden): ")
+        pwd_hash = subprocess.run([str(venv_python_path(project_dir / ".venv")), str(project_dir / "backend" / "security_setup.py"), "--hash-password"], input=pwd, encoding="utf-8", capture_output=True, check=True).stdout.strip()
+        lines.append(f"LOCAL_USERS={user}:{pwd_hash}")
         lines.append(f"LOCAL_PUSH_USERS={user}")
 
     lines.append(f"API_PORT={port}")
@@ -282,8 +288,8 @@ def start_api(project_dir: Path, venv_python: Path, port: int):
     child_env = os.environ.copy()
     child_env.update(load_env_from_file(env_file))
 
-    print(f"\nStarting API at http://0.0.0.0:{port} (Ctrl+C to stop)")
-    cmd = [str(venv_python), "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", str(port), "--app-dir", str(backend)]
+    print(f"\nStarting API at http://127.0.0.1:{port} (Ctrl+C to stop)")
+    cmd = [str(venv_python), "-m", "uvicorn", "app:app", "--host", child_env.get("APP_HOST", "127.0.0.1"), "--port", str(port), "--app-dir", str(backend)]
     try:
         run(cmd, env=child_env, check=True)
     except KeyboardInterrupt:
@@ -315,6 +321,7 @@ def main():
 
     ensure_requirements(project_dir, vpython)
     env_port = ensure_env_file(project_dir)
+    run([str(vpython), str(project_dir / "backend" / "security_setup.py")])
     ensure_port_rules_file(project_dir)
     ensure_standard_fw_versions_file(project_dir)
     ensure_tmp_dirs(project_dir)
@@ -325,7 +332,7 @@ def main():
         start_api(project_dir, vpython, port)
     else:
         print("\nSetup complete. To start later:")
-        print(f'  "{vpython}" -m uvicorn app:app --host 0.0.0.0 --port {port} --app-dir "{project_dir / "backend"}"')
+        print(f'  "{vpython}" -m uvicorn app:app --host 127.0.0.1 --port {port} --app-dir "{project_dir / "backend"}"')
 
 if __name__ == "__main__":
     main()

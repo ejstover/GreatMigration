@@ -578,6 +578,9 @@ def get_device_model(base_url: str, site_id: str, device_id: str, token: str) ->
 # CLI
 # -------------------------------
 def main():
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
     ap = argparse.ArgumentParser(description="Map and push Mist port_config with EX4100 uplink mapping and member/port offsets.")
     ap.add_argument("--site-id", required=True)
     ap.add_argument("--device-id", required=True)
@@ -665,4 +668,3 @@ if __name__ == "__main__":
     except PortConfigError as exc:  # pragma: no cover - CLI convenience
         print(f"❌ {exc}")
         raise SystemExit(2)
-    mk = _model_key(model)

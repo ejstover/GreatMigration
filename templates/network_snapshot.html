@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{DOC_TITLE}}</title>
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+
+  <link rel="stylesheet" href="/static/app.css" />
+  <meta name="csrf-token" content="{{CSRF_TOKEN}}" />
+  <script src="/static/security.js" defer></script>
+
+
+  <style>
+    pre { white-space: pre-wrap; word-wrap: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }
+    .status-info { border-color: #bae6fd; background: #ecfeff; }
+    .status-success { border-color: #86efac; background: #f0fdf4; }
+    .status-error { border-color: #fecaca; background: #fef2f2; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100 overflow-x-hidden">
+  <nav id="menu" class="fixed inset-y-0 left-0 w-64 bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100 transform -translate-x-full transition-transform duration-300 z-50 shadow-lg p-4 space-y-2">
+    <p id="user_greeting" class="hidden px-4 py-2 font-semibold"></p>
+    <a href="/hardware" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_HARDWARE}}</a>
+    <a href="/replacements" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_REPLACEMENTS}}</a>
+    <a href="/" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_CONFIG}}</a>
+    <a href="/network-snapshot" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_NETWORK_SNAPSHOT}}</a>
+    <a href="/rules" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_RULES}}</a>
+    <a href="/standards" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_STANDARDS}}</a>
+    <a href="/audit" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">{{NAV_AUDIT}}</a>
+    <a href="{{HELP_URL}}" target="_blank" rel="noopener" class="block px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Help</a>
+    <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
+  </nav>
+  <div id="main" class="transition-all duration-300">
+    <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+      <div class="max-w-7xl mx-auto flex items-center gap-4 p-6">
+        <button id="menu_btn" class="p-2 rounded hover:bg-white/30" aria-label="Menu">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
+        </button>
+        <div class="flex items-center gap-4">
+          <img src="/static/logo.png" alt="Logo" class="h-16 w-16" />
+          <div>
+            <h1 class="text-3xl font-bold">{{BANNER_TITLE}}</h1>
+            <p class="text-slate-100 text-sm md:text-base">{{BANNER_TAGLINE}}</p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto p-6 space-y-6">
+      <section class="rounded-2xl border border-slate-200/70 bg-white p-6 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+        <div class="flex items-start gap-4 mb-5">
+          <span class="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-emerald-100 via-emerald-50 to-transparent text-xs font-bold tracking-wide text-emerald-700 ring-1 ring-emerald-100 dark:from-emerald-900/60 dark:via-emerald-900/20 dark:text-emerald-200 dark:ring-emerald-900/60">NS</span>
+          <div>
+            <p class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Snapshot workflow</p>
+            <h2 class="text-lg font-semibold text-slate-800 dark:text-slate-100">Capture pre-migration state and validate Mist MAC placement</h2>
+            <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Freeze the Cisco to Juniper target mapping, collect the legacy MAC baseline over SSH, and compare current Mist state after cutover without relying on legacy switch names or interface numbering.</p>
+          </div>
+        </div>
+
+        <div class="rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-sm text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-300">
+          <div class="font-medium text-slate-800 dark:text-slate-100">Operator sequence</div>
+          <div class="mt-2 grid gap-2 md:grid-cols-4 text-xs">
+            <div>1. Save mapped conversion set on `/`</div>
+            <div>2. Review the saved set here</div>
+            <div>3. Capture the legacy baseline</div>
+            <div>4. Compare current Mist state</div>
+          </div>
+        </div>
+
+        <div class="mt-6 grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+          <div class="space-y-5">
+            <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+              <div class="grid gap-4 md:grid-cols-2">
+                <label class="flex flex-col gap-1">
+                  <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Project name</span>
+                  <input id="snapshot_project_name" type="text" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="Campus Core Upgrade" />
+                  <span class="text-xs text-slate-500 dark:text-slate-400">Use the same project name you used when saving the conversion set.</span>
+                </label>
+                <label class="flex flex-col gap-1">
+                  <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Saved conversion set</span>
+                  <select id="snapshot_conversion_set_select" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+                    <option value="">Select a saved conversion set...</option>
+                  </select>
+                  <span class="text-xs text-slate-500 dark:text-slate-400">The page auto-selects the latest saved set for a project’s first baseline when one is available.</span>
+                </label>
+              </div>
+              <div id="snapshot_conversion_set_summary" class="mt-4 rounded-xl border border-dashed border-slate-300/80 bg-slate-50/70 p-4 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300">Enter a project name to load conversion sets and snapshot history.</div>
+            </section>
+
+            <div class="grid gap-5 lg:grid-cols-2">
+              <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+                <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Pre-migration baseline</p>
+                <h3 class="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">Collect legacy MAC table state over SSH</h3>
+                <div class="mt-4 space-y-3">
+                  <label class="flex flex-col gap-1">
+                    <span class="text-xs font-medium text-slate-600 dark:text-slate-300">Legacy switches (one per line)</span>
+                    <textarea id="snapshot_devices" class="min-h-[9rem] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="switch1.example.com&#10;10.0.0.5"></textarea>
+                  </label>
+                  <div class="grid gap-3 md:grid-cols-2">
+                    <label class="flex flex-col gap-1">
+                      <span class="text-xs font-medium text-slate-600 dark:text-slate-300">SSH username</span>
+                      <input id="snapshot_username" type="text" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" autocomplete="username" />
+                    </label>
+                    <label class="flex flex-col gap-1">
+                      <span class="text-xs font-medium text-slate-600 dark:text-slate-300">SSH password</span>
+                      <input id="snapshot_password" type="password" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" autocomplete="current-password" />
+                    </label>
+                  </div>
+                  <button id="snapshot_capture_btn" type="button" class="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700">Capture pre-migration baseline</button>
+                </div>
+              </section>
+
+              <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+                <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Post-migration validation</p>
+                <h3 class="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">Compare current Mist state</h3>
+                <div class="mt-4 space-y-3 text-sm text-slate-600 dark:text-slate-300">
+                  <p>This page does not SSH into Juniper switches. Current state comes from Mist APIs only.</p>
+                  <div class="rounded-xl border border-dashed border-slate-300/80 bg-slate-50/70 p-3 text-xs leading-6 dark:border-slate-700 dark:bg-slate-900/40">
+                    <div>Switch names can change after cutover.</div>
+                    <div>Cisco and Juniper interface numbering differences are reconciled through the saved conversion set.</div>
+                  </div>
+                  <label class="flex flex-col gap-1">
+                    <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Baseline to compare</span>
+                    <select id="snapshot_baseline_select" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+                      <option value="">Latest baseline for this project</option>
+                    </select>
+                  </label>
+                  <button id="snapshot_compare_btn" type="button" class="inline-flex items-center justify-center rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700">Compare current Mist state to baseline</button>
+                </div>
+              </section>
+            </div>
+
+            <div id="snapshot_status" class="text-sm text-slate-600 dark:text-slate-300"></div>
+            <div id="snapshot_summary" class="hidden rounded-2xl border border-emerald-200/80 bg-emerald-50/80 p-4 text-sm text-emerald-900 dark:border-emerald-800/60 dark:bg-emerald-950/30 dark:text-emerald-100"></div>
+          </div>
+
+          <div class="space-y-5">
+            <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Project history</p>
+                  <h3 class="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">Saved baselines and compare runs</h3>
+                </div>
+                <button id="snapshot_history_refresh" type="button" class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800">Refresh</button>
+              </div>
+              <div id="snapshot_history" class="mt-3 space-y-2 text-sm text-slate-600 dark:text-slate-300">Enter a project name to load snapshot history.</div>
+            </section>
+
+            <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+              <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Comparison results</p>
+              <h3 class="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">MAC reconciliation report</h3>
+              <div id="snapshot_compare_filters" class="mt-3 flex flex-wrap gap-2"></div>
+              <div id="snapshot_compare_results" class="mt-3 text-sm text-slate-600 dark:text-slate-300">Run a Mist comparison to inspect MAC matches, partial matches, and missing endpoints.</div>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script nonce="{{CSP_NONCE}}">
+    const menuBtn = document.getElementById('menu_btn');
+    const menu = document.getElementById('menu');
+    const main = document.getElementById('main');
+    menuBtn.addEventListener('click', () => {
+      menu.classList.toggle('-translate-x-full');
+      main.classList.toggle('ml-64');
+    });
+    document.addEventListener('click', e => {
+      if (!menu.contains(e.target) && !menuBtn.contains(e.target)) {
+        menu.classList.add('-translate-x-full');
+        main.classList.remove('ml-64');
+      }
+    });
+
+    const userGreeting = document.getElementById('user_greeting');
+    const logoutBtn = document.getElementById('logout_btn');
+    const snapshotProjectName = document.getElementById('snapshot_project_name');
+    const snapshotConversionSetSelect = document.getElementById('snapshot_conversion_set_select');
+    const snapshotConversionSetSummary = document.getElementById('snapshot_conversion_set_summary');
+    const snapshotBaselineSelect = document.getElementById('snapshot_baseline_select');
+    const snapshotDevices = document.getElementById('snapshot_devices');
+    const snapshotUsername = document.getElementById('snapshot_username');
+    const snapshotPassword = document.getElementById('snapshot_password');
+    const snapshotCaptureBtn = document.getElementById('snapshot_capture_btn');
+    const snapshotCompareBtn = document.getElementById('snapshot_compare_btn');
+    const snapshotStatus = document.getElementById('snapshot_status');
+    const snapshotSummary = document.getElementById('snapshot_summary');
+    const snapshotHistory = document.getElementById('snapshot_history');
+    const snapshotHistoryRefresh = document.getElementById('snapshot_history_refresh');
+    const snapshotCompareFilters = document.getElementById('snapshot_compare_filters');
+    const snapshotCompareResults = document.getElementById('snapshot_compare_results');
+
+    let snapshotJobId = '';
+    let snapshotFilter = 'all';
+    let loadedConversionSet = null;
+    let snapshotHistoryRuns = [];
+    let userSelectedConversionSet = false;
+
+    function show(el){ if (el) el.classList.remove('hidden'); }
+    function hide(el){ if (el) el.classList.add('hidden'); }
+    function escapeHtml(str){ return String(str).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
+    function summarizeCountMap(summary){
+      if (!summary || typeof summary !== 'object') return 'No summary available.';
+      const entries = Object.entries(summary).filter(([, value]) => Number(value) > 0);
+      if (!entries.length) return 'No tracked MAC deltas were detected.';
+      return entries.map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value}`).join(' • ');
+    }
+    function getSnapshotProjectKey(){
+      return (snapshotProjectName?.value || '').trim();
+    }
+    function hasBaselineHistory(){
+      return snapshotHistoryRuns.some(item => item?.run_type === 'baseline');
+    }
+    function setSnapshotBusy(isBusy, label){
+      [snapshotCaptureBtn, snapshotCompareBtn].forEach(btn => {
+        if (!btn) return;
+        btn.disabled = isBusy;
+        btn.classList.toggle('opacity-70', isBusy);
+      });
+      if (label && snapshotStatus) snapshotStatus.textContent = label;
+    }
+    function renderSnapshotSummaryHtml(title, body){
+      if (!snapshotSummary) return;
+      snapshotSummary.innerHTML = `<div class="font-semibold">${escapeHtml(title)}</div><div class="mt-1">${body}</div>`;
+      show(snapshotSummary);
+    }
+    function renderBaselineOptions(historyRuns){
+      const selected = snapshotBaselineSelect.value;
+      const baselines = (historyRuns || []).filter(item => item?.run_type === 'baseline');
+      snapshotBaselineSelect.innerHTML = '<option value="">Latest baseline for this project</option>';
+      baselines.forEach(item => {
+        const option = document.createElement('option');
+        option.value = item.run_id || '';
+        option.textContent = `${item.label || item.run_id} • ${item.created_at || ''}`;
+        snapshotBaselineSelect.appendChild(option);
+      });
+      if (selected && baselines.some(item => item?.run_id === selected)) snapshotBaselineSelect.value = selected;
+    }
+    function renderHistory(history){
+      const runs = Array.isArray(history?.runs) ? history.runs : [];
+      snapshotHistoryRuns = runs;
+      renderBaselineOptions(runs);
+      if (!runs.length){
+        snapshotHistory.innerHTML = '<div class="rounded-xl border border-dashed border-slate-300/80 px-3 py-3 text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">No saved snapshot history for this project yet. Enter SSH credentials and capture the first baseline once a conversion set is available.</div>';
+        return;
+      }
+      snapshotHistory.innerHTML = runs.map(item => {
+        const detail = item?.counts ? summarizeCountMap(item.counts) : `${item?.legacy_mac_count || 0} MACs • ${item?.mapping_count || 0} mapped ports`;
+        return `
+          <div class="rounded-xl border border-slate-200/80 bg-slate-50/80 px-3 py-3 dark:border-slate-700 dark:bg-slate-900/40">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">${escapeHtml(item?.run_type || 'run')}</div>
+                <div class="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">${escapeHtml(item?.label || item?.run_id || 'Saved run')}</div>
+              </div>
+              <div class="text-[11px] text-slate-500 dark:text-slate-400">${escapeHtml(item?.created_at || '')}</div>
+            </div>
+            <div class="mt-2 text-xs leading-5 text-slate-600 dark:text-slate-300">${escapeHtml(detail)}</div>
+          </div>`;
+      }).join('');
+    }
+    function renderConversionSetOptions(indexPayload){
+      const items = Array.isArray(indexPayload?.items) ? indexPayload.items : [];
+      const selected = snapshotConversionSetSelect.value;
+      snapshotConversionSetSelect.innerHTML = '<option value="">Select a saved conversion set...</option>';
+      items.forEach(item => {
+        const option = document.createElement('option');
+        option.value = item.conversion_set_id || '';
+        option.textContent = `${item.label || item.conversion_set_id} • ${item.row_count || 0} rows`;
+        snapshotConversionSetSelect.appendChild(option);
+      });
+      if (selected && items.some(item => item?.conversion_set_id === selected)) snapshotConversionSetSelect.value = selected;
+      return items;
+    }
+    function shouldAutoSelectConversionSet(items){
+      if (userSelectedConversionSet || snapshotConversionSetSelect.value) return false;
+      if (!Array.isArray(items) || !items.length) return false;
+      if (items.length === 1) return true;
+      return !hasBaselineHistory();
+    }
+    async function loadConversionSetIndex(){
+      const projectKey = getSnapshotProjectKey();
+      if (!projectKey){
+        snapshotConversionSetSelect.innerHTML = '<option value="">Select a saved conversion set...</option>';
+        snapshotConversionSetSummary.textContent = 'Enter a project name to load conversion sets and snapshot history.';
+        loadedConversionSet = null;
+        return;
+      }
+      try {
+        const res = await fetch(`/api/conversion-sets/${encodeURIComponent(projectKey)}`);
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data?.error || `Request failed with status ${res.status}`);
+        const items = renderConversionSetOptions(data.items || {});
+        if (!items.length){
+          snapshotConversionSetSummary.textContent = 'No saved conversion sets found for this project. Save one from Config Conversion before capturing the first baseline.';
+          loadedConversionSet = null;
+          return;
+        }
+        if (shouldAutoSelectConversionSet(items)){
+          snapshotConversionSetSelect.value = items[0]?.conversion_set_id || '';
+        }
+        await loadSelectedConversionSet();
+      } catch (err){
+        snapshotConversionSetSummary.textContent = `Unable to load conversion sets: ${err?.message || err}`;
+      }
+    }
+    async function loadSelectedConversionSet(){
+      const projectKey = getSnapshotProjectKey();
+      const conversionSetId = snapshotConversionSetSelect.value;
+      loadedConversionSet = null;
+      if (!projectKey){
+        snapshotConversionSetSummary.textContent = 'Enter a project name to load conversion sets and snapshot history.';
+        return;
+      }
+      if (!conversionSetId){
+        if (hasBaselineHistory()){
+          snapshotConversionSetSummary.textContent = 'Select a saved conversion set to review the frozen target mapping used for future baselines.';
+        } else {
+          snapshotConversionSetSummary.textContent = 'Select or save a conversion set before capturing this project’s first baseline.';
+        }
+        return;
+      }
+      try {
+        const res = await fetch(`/api/conversion-sets/${encodeURIComponent(projectKey)}/${encodeURIComponent(conversionSetId)}`);
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data?.error || `Request failed with status ${res.status}`);
+        loadedConversionSet = data.item || null;
+        const rows = Array.isArray(loadedConversionSet?.rows) ? loadedConversionSet.rows : [];
+        const sites = [...new Set(rows.map(row => row?.site_id).filter(Boolean))];
+        const summaryLead = (!hasBaselineHistory() && !userSelectedConversionSet)
+          ? 'Latest saved conversion set auto-selected for the first baseline.'
+          : 'Saved conversion set ready for review.';
+        snapshotConversionSetSummary.innerHTML = `
+          <div class="font-semibold text-slate-900 dark:text-slate-100">${escapeHtml(loadedConversionSet?.label || 'Saved conversion set')}</div>
+          <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">${escapeHtml(loadedConversionSet?.created_at || '')}</div>
+          <div class="mt-3 text-sm">${escapeHtml(summaryLead)} ${rows.length} mapped row(s) across ${sites.length} Mist site(s).</div>`;
+      } catch (err){
+        snapshotConversionSetSummary.textContent = `Unable to load conversion set: ${err?.message || err}`;
+      }
+    }
+    async function loadSnapshotHistory(){
+      const projectKey = getSnapshotProjectKey();
+      if (!projectKey){
+        snapshotHistoryRuns = [];
+        snapshotHistory.textContent = 'Enter a project name to load snapshot history.';
+        renderBaselineOptions([]);
+        return;
+      }
+      try {
+        const res = await fetch(`/api/network-state/history/${encodeURIComponent(projectKey)}`);
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data?.error || `Request failed with status ${res.status}`);
+        renderHistory(data.history || {});
+      } catch (err){
+        snapshotHistory.textContent = `Unable to load project history: ${err?.message || err}`;
+      }
+    }
+    function renderCompareResults(run){
+      const allResults = Array.isArray(run?.results) ? run.results : [];
+      const counts = run?.summary || {};
+      const filterEntries = [['all', `All (${allResults.length})`], ...Object.entries(counts).map(([key, value]) => [key, `${key.replaceAll('_', ' ')} (${value})`])];
+      snapshotCompareFilters.innerHTML = '';
+      filterEntries.forEach(([key, label]) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `rounded-full border px-3 py-1 text-xs font-medium transition ${snapshotFilter === key ? 'border-slate-900 bg-slate-900 text-white dark:border-slate-100 dark:bg-slate-100 dark:text-slate-900' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800'}`;
+        button.textContent = label;
+        button.addEventListener('click', () => {
+          snapshotFilter = key;
+          renderCompareResults(run);
+        });
+        snapshotCompareFilters.appendChild(button);
+      });
+      const filtered = snapshotFilter === 'all' ? allResults : allResults.filter(item => item?.status === snapshotFilter);
+      if (!filtered.length){
+        snapshotCompareResults.innerHTML = '<div class="rounded-xl border border-dashed border-slate-300/80 px-3 py-3 text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">No MAC records in this result set.</div>';
+        return;
+      }
+      snapshotCompareResults.innerHTML = `
+        <div class="rounded-xl border border-slate-200/80 bg-white/70 dark:border-slate-700 dark:bg-slate-950/25">
+          <div class="border-b border-slate-200/80 px-3 py-2 text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">${escapeHtml(summarizeCountMap(counts))}</div>
+          <div class="max-h-[28rem] overflow-auto">
+            <table class="min-w-full text-xs">
+              <thead class="sticky top-0 bg-slate-50/95 dark:bg-slate-900/95">
+                <tr class="text-left text-slate-500 dark:text-slate-400">
+                  <th class="px-3 py-2 font-semibold">Client MAC</th>
+                  <th class="px-3 py-2 font-semibold">Status</th>
+                  <th class="px-3 py-2 font-semibold">Expected target</th>
+                  <th class="px-3 py-2 font-semibold">Current Mist location</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${filtered.map(item => {
+                  const actual = Array.isArray(item?.actual) ? item.actual[0] : null;
+                  const expected = Array.isArray(item?.expected) ? item.expected[0] : null;
+                  const expectedText = expected ? `${expected.device_name || expected.device_id || expected.site_name || expected.site_id} • ${expected.target_port || 'n/a'}` : 'No expected target';
+                  const actualText = actual ? `${actual.device_name || actual.device_id || actual.site_name || actual.site_id} • ${actual.port_id || 'n/a'}` : 'Not currently seen in Mist';
+                  return `<tr class="border-t border-slate-200/80 dark:border-slate-700">
+                    <td class="px-3 py-2 align-top font-medium text-slate-900 dark:text-slate-100">${escapeHtml(item?.client_mac || '')}</td>
+                    <td class="px-3 py-2 align-top text-slate-600 dark:text-slate-300">${escapeHtml((item?.status || '').replaceAll('_', ' '))}</td>
+                    <td class="px-3 py-2 align-top text-slate-600 dark:text-slate-300">${escapeHtml(expectedText)}</td>
+                    <td class="px-3 py-2 align-top text-slate-600 dark:text-slate-300">${escapeHtml(actualText)}</td>
+                  </tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>`;
+    }
+    async function refreshProjectContext(){
+      hide(snapshotSummary);
+      snapshotStatus.textContent = '';
+      snapshotHistoryRuns = [];
+      renderBaselineOptions([]);
+      await loadSnapshotHistory();
+      await loadConversionSetIndex();
+    }
+
+    fetch('/me').then(res => {
+      if (!res.ok) throw new Error('not authed');
+      return res.json();
+    }).then(data => {
+      const user = data.user || {};
+      const name = user.name || 'there';
+      const readOnly = Boolean(user.read_only);
+      const suffix = readOnly ? ' (read-only)' : '';
+      userGreeting.textContent = `Hey ${name}!${suffix}`;
+      userGreeting.classList.remove('hidden');
+      logoutBtn?.classList.remove('hidden');
+      logoutBtn?.addEventListener('click', (e) => {
+        e.preventDefault();
+        window.secureLogout();
+      });
+    }).catch(() => {
+      window.location.href = '/login';
+    });
+
+    const savedSshUser = localStorage.getItem('ssh_username');
+    if (savedSshUser && snapshotUsername) snapshotUsername.value = savedSshUser;
+
+    snapshotProjectName?.addEventListener('change', async () => {
+      userSelectedConversionSet = false;
+      await refreshProjectContext();
+    });
+    snapshotConversionSetSelect?.addEventListener('change', async () => {
+      userSelectedConversionSet = true;
+      await loadSelectedConversionSet();
+    });
+    snapshotHistoryRefresh?.addEventListener('click', async () => {
+      await refreshProjectContext();
+    });
+
+    snapshotCaptureBtn?.addEventListener('click', async () => {
+      const projectName = getSnapshotProjectKey();
+      const conversionSetId = snapshotConversionSetSelect?.value || '';
+      const devices = (snapshotDevices?.value || '').split(/\r?\n|,/).map(v => v.trim()).filter(Boolean).map(host => ({ host, label: host }));
+      const username = snapshotUsername?.value?.trim() || '';
+      const password = snapshotPassword?.value || '';
+      if (!projectName){
+        snapshotStatus.textContent = 'Project name is required before capturing a baseline.';
+        return;
+      }
+      if (!conversionSetId){
+        snapshotStatus.textContent = 'Save or select a conversion set before capturing this baseline.';
+        return;
+      }
+      if (!devices.length || !username || !password){
+        snapshotStatus.textContent = 'Legacy devices plus SSH credentials are required for baseline capture.';
+        return;
+      }
+
+      setSnapshotBusy(true, 'Starting baseline capture...');
+      hide(snapshotSummary);
+      try {
+        const res = await fetch('/api/network-state/baselines/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project_name: projectName,
+            conversion_set_id: conversionSetId,
+            username,
+            password,
+            devices
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data?.error || `Request failed with status ${res.status}`);
+        snapshotJobId = data.job_id;
+        if (snapshotPassword) snapshotPassword.value = '';
+        const poll = async () => {
+          const statusRes = await fetch(`/api/network-state/baselines/jobs/${snapshotJobId}`);
+          const statusData = await statusRes.json();
+          if (!statusRes.ok || !statusData.ok) throw new Error(statusData?.error || `Request failed with status ${statusRes.status}`);
+          const job = statusData.job || {};
+          snapshotStatus.textContent = job.message || 'Baseline capture running...';
+          if (job.status === 'complete'){
+            setSnapshotBusy(false);
+            const baseline = statusData.baseline || {};
+            renderSnapshotSummaryHtml('Baseline saved', `${baseline.legacy_mac_count || 0} legacy MACs across ${baseline.device_count || 0} devices. ${baseline.mapping_count || 0} target port mappings frozen for post-cutover validation.`);
+            await refreshProjectContext();
+            return;
+          }
+          window.setTimeout(poll, 1500);
+        };
+        await poll();
+      } catch (err){
+        setSnapshotBusy(false);
+        snapshotStatus.textContent = `Baseline capture failed: ${err?.message || err}`;
+      }
+    });
+
+    snapshotCompareBtn?.addEventListener('click', async () => {
+      const projectName = getSnapshotProjectKey();
+      if (!projectName){
+        snapshotStatus.textContent = 'Project name is required before running a Mist comparison.';
+        return;
+      }
+      setSnapshotBusy(true, 'Comparing current Mist state...');
+      snapshotFilter = 'all';
+      try {
+        const res = await fetch('/api/network-state/compare', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project_name: projectName,
+            baseline_run_id: snapshotBaselineSelect?.value || ''
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data?.error || `Request failed with status ${res.status}`);
+        renderSnapshotSummaryHtml('Mist comparison completed', `Baseline ${escapeHtml(data?.run?.baseline_run_id || '')}. ${escapeHtml(summarizeCountMap(data?.run?.summary || {}))}`);
+        renderCompareResults(data.run || {});
+        snapshotStatus.textContent = 'Mist comparison complete.';
+        await refreshProjectContext();
+      } catch (err){
+        snapshotStatus.textContent = `Mist comparison failed: ${err?.message || err}`;
+      } finally {
+        setSnapshotBusy(false);
+      }
+    });
+  </script>
+</body>
+</html>
