@@ -1,539 +1,416 @@
 # GreatMigration
 
-GreatMigration is a network automation toolkit designed to accelerate migrations to Juniper Mist.
-It started as a switch conversion utility and now provides a full web application for:
+GreatMigration is a FastAPI web application for network engineers migrating Cisco switches to Juniper Mist. It recommends replacement hardware, translates switch configurations, previews and applies migration payloads, compares pre/post-migration MAC placement, and audits Mist sites with permission-gated remediation.
 
-- Discovering legacy Cisco hardware and recommending replacements.
-- Converting Cisco switch configurations into Mist-compatible payloads.
-- Applying standardized port profile rules at scale.
-- Auditing Mist sites for compliance drift.
-- Performing controlled, role-gated remediation actions.
+**Preview proposed changes before applying them.** Read-only accounts can inspect inventory, convert configurations, collect SSH evidence, save conversion sets, compare snapshots, and run passive audits. Push-enabled accounts can also change shared policy, update Mist configuration, approve/revoke audit exceptions, and explicitly request active cable diagnostics. Application permissions and the Mist token's permissions must both permit a live action.
 
-If you are a network engineer using this for the first time, the most important thing to know is:
-**GreatMigration is built around staged validation first, and automated changes second.**
-Most workflows support non-destructive review before any push action is available.
-
----
+Authenticated users share this installation's evidence and Mist service account. Deploy on a restricted management network; use separate installations when operators or organizations need isolation.
 
 ## Table of contents
-- [Feature overview](#feature-overview)
-  - [Hardware conversion](#hardware-conversion)
-  - [Port profile rules](#port-profile-rules)
-  - [Standards](#standards)
-  - [Config conversion](#config-conversion)
-  - [Compliance audit & 1 Click Fix](#compliance-audit--1-click-fix)
-- [Hamburger menu guide](#hamburger-menu-guide)
-- [Getting started](#getting-started)
-  - [Prerequisites](#prerequisites)
-  - [Quick start scripts](#quick-start-scripts)
-  - [Manual setup](#manual-setup)
-- [Extras: LDAP, syslog, and logging](#extras-ldap-syslog-and-logging)
-- [Backend Python components](#backend-python-components-eli15)
+
+- [Prerequisites and setup](#prerequisites-and-setup)
 - [Configuration reference](#configuration-reference)
-- [Firewall requirements](#firewall-requirements)
-- [Operational tips](#operational-tips)
+- [Operator workflows](#operator-workflows)
 - [Secure deployment and verification](#secure-deployment-and-verification)
+- [Operations and maintenance](#operations-and-maintenance)
+- [Troubleshooting](#troubleshooting)
+- [Development verification](#development-verification)
+- [Project components](#project-components)
 
----
+## Prerequisites and setup
 
-## Feature overview
+- Git and Python with `venv`/`pip`. CI verifies Python **3.11** on Windows and Linux; use that version for a reproducible starting point. Newer Python versions and macOS are not covered by that CI matrix.
+- On Debian/Ubuntu, install `python3-venv` if environment creation reports that `ensurepip` is unavailable.
+- A Mist API token for the required region and organizations. Read access supports discovery/audits; live pushes and fixes need corresponding write permissions.
+- For SSH: network reachability, Cisco IOS credentials with access to collection commands, and verified SSH host keys.
+- Node is needed only to develop/rebuild frontend assets. CSS and Sortable assets are committed for normal installations.
 
-GreatMigration runs as a FastAPI web app with HTMX/Tailwind UI pages. Every operation is permission-aware:
+Run commands from the repository root unless specified otherwise. Keep actual credentials, network configurations, evidence, and backups private.
 
-- **Read-only users** can inspect data, run audits, and export results.
-- **Push-enabled users** can execute change actions (Mist updates, 1 Click Fix, and push workflows).
+### Manual setup on Windows
 
-Push rights are controlled through `PUSH_GROUP_DN` (LDAP mode) or `LOCAL_PUSH_USERS` (local auth mode).
-
-### Hardware conversion
-
-The Hardware Conversion workflow helps you answer: **“What Juniper hardware should replace this Cisco estate?”**
-
-**What it does**
-
-- Accepts Cisco `show tech-support` uploads.
-- Or collects data over SSH directly from devices.
-- Parses chassis, module, optics, and interface detail.
-- Applies replacement mapping rules to suggest target Juniper models.
-- Exports results as PDF/CSV for procurement and change documentation.
-
-**How to use**
-
-1. Open **Hardware Conversion**.
-2. Choose input method:
-   - **Upload bundle** for existing `show tech-support` files.
-   - **SSH collect** to fetch inventory directly from switches.
-3. Review parsed inventory and replacement suggestions.
-4. Adjust mappings if needed (or update them in **Hardware Replacement Rules**).
-5. Export reports for CAB/procurement review.
-
-**How it works**
-
-- Parsing and normalization are handled by `translate_showtech.parse_showtech`.
-- Mapping is loaded through `translate_showtech.load_mapping` from `device_map.json` (or sample defaults).
-- SSH collection is orchestrated by `backend/ssh_collect.py`, which runs command collection jobs and stores raw outputs for traceability.
-- The same parser is used for upload and SSH sources, keeping results consistent regardless of intake method.
-
-**Safety notes**
-
-- Hardware conversion is an **analysis workflow** and does not push configuration to Mist.
-- You can run this safely before any migration window.
-
-### Port profile rules
-
-Port Profile Rules provide deterministic logic for assigning Mist port usages from Cisco interface characteristics.
-
-**What it does**
-
-- Lets you define rule conditions such as mode, VLAN fields, PoE active status, and description regex.
-- Uses ordered evaluation (first match wins).
-- Stores rules in JSON for version control and reuse.
-- Applies rules automatically during conversion and push preview.
-
-**How to use**
-
-1. Open **Rules → Port Profiles**.
-2. Create or edit conditions (access/voice/native VLAN, trunk membership, description patterns).
-3. Set the target Mist `usage` value.
-4. Reorder rules to enforce priority.
-5. Export/import JSON to standardize policy across teams.
-
-**How it works**
-
-- Rule files are validated via `push_mist_port_config.load_rules`.
-- Interface matching uses `evaluate_rule` logic in conversion/push flows.
-- The selected usage is injected into generated Mist `port_config` payloads.
-
-**Safety notes**
-
-- Rule updates do not change devices by themselves.
-- You can validate rule effects through stage/test workflows before any live push.
-
-### Standards
-
-Standards gives you a live firmware baseline view so operators can see what versions should be targeted before migrations and audits.
-
-**What it does**
-
-- Displays a model-by-model firmware standards matrix for switches and APs.
-- **Auto-Populates on Install**: On a new setup, the tool automatically fetches the latest suggested releases from the Mist API so your baseline is ready immediately.
-- Shows multiple historical standards (Standard 1..N) so you can compare recency and baseline drift.
-- Supports fast client-side filtering by model, device type, or version string.
-- Exposes refresh timestamp metadata to confirm when the standards cache was last generated.
-
-**How to use**
-
-1. Open **Standards** from the menu.
-2. Review **Standard 1** first (this is the primary baseline, including ZTP target for switches).
-3. Use the filter box to find a specific model family or version.
-4. Confirm required firmware expectations before running conversion push workflows or audit fixes.
-
-**How it works**
-
-- The Standards page (`/standards`) loads a table from `/api/standards`.
-- The backend builds a normalized matrix from `standard_fw_versions.json`.
-- **First-Run Behavior**: If `standard_fw_versions.json` is missing or empty, the backend automatically triggers a refresh from Mist to populate it.
-- Firmware standards data is refreshed periodically (every 90 days by default) or can be manually triggered if the cache is stale.
-- Push-enabled users can explicitly apply Standard 1 to the organization onboarding policy from the Standards page. Viewing or refreshing standards does not change Mist configuration.
-
-**Safety notes**
-
-- Standards is a **read-only reference workflow**.
-- Viewing/filtering the table does not make any device changes.
-- It is intended to be consulted before change workflows and during post-change validation.
-
-### Config conversion
-
-Config Conversion is the core migration path from Cisco CLI to Mist API payloads.
-
-**What it does**
-
-- Parses Cisco configs and builds Mist-ready `port_config` structures.
-- Supports batch row-to-site/device mapping.
-- Supports stack/chassis member remapping and uplink exclusion.
-- Supports Stage/Test (preview) and Push (live Mist update).
-- Includes lifecycle-oriented automation to move from temporary legacy layout toward final Juniper port state.
-
-**How to use**
-
-1. Open **Config Conversion**.
-2. Upload one or more Cisco config files (or collect files over SSH).
-3. Validate interface interpretation and member mapping.
-4. Assign Mist org/site/device targets for each row.
-5. Run **Stage/Test** first and review outputs.
-6. Run **Push changes** only after review and approval.
-
-**How it works**
-
-- Parsing is performed by `convertciscotojson.convert_one_file` with CiscoConfParse.
-- Payload construction merges conversion output, rule-driven usages, and selected Mist targets.
-- Capacity/model guardrails are enforced via validation helpers in `push_mist_port_config.py`.
-- Mist updates are executed through site/device API calls only when push workflows are explicitly triggered.
-
-**Safety notes**
-
-- Stage/Test is intended for pre-change validation and should be your default first step.
-- Push controls are hidden/blocked for read-only users.
-- Conversion output can be exported and peer-reviewed before any production change.
-
-### Compliance audit & 1 Click Fix
-
-Compliance Audit checks deployed Mist state against your operational standards.
-
-**What it audits**
-
-- Naming compliance (switches/APs).
-- Required site variables.
-- Template alignment and drift.
-- Override cleanliness (including static DNS override cases).
-- Device documentation/image coverage thresholds.
-
-**Built-in 1 Click Fix actions**
-
-- **AP naming remediation** based on LLDP neighbor context.
-- **Switch static DNS cleanup** when template and variable prerequisites are met.
-
-**How to use**
-
-1. Open **Compliance Audit**.
-2. Select org/site scope.
-3. Run audit and inspect site cards/check summaries.
-4. Export CSV summaries for records.
-5. If authorized, run specific 1 Click Fix actions and monitor per-device status feedback.
-
-**How it works**
-
-- `compliance.py` builds site context from Mist API data and runs checks.
-- `audit_history.py` stores run history for review/export.
-- `audit_actions.py` defines available actions.
-- `audit_fixes.py` executes each action with prerequisite checks and API operations.
-
-**Configuration exceptions**
-
-- Push-enabled users can select **Add to exceptions** beside a configuration deviation and record why that local variance is approved. Bundled differences can be approved one field at a time.
-- Approvals are stored locally in `backend/exceptions.json` (ignored by Git), with the approved value, relevant standard, scope, reason, approver, and timestamp. Back up this file alongside your other local policy files.
-- Each audit checks current Mist state first, then matches saved approvals. A changed value, relevant standard, organization, site, or device becomes actionable again. Display-name and unrelated telemetry changes do not invalidate an approval.
-- **Approved exceptions** appear separately in the audit and its print/PDF export, excluded from actionable issue totals. Read-only users can view them.
-- Open the **Exceptions** register before or after an audit to filter saved approvals by organization and selected sites. Push-enabled users can revoke them; revoked records remain available for traceability. Approvals have no expiry and can match again if their exact value and standard return, until revoked.
-- Audit fixes recheck current approvals on the server, skipping protected targets or fields. Unavailable configuration or an unreadable exception store prevents affected fixes from proceeding safely. Saving or revoking an exception does not change Mist configuration.
-- Exceptions cover configuration overrides, template alignment, naming, site variables, firmware, cloud management, spare-switch presence, and virtual-chassis roles. Health, service-level, and documentation findings remain actionable.
-- A missing exception file means no approvals. A malformed or unreadable file is reported visibly and suppresses no findings; it is never silently replaced.
-
-**Safety notes**
-
-- Audit runs are passive by default. Push-enabled users may explicitly opt into active cable diagnostics.
-- 1 Click Fix actions are explicit, per-action operations and remain permission-gated.
-- Preconditions are checked before actions are enabled or executed.
-
----
-
-## Hamburger menu guide
-
-The hamburger menu (☰) is the main navigation pattern across pages (`/`, `/hardware`, `/replacements`, `/rules`, `/standards`, `/audit`).
-
-### How the menu behaves
-
-- Click ☰ to open/close.
-- Click outside the drawer to close.
-- Page content shifts when open so controls remain visible.
-- Menu structure is consistent across feature pages.
-
-### User/session behavior in the menu
-
-- The UI calls `/me` and displays the current username.
-- Read-only users are labeled as read-only where relevant.
-- Log out is shown for active sessions and clears session state via `/logout`.
-- Navigation visibility is broad, but mutating actions remain role-restricted.
-
-### Menu items and what each one does
-
-1. **Hardware Conversion** (`/hardware`)
-   - Parse inventory and generate replacement recommendations.
-2. **Hardware Replacement Rules** (`/replacements`)
-   - Maintain Cisco→Juniper model mapping used by hardware conversion.
-3. **Config Conversion** (`/`)
-   - Convert configs and run stage/test/push workflows.
-4. **Port Profile Rules** (`/rules`)
-   - Define and prioritize interface-to-usage mapping logic.
-5. **Standards** (`/standards`)
-   - Review firmware standards by model/type and revision recency.
-6. **Compliance Audit** (`/audit`)
-   - Run compliance checks and optional 1 Click Fix remediations.
-7. **Help** (`HELP_URL`)
-   - Open your internal runbook/documentation target.
-
-### Recommended operator workflow using the menu
-
-1. **Standards**: verify software baseline expectations.
-2. **Hardware Replacement Rules**: confirm model mapping policy.
-3. **Hardware Conversion**: size migration hardware.
-4. **Port Profile Rules**: validate interface policy translation.
-5. **Config Conversion**: run stage/test and review payloads.
-6. **Compliance Audit**: run post-stage checks, then apply fixes if needed.
-
-This sequence minimizes risk by moving from policy/reference -> conversion planning -> controlled execution.
-
----
-
-## Getting started
-
-GreatMigration uses automation to simplify your first-run setup. Your local configuration files (like `.env`, `port_rules.json`, and `standard_fw_versions.json`) are **strictly local**. They are ignored by Git so that you can switch branches without losing your custom data or site settings.
-
-### Prerequisites
-
-- Git
-- Python 3.11+ (`python3-venv` on Linux/macOS)
-- Mist API token (read for discovery; write for push/fix workflows)
-- Optional: PowerShell 5.1+ / 7.x for Windows quickstart
-
-### Quick start scripts
-
-These scripts handle cloning the repository, building the virtual environment, and initializing your local configuration files.
-
-#### Python (cross-platform)
-
-```bash
-git clone -b main https://github.com/ejstover/GreatMigration.git ./GreatMigration
-cd ./GreatMigration
-python3 quickstart.py
-```
-
-**What it does:**
-
-- **Sync Management**: Clones or updates the repo. If you have uncommitted changes on your current branch, it will skip updates to protect your work.
-- **Environment Build**: Creates `.venv`, installs dependencies, and ensures `tmp_ssh_jobs/` and `logs/` directories exist.
-- **Local Config Initialization**: Prompts for key settings to create `backend/.env` and automatically initializes `backend/port_rules.json` and `backend/standard_fw_versions.json` if they are missing.
-- **Server Start**: Starts the API via `uvicorn` on port 8000 by default.
-
-**Useful options:**
-
-- `--repo`, `--dir`, `--branch`
-- `--port`
-- `--no-start`
-
-#### PowerShell (Windows-friendly)
+Use PowerShell. These examples invoke the virtual environment's Python directly, so activation is optional.
 
 ```powershell
-Set-ExecutionPolicy -Scope Process RemoteSigned
-./quickstart.ps1 -RepoUrl https://github.com/ejstover/GreatMigration.git -TargetDir C:\GreatMigration
+git clone https://github.com/ejstover/GreatMigration.git
+Set-Location GreatMigration
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt
+Copy-Item .env.sample backend/.env
 ```
 
-**What it does:**
+Edit `backend/.env`: replace `MIST_TOKEN`, confirm `MIST_BASE_URL`, and keep `AUTH_METHOD=local` for this example. For **loopback-only HTTP**, change `SESSION_HTTPS_ONLY=false`. Leave it `true` for shared HTTPS deployments.
 
-- Mirrors the Python quickstart behavior for Windows environments.
-- Handles automated setup of local JSON config files and environment directories.
-- Supports `-Branch`, `-Port`, and `-NoStart` switches.
+```powershell
+.\.venv\Scripts\python.exe backend/security_setup.py
+.\.venv\Scripts\python.exe backend/security_setup.py --add-user operator
+.\.venv\Scripts\python.exe -m uvicorn app:app --app-dir backend --env-file backend/.env --host 127.0.0.1 --port 8000
+```
 
-### Manual setup
+The first command generates a random session signing key. The second prompts twice for a password of at least 12 characters and creates a read-only account. Add `--push` when creating/updating an account that should apply changes.
 
-If you prefer to configure the tool manually:
+### Manual setup on Linux
 
-1. **Clone + install dependencies**
-   ```bash
-   git clone https://github.com/ejstover/GreatMigration.git
-   cd GreatMigration
-   python3 -m venv .venv
-   source .venv/bin/activate  # Windows: .\.venv\Scripts\activate
-   pip install -r backend/requirements.txt
-   ```
+```bash
+git clone https://github.com/ejstover/GreatMigration.git
+cd GreatMigration
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements.txt
+cp .env.sample backend/.env
+```
 
-2. **Create `backend/.env`**
-   The application relies on this file for all core settings. You can copy `.env.sample` to get started.
+Edit `backend/.env` as described above, including `SESSION_HTTPS_ONLY=false` for loopback-only HTTP. Then run:
 
-   **Required Core Values:**
-   - `MIST_TOKEN`: Your API token (requires write access for push/fix actions).
-   - `SESSION_SECRET`: A long random string for session security.
-   - `AUTH_METHOD`: Set to `local` or `ldap`.
+```bash
+.venv/bin/python backend/security_setup.py
+.venv/bin/python backend/security_setup.py --add-user operator
+.venv/bin/python -m uvicorn app:app --app-dir backend --env-file backend/.env --host 127.0.0.1 --port 8000
+```
 
-   **Common Configuration:**
-   - `MIST_BASE_URL`: Default is `https://api.ac2.mist.com`.
-   - `MIST_ORG_ID`: Preset your Organization ID for faster workflows.
-   - `SWITCH_TEMPLATE_ID`: The Mist Switch Template to align against.
-   - `API_PORT`: Default is `8000`.
-   - `HELP_URL`: Link to your internal runbook or documentation.
+Use `python3` instead of `python3.11` only after confirming the selected version. Activation is optional: `source .venv/bin/activate` on Linux or `.\.venv\Scripts\Activate.ps1` on Windows, followed by `python` commands.
 
-   **Local Auth Settings (`AUTH_METHOD=local`):**
-   - `LOCAL_USERS_FILE`: Hash-only account database, normally `data/local_users.json`.
-   - Run `python backend/security_setup.py --add-user USERNAME --push` to create a push-enabled account; omit `--push` for read-only access.
+### First sign-in
 
-   **LDAP Settings (`AUTH_METHOD=ldap`):**
-   - `LDAP_SERVER_URL`: Your validating `ldaps://` directory server.
-   - `LDAP_SERVICE_DN` and `LDAP_SERVICE_PASSWORD`: Required for session authorization checks.
-   - `LDAP_CA_CERTS_FILE`: Optional corporate CA bundle.
-   - `LDAP_SEARCH_BASE`: Root DN for searches.
-   - `PUSH_GROUP_DN`: Members of this group can perform "Push" actions.
+1. Open `http://localhost:8000` for the loopback HTTP examples and sign in as `operator`.
+2. Confirm read-only access. Verify Mist region/organization by loading sites or Standards.
+3. Convert a synthetic/sample Cisco configuration and use **Stage/Test converted config** before processing a migration.
+4. Review site policy and firmware selection before granting push access. The sample lists required variable names without deployment-specific default values.
+5. Before SSH collection, verify device fingerprints through a trusted channel and add the verified keys to the service account's known-hosts file or `SSH_KNOWN_HOSTS_FILE`.
 
-3. **Initialize Local Configuration**
-   Run `python backend/security_setup.py` to generate a secure signing key and migrate legacy local credentials.
+### Quickstart scripts
 
-   The application requires these files to be present in the `backend/` directory:
-   - `port_rules.json`: Define your interface-to-usage mapping (see `port_rules.sample.json`).
-   - `standard_fw_versions.json`: Stores your firmware baseline (initialized automatically on first run).
-   - `device_map.json`: Optional custom hardware mappings (see `device_map.sample.json`).
+For an existing checkout, the Python helper supports Windows and Linux:
 
-4. **Run the app**
-   ```bash
-   uvicorn app:app --host 127.0.0.1 --port 8000 --app-dir backend
-   ```
+```powershell
+py -3.11 quickstart.py --dir . --no-start
+```
 
-### First-run checklist
+```bash
+python3.11 quickstart.py --dir . --no-start
+```
 
-1. For loopback-only HTTP development, set `SESSION_HTTPS_ONLY=false` and open `http://localhost:8000`. Shared deployments require HTTPS and an explicit `APP_ALLOWED_HOSTS` setting.
-2. Confirm authentication works with your chosen auth method.
-3. Validate read-only user behavior first.
-4. Run non-destructive workflows (hardware parse, stage/test, compliance audit).
-5. Execute push/fix operations only after review and approval.
+Both helpers can clone/update a checkout, create `.venv`, install/upgrade dependencies, prompt for missing `backend/.env`, run credential migration, copy missing port rules from the sample, initialize an empty firmware cache, and create `tmp_ssh_jobs/` and `backend/logs/`. Existing environment/rule/cache files are retained. **Quickstart's first local account is push-enabled.** Use manual setup to begin read-only.
 
----
+| Python option | PowerShell equivalent | Behavior |
+| --- | --- | --- |
+| `--repo URL` | `-RepoUrl URL` | Required when target is not a checkout; the helper must already be available locally. |
+| `--dir PATH` | `-TargetDir PATH` | Target checkout; default current directory. |
+| `--branch NAME` | `-Branch NAME` | Desired branch; default `main`. |
+| `--port NUMBER` | `-Port NUMBER` | Overrides `API_PORT` for this run; otherwise environment-file value or `8000`. |
+| `--no-start` | `-NoStart` | Setup without starting the server. |
 
-## Extras: LDAP, syslog, and logging
+Without setup-only mode, the helpers start Uvicorn in the foreground. Python uses `APP_HOST` from its loaded environment, defaulting to `127.0.0.1`; PowerShell binds to `127.0.0.1`. Stop with Ctrl+C. For later starts, use the manual Uvicorn command above, including `--env-file`.
 
-- **LDAP auth (optional)**
-  - Set `AUTH_METHOD=ldap` and directory settings.
-  - Group-based role control separates read-only and push users.
+**Current limitations and alternatives:**
 
-- **Syslog forwarding (optional)**
-  - Set `SYSLOG_HOST` and `SYSLOG_PORT`.
-  - If syslog is unavailable, local logging continues.
-
-- **Local audit logging (default)**
-  - Action logs are written under `backend/logs/` for operational traceability.
-
----
-
-## Backend Python components
-
-- `backend/app.py`: FastAPI server, endpoints, session/auth checks, and orchestration.
-- `backend/convertciscotojson.py`: Cisco config parser and Mist payload builder.
-- `backend/push_mist_port_config.py`: Rule evaluation, payload validation, and push helpers.
-- `backend/translate_showtech.py`: Show-tech parsing and hardware mapping helpers.
-- `backend/ssh_collect.py`: Multi-device SSH intake pipeline.
-- `backend/compliance.py`: Compliance check framework and site-level runners.
-- `backend/audit_actions.py`: Catalog of available remediation actions.
-- `backend/audit_fixes.py`: Execution logic for remediation actions.
-- `backend/audit_history.py`: Persistence and retrieval for audit history.
-- `backend/auth_local.py`: Local auth logic.
-- `backend/auth_ldap.py`: LDAP auth and group resolution.
-- `backend/logging_utils.py`: File/syslog user action logging.
-
----
+- Quickstart is also an updater: a clean checkout on the requested branch is fetched and pulled with rebase. Tracked changes skip switching/updating, but setup/dependency installation still proceed. Untracked files are not part of that guard. Review/back up your checkout first; use controlled upgrades below for deliberate changes.
+- After switching from another clean branch, the helpers retain the old branch name in memory, so that invocation can switch without pulling updates. Switch/update explicitly before setup when a current revision is required.
+- PowerShell resolves `TargetDir` before creating it and can fail on empty Git status output. Use Python or manual setup if it fails; manual Windows setup is the reliable starting point. The intended invocation from an existing checkout is `.\quickstart.ps1 -TargetDir . -NoStart`.
+- LDAP quickstart writes sample directory settings. Use setup-only mode, replace every placeholder, and review groups/CA settings before startup; see [LDAP configuration](#ldap-configuration).
+- Firmware installation only initializes an empty cache. A Standards/audit workflow must request a refresh and receive eligible Mist data to populate it.
 
 ## Configuration reference
 
-### Authentication and roles
+Copy the root [.env.sample](.env.sample) to **`backend/.env`**. The app loads it, then performs a fallback dotenv search; existing process variables take precedence. Quickstart launchers instead export file values into the child process, overriding inherited values. Avoid competing root/backend `.env` files.
 
-- `AUTH_METHOD=local` uses the scrypt-hashed account database in `LOCAL_USERS_FILE`. Legacy plaintext entries are migrated by the setup utility.
-- `AUTH_METHOD=ldap` uses LDAP bind/search plus group DNs.
-- Push rights come from `PUSH_GROUP_DN` (LDAP) or each local account's `can_push` field.
-- Shared deployments require HTTPS; keep `SESSION_HTTPS_ONLY=true`. See [secure deployment and verification](#secure-deployment-and-verification) for certificate, SSH trust, retention, migration, and test instructions.
+Restart after environment changes. The documented Uvicorn `--env-file backend/.env` loads settings before module initialization, including syslog. Most policy paths are fixed under `backend/`; exceptions are noted below. Prefer absolute paths for external files.
 
-### Mist connectivity
+### Core settings and local authentication
 
-- `MIST_BASE_URL` defaults to the AC2 Mist API domain.
-- `MIST_TOKEN` is required for Mist API access.
-- `MIST_ORG_ID` can be preset for faster operator workflows.
+| Setting | Default / requirement | Purpose and format |
+| --- | --- | --- |
+| `AUTH_METHOD` | Required: `local` or `ldap` | Missing/other values leave authenticated workflows unavailable. |
+| `SESSION_SECRET` | Required, random, at least 32 characters | Generate with `security_setup.py`; no usable built-in key. |
+| `SESSION_HTTPS_ONLY` | `true` | Secure cookies and HTTPS enforcement. Set exactly `false` only for HTTP with both host and client on loopback. |
+| `APP_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` | Comma-separated exact hostnames/IPs without scheme/port; set public names for shared hosting. |
+| `API_PORT` | Quickstart fallback `8000` | Quickstart only. Direct Uvicorn starts require `--port`. |
+| `APP_HOST` | Python quickstart fallback `127.0.0.1` | Python helper bind address; direct Uvicorn uses `--host`, PowerShell always uses loopback. |
+| `MIST_TOKEN` | Required for Mist workflows | Server-side token; account permissions do not grant token privileges. |
+| `MIST_BASE_URL` | `https://api.ac2.mist.com` | Regional HTTPS API origin; optional `/api/v1` suffix is normalized. |
+| `MIST_ALLOWED_HOSTS` | Empty | Additional exact approved API hostnames, comma-separated; configured Mist host and AC2 are already allowed. |
+| `MIST_ORG_ID` | Empty | Default organization; some workflows discover organizations if absent. Configure explicitly for organization-policy synchronization. |
+| `SWITCH_TEMPLATE_ID` | Empty | Network template used to obtain switch port profiles. |
+| `HELP_URL` | Sample points to this repository's README | Set explicitly: the unset code fallback still points to the older `jacob-hopkins` repository. |
+| `LOCAL_USERS_FILE` | Sample `data/local_users.json`; unset code fallback: legacy entries | JSON account database; relative to `backend/`. Must exist before local-auth startup when configured. |
+| `LOCAL_USERS`, `LOCAL_PUSH_USERS` | Empty; legacy migration only | Old inline account/role settings. Use the setup utility and hash-only database for new installs. |
 
-### Compliance policy tuning
+With an active virtual environment, create/update accounts using:
 
-- Naming patterns: `SWITCH_NAME_REGEX_PATTERN`, `AP_NAME_REGEX_PATTERN`.
-- Required variables: `MIST_SITE_VARIABLES` (`key=value` entries).
-- Documentation minimums: `SW_NUM_IMG`, `AP_NUM_IMG`.
-- Standards cache/source behavior uses `backend/standard_fw_versions.json` with periodic refresh.
+```text
+python backend/security_setup.py --add-user observer
+python backend/security_setup.py --add-user operator --push
+python backend/security_setup.py --revoke-sessions
+```
 
-### VLAN/reserved behavior for conversion safety
+Omitting `--push` when updating an account makes it read-only. Passwords use hidden prompts, require at least 12 characters, and are stored as salted scrypt hashes. Local password/role edits invalidate affected sessions on the next authenticated request. Sessions last one hour. Revocation clears all installation sessions, including LDAP sessions.
 
-- `LEGACY_VLANS` identifies VLANs preserved in legacy/staged workflows.
-- `EXCLUDE_VLANS` omits specific VLANs from generated outputs.
-- `RESERVED_VLANS` protects reserved IDs with explicit naming (format `id:name`).
+### LDAP configuration
 
-### 1 Click Fix safeguards
+Use `AUTH_METHOD=ldap`, replace the commented examples in `.env.sample`, and leave only the intended authentication selection active.
 
-- AP rename actions depend on LLDP-derived context and skip when required data is missing.
-- DNS cleanup actions validate template and site-variable prerequisites before enabling execution.
+| Setting | Default / requirement | Purpose and format |
+| --- | --- | --- |
+| `LDAP_SERVER_URL` | Required deployment value; code fallback is a sample server | `ldaps://hostname:636` or configured LDAPS port; plain LDAP is rejected. |
+| `LDAP_SEARCH_BASE` | Required deployment value; code fallback `DC=testdomain,DC=local` | Base DN for user searches. |
+| `LDAP_SEARCH_BASES` | Falls back to `LDAP_SEARCH_BASE` | Bases separated by semicolons/newlines; DN components keep their commas. |
+| `LDAP_BIND_TEMPLATE` | `{username}@testdomain.local` | User-bind format; set for your directory. |
+| `LDAP_SERVICE_DN` | Required deployment value; code fallback is a sample DN | Service account for directory/session authorization. |
+| `LDAP_SERVICE_PASSWORD` | Required | Service-account password. |
+| `PUSH_GROUP_DN` | Empty | One group DN granting push access; without it, LDAP users cannot push. |
+| `READONLY_GROUP_DN` | Empty | Allowed read-only groups, separated by semicolons/newlines. |
+| `LDAP_MATCHING_RULE_IN_CHAIN` | `true` | Enables recursive directory membership lookup, with implementation fallback checks. |
+| `LDAP_CA_CERTS_FILE` | Unset; platform trust | Optional trusted CA bundle; prefer an absolute path. |
 
----
+When either group setting is configured, users must belong to an allowed push/read-only group to sign in. Push-group membership grants push access even with read-only membership. With neither group configured, authenticated directory users receive read-only access. Sessions revalidate account/group access through the service account on each authenticated request; directory validation failures deny access.
 
-## Firewall requirements
+### Migration and compliance policy
 
-Allow these flows in controlled environments:
+| Setting | Default | Purpose and format |
+| --- | --- | --- |
+| `LEGACY_VLANS` | Built-in `10,500-599` | Comma-separated IDs/ranges **added to** the built-in set for lifecycle preservation/prefix policy. Cannot remove built-in IDs. |
+| `EXCLUDE_VLANS` | Empty | IDs/ranges excluded from the `legacy_` naming prefix during temporary network/profile generation; does **not** remove VLANs from conversion output. |
+| `RESERVED_VLANS` | `1:vlan1` | Additional/overridden reserved names, comma-separated `id:name` pairs. |
+| `SWITCH_NAME_REGEX_PATTERN` | Built-in region/site/location/role convention | Blank or invalid override falls back to `DEFAULT_SWITCH_NAME_PATTERN` in [compliance.py](backend/compliance.py). |
+| `AP_NAME_REGEX_PATTERN` | Built-in region/site/location/AP-number convention | Regex override; see `DEFAULT_AP_NAME_PATTERN` in [compliance.py](backend/compliance.py). Audit patterns do not rewrite remediation's naming algorithm. |
+| `MIST_SITE_VARIABLES` | `hubradiusserver,localradiusserver,siteDNS,hubDNSserver1,hubDNSserver2` | Comma-separated required keys. Optional `key=value` entries supply approved missing-variable fix defaults. Bare keys have no fix default. |
+| `SW_NUM_IMG`, `AP_NUM_IMG` | `2` each | Minimum documentation images per switch/AP; non-negative integers (`0` permits none). |
+| `TZ` | `America/New_York` | IANA zone for audit/report timestamps; conversion also exposes a time-zone field. |
+| `NETBOX_DT_URL` | GitHub contents API for `netbox-community/devicetype-library/device-types` | Library root for vendor model lists. Physical-port discovery also uses built-in GitHub Juniper metadata URLs. |
+| `NETBOX_LOCAL_DT` | Empty | Vendor-to-model-list JSON; see [custom_device_types.sample.json](backend/custom_device_types.sample.json). Required for custom-model saves. Relative to working directory; create its parent first. Supplements online lookup, not an offline port-layout database. |
 
-| Direction | Protocol/Port | Destination | Purpose |
-|-----------|---------------|-------------|---------|
-| Inbound   | TCP `API_PORT` (default 8000) | Admin/operator workstations | Access the web UI. |
-| Outbound  | TCP 443 | Mist API endpoint (`api.ac2.mist.com` or regional host) | Read inventory, run audits/fixes, and perform pushes. |
-| Outbound  | TCP 443 | `api.github.com` and optional `NETBOX_DT_URL` | Pull device type metadata used in conversion workflows. |
-| Outbound  | TCP 22 | Managed switches | SSH collection and SSH-driven network workflows. |
-| Outbound | TCP 636 (or configured LDAPS port) | LDAP/AD servers | Required only when using LDAP auth. |
+Firmware policy comes from `backend/standard_fw_versions.json`. `STD_SW_VER` and `STD_AP_VER` are not consumed by the implementation and are no longer in the sample.
 
-LDAP requires LDAPS with a trusted certificate; unencrypted LDAP is rejected.
+### Logging, storage, and resource settings
 
----
+| Setting | Default | Purpose and format |
+| --- | --- | --- |
+| `SYSLOG_HOST` | Empty (disabled) | UDP syslog destination. Legacy `SYSLOG_SERVER` is used only when `SYSLOG_HOST` is empty/unset. |
+| `SYSLOG_PORT` | `514` | UDP destination port; local logging remains enabled. |
+| `SSH_KNOWN_HOSTS_FILE` | Unset | Additional verified known-hosts file; normal service-account keys also load. Prefer an absolute path. |
+| `SECURITY_DB_PATH` | `backend/data/security.sqlite3` | SQLite sessions, rate limits, SSH leases. Relative overrides use the working directory; prefer an absolute path. |
+| `MAX_REQUEST_BYTES` | `16777216` (16 MiB) | Overall body limit for state-changing requests; login has a fixed 8 KiB limit. |
+| `MAX_INFLIGHT_REQUESTS` | `8` | Concurrent requests per process. |
+| `MAX_SSH_JOBS` | `2` | Shared job limit across workers using the same security database. |
+| `NETWORK_DATA_RETENTION_DAYS` | `30` | Conversion-set/snapshot retention by file modification age; minimum effective value one day. |
 
-## Operational tips
+Use positive integers for resource limits. Upload endpoints permit up to 16 files; SSH requests permit up to eight workers per job. These limits do not replace proxy connection limits or disk monitoring.
 
-- **Start read-only**: validate inventory, rules, and audits before allowing push access.
-- **Use stage/test first**: treat push as a final approved step, not the first step.
-- **Back up local policy securely**: keep `port_rules.json`, `device_map.json`, and related mappings in a private configuration store, outside this public repository.
-- **Review logs after every change window**: local logs and Mist audit logs should agree.
-- **Re-run quickstart periodically**: this updates dependencies and keeps local setup aligned.
+### Local policy files and precedence
 
-GreatMigration is designed to reduce migration risk by making change intent visible, reviewable, and role-controlled.
+Local policy, evidence, and credentials are ignored by Git. Versioned samples are starting points; sample updates do not overwrite existing local files.
+
+| File under `backend/` | Loading / writing behavior |
+| --- | --- |
+| `port_rules.local.json` → `port_rules.json` → `port_rules.sample.json` | UI reads the first existing file. Conversion loader tries this order, falling through read/parse errors. **Port Profile Rules saves `port_rules.local.json`**; a valid local file overrides primary rules. Ordered rules use first match wins. |
+| `device_map.json` or `device_map.sample.json` | Local base Cisco PID-to-Juniper map wins over sample. |
+| `replacement_rules.json` or `replacement_rules.sample.json` | Overlays the base hardware map; local file wins. **Hardware Replacement Rules saves `replacement_rules.json`**, including accessories. |
+| `standard_fw_versions.json` | Firmware cache; created empty by quickstart or populated by workflow refresh. No manual copy required. |
+| `exceptions.json` | Audit approvals, written through the UI with locking. Missing means no approvals; malformed/unreadable data produces an error and suppresses no findings. |
+
+Manual setup can use sample port/hardware rules directly; these local JSON files are not all mandatory. UI policy edits require push rights but do not themselves change a device. Restart after direct file edits to refresh cached rules/settings; UI port-rule saves refresh the saving process's rules.
+
+## Operator workflows
+
+The menu shows the current user and logout. Server-side permissions apply even when a page is visible to all accounts.
+
+| Page | Route | Purpose |
+| --- | --- | --- |
+| Hardware Conversion | `/hardware` | Upload/collect inventory; review replacements and export PDF/CSV. |
+| Hardware Replacement Rules | `/replacements` | Hardware mapping overrides/accessories. |
+| Config Conversion | `/` | Parse, map, preview, deploy, save conversion sets. |
+| Network Snapshot | `/network-snapshot` | Legacy MAC baseline and post-cutover Mist placement comparison. |
+| Port Profile Rules | `/rules` | Ordered interface-to-usage rules. |
+| Standards | `/standards` | Firmware baselines and explicit onboarding-policy synchronization. |
+| Compliance Audit | `/audit` | Checks, history, exceptions, exports, eligible fixes. |
+| Help | `HELP_URL` | Configured runbook/documentation. |
+
+### Hardware and port-rule preparation
+
+1. Review replacement mappings/accessories in **Hardware Replacement Rules**.
+2. In **Hardware Conversion**, upload Cisco `show tech-support` files or collect over SSH. Collection combines individual show-command outputs for the same parser used by uploads.
+3. Review chassis/modules, active optics, copper 10G exceptions, and recommended replacements. Resolve unmapped items and export for procurement/change review. This workflow does not push Mist configuration.
+4. Review **Port Profile Rules** before conversion. Conditions include mode, data/voice/native VLANs, trunk membership, PoE, description/interface patterns, and catch-all rules. Set target Mist `usage`, order priorities, and import/export JSON. Validate effects in a conversion preview.
+
+### Config conversion and lifecycle automation
+
+1. Upload Cisco configurations or use SSH collection; review converted JSON.
+2. Assign each row's Mist site/device and model. Check stack member/start-port offsets, module normalization, uplink exclusions, and explicit interface exclusions. Repeated devices need distinct member/port offsets; inspect overlap/capacity diagnostics.
+3. Select one phase per run and inspect every row's payload, warnings, failures, and results. A successful HTTP response does not mean every row succeeded.
+
+| Automation selection | Effect |
+| --- | --- |
+| Site Deployment: **Stage/Test converted config** | Build/validate device payloads; no configuration write. Mist read calls may still be required. |
+| Site Deployment: **Push converted config** | Apply device configuration through Mist; needs push rights and write-capable token. |
+| LCM Step 1: **Review the temporary Cisco layout** | Preview temporary VLANs, profiles, and switchport payloads; no configuration write. |
+| LCM Step 2: **Push the temporary Cisco layout** | Apply temporary legacy layout to Juniper switches through Mist. |
+| LCM Step 3: **Deploy the final Juniper config** | Select cleanup site/switches. First UI run previews; after successful preview, **Apply Configuration** performs cleanup and derived final port assignments. Review site/template profiles and preserved usages first. |
+
+Site Deployment and Lifecycle actions are separate choices; do not combine phases. Step 3 uses selected cleanup targets and live Mist site/template/device state, without requiring re-uploaded Cisco rows. Default preservation includes VLAN `10` and `500-599`, configured additions, and **Additional VLANs to preserve** entered for the run. This changes site-level settings as well as selected switches; inspect the full preview.
+
+Before cutover, enter a project name and save the mapped conversion set using **Snapshot Prep**. It freezes input/mapping information and labels for Network Snapshot; saving does not deploy configuration. This local evidence is subject to retention, so back it up for longer change records.
+
+### Network Snapshot
+
+1. Save a mapped conversion set from Config Conversion before migration.
+2. Open **Network Snapshot**, enter the same project name, select the intended saved set, and review the frozen Cisco-to-Juniper mapping. The latest set is auto-selected for a project's first baseline when available; a single available set can also be auto-selected.
+3. Supply legacy devices and SSH credentials; choose **Capture pre-migration baseline**. Device labels/hostnames must align with saved source configurations. Collection includes MAC, ARP, neighbor, VLAN, interface, and running-configuration evidence; it does not configure switches.
+4. Keep the page open until collection finishes and confirms baseline saving. After cutover, select that baseline and choose **Compare current Mist state to baseline**. Without selection, the latest baseline is used.
+5. Review reconciliation and project history. Comparison reads Mist state and saves local evidence without changing Mist configuration.
+
+| Reconciliation status | Interpretation |
+| --- | --- |
+| `matched_expected_port` | Expected site, switch, and port. |
+| `matched_expected_switch_wrong_port` | Expected switch, different port. |
+| `matched_same_site_wrong_switch` | Expected site, different switch. |
+| `matched_elsewhere` | No expected target matches; also investigate missing source-to-target mappings. |
+| `ambiguous_multiple_locations` | Multiple current observations for that MAC. |
+| `missing_in_current_mist_state` | Baseline MAC absent from collected Mist observations. |
+| `new_post_only_mac` | Post-cutover MAC absent from baseline. |
+
+Comparison checks observed MAC location, not end-to-end service health or VLAN equivalence. Endpoint activity, collection completeness, telemetry, and mapping quality affect results; investigate missing/ambiguous records alongside service validation. Names normalize into filesystem keys: use distinct stable project names that remain distinct after spaces/punctuation normalize.
+
+### Standards
+
+Viewing Standards or running a firmware audit checks `standard_fw_versions.json`; missing/empty data or a cache at least **90 days** old triggers a refresh attempt. There is no independent 90-day scheduler or guaranteed install-time fetch. With no eligible returned versions, the cache can remain empty/unchanged.
+
+Current selection keeps switch releases tagged **`junos_suggested`** and AP releases whose **`tag` is `alpha`**. Review AP selection against your approved firmware policy before relying on it. The page filters cached models to configured/discovered organization inventory, displaying up to six version columns and refresh metadata. Standard 1 is the first cached version per model.
+
+Viewing/filtering/refreshing changes no Mist configuration. Push-enabled users can explicitly synchronize Standard 1 from this page to switch auto-upgrade custom versions in organization onboarding policy. Confirm `MIST_ORG_ID` and the baseline first; synchronization is a live organization-level change.
+
+### Compliance Audit and 1 Click Fix
+
+Select sites or **Entire Org**, run the audit, inspect summaries/history, and export CSV or print/PDF records. Checks cover site variables, switch-template alignment, configuration overrides, site SLEs, firmware, cloud management, power-supply health, spare-switch presence, virtual-chassis roles, naming, and documentation images.
+
+Audits are passive by default. Active cable diagnostics require explicit opt-in and push permission; they issue device diagnostics and should be scheduled appropriately.
+
+| Available fix | Prerequisites / effect |
+| --- | --- |
+| AP naming | Derives names from LLDP switch context and built-in naming logic; skips missing/invalid context and naming conflicts. |
+| Switch static DNS cleanup | Clears eligible overrides only when approved-template and site-DNS-variable prerequisites hold. |
+| Enable cloud management | Enables management on selected eligible switches. |
+| Set site variables | Fills missing/unset variables from approved `MIST_SITE_VARIABLES` defaults; retains populated values. Bare keys cannot be filled automatically. |
+| Set spare switch role | Needs a suitable switch without active physical client connections and a derivable spare name; updates role/name. |
+| Set virtual-chassis roles | Needs target VC identifier and a supported, determinable layout; updates preprovisioned member roles. |
+
+Availability depends on findings/prerequisites. Live fixes need push rights and appropriate token permissions; handlers recheck current data. Review per-target updated/skipped/failed feedback and rerun the audit. Not every finding has a fix.
+
+**Approved exceptions:** Push-enabled users choose **Add to exceptions**, supply a reason, and approve individual fields in bundled differences. Approvals record scope, value, relevant standard, reason, approver, and timestamp in `backend/exceptions.json`. Current state is checked first: changed values, standards, organizations, sites, or devices become actionable again; unrelated telemetry/display-name changes do not invalidate approvals.
+
+Approvals appear separately in audit/print/PDF output, excluded from actionable totals. The **Exceptions** register filters by organization/sites; push-enabled users revoke approvals while retaining revoked records for traceability. Approvals do not expire and can match again if exact value/standard returns, until revoked. They cover overrides, template alignment, naming, variables, firmware, cloud management, spare presence, and VC roles. Health, SLE, and documentation findings remain actionable.
+
+Saving/revoking changes local policy only. Fixes recheck approvals and skip protected targets/fields; unreadable approvals or unavailable configuration block affected fixes. Preserve malformed stores and restore/repair verified records rather than deleting policy to silence an error.
 
 ## Secure deployment and verification
 
-### Installation and account migration
+Use a restricted service account and management network. Restrict `.env`, accounts, evidence, logs, SQLite state, known-hosts files, and backups to service/admin accounts, including Windows ACLs. Scope the Mist token to needed organizations/operations. See [SECURITY.md](SECURITY.md) for supported versions and confidential reporting.
 
-Run `python backend/security_setup.py` before starting an existing installation.
-Quick-start runs this automatically. Setup replaces weak session signing keys,
-migrates legacy local accounts to `backend/data/local_users.json` with salted
-scrypt password hashes, removes plaintext account entries from `.env`, and scrubs
-legacy HTTP payload logs. It preserves the Mist token and unrelated settings.
-Existing sessions require a new login.
+For shared hosting, terminate HTTPS at a trusted reverse proxy, retain `SESSION_HTTPS_ONLY=true`, set exact public `APP_ALLOWED_HOSTS`, and restrict backend access. With a same-host proxy and activated environment:
 
-Use `python backend/security_setup.py --add-user USERNAME --push` to create or
-update a push-enabled account; omit `--push` for read-only access. Passwords are
-entered through a hidden prompt. Use `--revoke-sessions` to revoke all sessions.
-Local account or role edits take effect on the next request; LDAP sessions
-revalidate directory access on every request. Sessions expire after one hour.
+```text
+python -m uvicorn app:app --app-dir backend --env-file backend/.env --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips 127.0.0.1
+```
 
-### Hosting, credentials, and trusted connections
+Preserve the public Host and forward the original HTTPS scheme. For a remote proxy, bind a private management interface, trust only the actual proxy IP, and firewall access to that proxy. Avoid wildcard forwarded-header trust. Verify HTTPS sign-in/logout, read-only access, and denied unauthorized actions before sharing.
 
-- Keep access restricted to trusted operators on a management network. All
-  authenticated users share installation evidence and the configured Mist service
-  account. Use separate installations when those users must be isolated.
-- Quick-start binds to loopback. For shared hosting, configure `APP_ALLOWED_HOSTS`
-  with exact public hostnames, terminate HTTPS at a trusted reverse proxy, and keep
-  `SESSION_HTTPS_ONLY=true`. Configure Uvicorn to trust forwarded headers only from
-  that proxy. Loopback HTTP development requires `SESSION_HTTPS_ONLY=false`.
-- `MIST_BASE_URL` selects the region; `MIST_ALLOWED_HOSTS` adds exact approved API
-  hostnames. Requests with the Mist token require an approved HTTPS API origin and
-  certificate verification; credentialed redirects are disabled.
-- LDAP requires `ldaps://`, a trusted certificate (optionally configured through
-  `LDAP_CA_CERTS_FILE`), and a service account for session authorization checks.
-  Directory validation failures deny access.
-- SSH requires verified keys in the normal known-hosts file or
-  `SSH_KNOWN_HOSTS_FILE`. Verify fingerprints through a trusted channel before
-  adding keys; do not disable host-key checks.
-- Restrict `.env`, local account databases, sessions, evidence, logs, and backups
-  to the service account and administrators, including Windows filesystem ACLs.
-  Use a Mist token scoped to the operations and organizations the installation
-  needs. Never commit live credentials or customer configurations.
+Mist token requests require approved HTTPS origins, verified certificates, and no credentialed redirects. LDAP requires verified LDAPS; SSH rejects untrusted keys. Pages/APIs, including API docs, require authentication apart from login/static assets. Browser changes use CSRF protection.
 
-### Evidence retention and resource limits
+### Firewall requirements
 
-Defaults are 16 MiB per request, 16 uploads, eight in-flight requests per process,
-two shared SSH jobs, eight workers per SSH job, one-hour temporary SSH retention,
-and 30-day saved evidence retention. `MAX_REQUEST_BYTES`, `MAX_INFLIGHT_REQUESTS`,
-`MAX_SSH_JOBS`, and `NETWORK_DATA_RETENTION_DAYS` configure the corresponding limits.
-Background maintenance removes expired evidence and orphaned SSH captures.
-Retention excludes local accounts, sessions, and audit exceptions; retain secure
-backups of policy files and approved exceptions separately. These limits do not
-replace reverse-proxy connection limits or host disk monitoring.
+| Flow | Destination / port | Purpose |
+| --- | --- | --- |
+| Operator → HTTPS proxy | Deployment hostname, TCP 443 | Shared UI. Local examples use loopback TCP 8000. |
+| Trusted proxy → app | Private/loopback bind, Uvicorn TCP port | Restricted backend access; `API_PORT` is quickstart-only. |
+| App → Mist | Approved regional API hosts, TCP 443 | Discovery, audits, comparisons, authorized changes. |
+| App → device library | `api.github.com`, `raw.githubusercontent.com`, custom library hosts, TCP 443 | Model lists and Juniper port metadata. |
+| App → legacy switches | TCP 22 | SSH collection/baselines. |
+| App → LDAP directory | TCP 636 or configured LDAPS port | User/service binds and session validation. |
+| App → optional syslog | UDP 514 or `SYSLOG_PORT` | Action-log forwarding. |
+| Setup/update host → source/package services | GitHub, configured Python/npm registries and artifact hosts, usually TCP 443 | Clone/update/install; npm/browser downloads are development-only. |
 
-### Development verification
+Provide DNS resolution. Mirrors/custom URLs may need more destinations. Browser assets are local; normal use needs no Tailwind/Sortable CDN.
 
-Install tools with `python -m pip install -r backend/requirements-dev.txt`, then
-`python -m playwright install chromium`. Run:
+## Operations and maintenance
+
+### Start, stop, and restart
+
+Start from the root with the manual command or a service manager; stop the foreground server with Ctrl+C. For managed deployment, explicitly configure working directory, virtual-environment Python, environment file, bind/trusted proxy, restart, and logging. No service installer is included.
+
+Restart after environment/direct policy edits. SSH execution and baseline-job tracking are process-local: use a **single Uvicorn worker**, keep baseline polling active until saved, and avoid restarting during collection. Temporary jobs do not resume after restart; retry interrupted collections.
+
+### Controlled upgrades
+
+1. Finish SSH jobs, stop the app, and record `git rev-parse HEAD`. Take the backup below.
+2. Inspect `git status --short` and preserve/review tracked/untracked work. Review incoming changes and explicitly select the intended branch. With a clean checkout, update using `git switch main` and `git pull --ff-only origin main`. Resolve divergence deliberately.
+3. Using the environment's Python, install `python -m pip install -r backend/requirements.txt`. Recreate the environment when changing Python versions.
+4. Compare `.env.sample` with `backend/.env`, adopting needed settings without overwriting policy/secrets. Run `python backend/security_setup.py` before restart.
+5. Start, sign in, and verify site lookup, Standards, conversion preview, and passive audit before live actions.
+
+Setup replaces weak keys, migrates legacy inline accounts to salted hashes, clears inline credentials, and scrubs old HTTP payload copies from logs while preserving event metadata. It retains Mist token/unrelated settings. A changed key invalidates existing cookies; rerunning with a valid key does not revoke every session. Use `--revoke-sessions` when required.
+
+### Backup and restore
+
+Stop the app before a consistent filesystem backup, especially SQLite. Keep encrypted/restricted backups outside the repository. Include:
+
+- `backend/.env`, configured local account file, and local policy JSON, especially `port_rules.local.json`, replacement rules, firmware, and `exceptions.json`.
+- `backend/data/conversion_sets/`, `backend/data/network_state/`, and `backend/logs/` for saved mappings, baselines, comparisons, and action/audit history.
+- Configured security database, external custom-model/CA/verified known-hosts files, deployed commit, dependencies, and service configuration. Session state is sensitive; revoke it on recovery.
+
+Restore with the service stopped: recover the intended revision/dependencies and restore configured paths and permissions. From the root, use the virtual environment's Python (or activate it) and run:
+
+```text
+python backend/security_setup.py --env backend/.env
+python backend/security_setup.py --env backend/.env --revoke-sessions
+```
+
+The utility reads the named file for credential setup; revocation also loads it into the process before opening the security database. Existing process variables take precedence, so remove a stale inherited `SECURITY_DB_PATH` or set it to the restored database before revoking. Substitute your environment-file path if different. Restart and repeat upgrade checks. Local restoration does **not** undo Mist/device changes; maintain a separately reviewed network rollback procedure.
+
+### Logs and retention
+
+Daily logs are `backend/logs/DDMMYYYY.log`, containing application events, HTTP metadata, and audit summaries. Audit history is reconstructed from these logs with a default 365-day lookup window; deleting logs removes history. Syslog is optional; local logging remains enabled if forwarding cannot be configured. Monitor forwarding and disk use separately.
+
+Maintenance runs at startup and about every 60 seconds while the app runs:
+
+| Data | Lifetime / action |
+| --- | --- |
+| Temporary `tmp_ssh_jobs/` captures | Cleanup defaults to one hour; active/leased jobs are protected. Running configs are sensitive. |
+| Saved conversion sets/network-state runs | Default 30 days by modification age, configured by `NETWORK_DATA_RETENTION_DAYS`; deletes expired records and updates indexes. |
+| SQLite sessions/rate limits/job leases | Expired rows removed during database access. One-hour sessions are separate from evidence retention. |
+| Accounts, policy, firmware, exceptions, logs | Not deleted by evidence retention. Set separate backup/rotation/retention policies; revoked exception records remain. |
+
+Restored evidence with old modification times can be cleaned immediately; set an appropriate retention period before recovery startup. Protect policy backups independently of temporary evidence.
+
+## Troubleshooting
+
+| Symptom | Check / next step |
+| --- | --- |
+| Missing/weak session key | Confirm `backend/.env`; run the environment's `python backend/security_setup.py`. |
+| Missing account database / local sign-in fails | Create accounts with `--add-user` before startup; check `LOCAL_USERS_FILE` path/permissions. |
+| `HTTPS is required` locally | Set exactly `SESSION_HTTPS_ONLY=false`, use loopback host/client, restart. For shared access, fix HTTPS/proxy forwarding. |
+| `Unapproved host` | Add exact hostname without scheme/port to `APP_ALLOWED_HOSTS`; restart. |
+| LDAP sign-in/session failure | Replace sample DNs; check LDAPS trust, service credentials, bases, and allowed groups. Review logs without publishing secrets. |
+| Push unavailable / denied | Check local role or LDAP push group, token write scope, and action prerequisites. |
+| Empty Standards | Check region/token/org, inventory filtering, cache timestamps, eligible tags. Recent non-empty cache is reused; refresh can return no eligible versions. |
+| Port-rule edits ineffective | Check `port_rules.local.json` precedence; repair malformed files and restart after direct edits. Use UI validation/save. |
+| Custom model lookup/save fails | Configure writable `NETBOX_LOCAL_DT` with existing parent and verify online library access. Local names do not replace port metadata. |
+| SSH rejection/failure | Check verified service-account keys, TCP 22, credentials, privileged prompt, supported Cisco commands. Verify changed fingerprints before trusting. |
+| Missing baseline/conversion set | Use the same stable project name, select a saved set, check job errors, wait for save confirmation. Recollect after interrupted/restarted jobs. |
+| Missing/wrong-location MACs | Check source labels, target ports, endpoint activity, telemetry, and comparison limitations before declaring an outage. |
+| Exception-store error | Preserve/restore/repair JSON and permissions. No findings are suppressed; affected fixes are blocked. |
+| `Invalid CSRF token` | Reload/sign in again; preserve public origin through proxy. |
+| `413`, `429`, concurrency/job-limit error | Reduce upload size/rate or wait for jobs; review app/proxy limits before changing settings. |
+| Missing syslog after manual start | Use `--env-file backend/.env` before module initialization; check UDP routing/local logs. |
+| Quickstart failure or stale checkout | Use manual setup/controlled upgrades; see [limitations](#quickstart-scripts) and [review report](docs/readme-review.md#remaining-code-and-setup-defects). |
+
+## Development verification
+
+CI uses Python 3.11 and Node 24 on Windows/Linux. Activate the environment (or use its full Python path), then install developer tools/Chromium:
+
+```text
+python -m pip install -r backend/requirements-dev.txt
+python -m playwright install chromium
+```
+
+Linux browser testing may need system dependencies; CI uses `python -m playwright install --with-deps chromium`. Run:
 
 ```text
 python -m pytest backend -q
@@ -547,18 +424,26 @@ git diff --exit-code -- static/app.css
 npm audit
 ```
 
-The suite uses synthetic infrastructure and isolated storage, including browser
-and SSH transport tests. Automated tests must never use production credentials or
-make production network changes. Windows and Linux CI run these checks.
+Tests use synthetic infrastructure/isolated storage, including browser and SSH transport checks. Never use production credentials or make production changes in tests. Results describe the checked revision/environment, not a guarantee of vulnerability-free operation.
 
-Runtime frontend assets are committed so Node is needed only for development.
-After changing templates, rebuild CSS as above. When updating Sortable, copy
-`Sortable.min.js` and its license from the pinned `node_modules/sortablejs`
-package's `Sortable.min.js` and `LICENSE` into `static/vendor/`. Verify both files
-match the package before committing. Keep dependency changes, lockfiles, and
-generated assets together in the same pull request.
+After template edits, rebuild/commit `static/app.css`. When updating Sortable, copy `Sortable.min.js` and `LICENSE` from pinned `node_modules/sortablejs` to `static/vendor/Sortable.min.js` and `static/vendor/Sortable.LICENSE`; verify exact matches. Keep dependencies, lockfiles, generated assets, and sources together.
 
-Pull requests also run dependency review and redacted secret scanning. Weekly
-audits and Dependabot updates help detect newly disclosed vulnerabilities; they
-do not certify the application as vulnerability-free. See [SECURITY.md](SECURITY.md)
-for supported versions and private vulnerability reporting.
+PRs run dependency review/redacted secret scanning. Weekly checks and Dependabot help detect dependency issues; see [SECURITY.md](SECURITY.md) for reporting/support.
+
+## Project components
+
+The UI uses server-rendered templates, local Tailwind CSS, and browser JavaScript calling FastAPI endpoints.
+
+| Components | Responsibility |
+| --- | --- |
+| `backend/app.py`, `templates/`, `static/` | Pages, API orchestration, previews, navigation/assets. |
+| `backend/convertciscotojson.py`, `backend/push_mist_port_config.py` | Cisco parsing, rules, port mapping/model validation, payloads/push. |
+| `backend/translate_showtech.py`, `backend/ssh_collect.py` | Hardware parsing/mapping and SSH collection. |
+| `backend/conversion_sets.py`, `backend/network_state_snapshots.py` | Saved mappings, baselines, MAC reconciliation. |
+| `backend/compliance.py`, `backend/audit_actions.py`, `backend/audit_fixes.py` | Audit checks, action identifiers, remediation. |
+| `backend/audit_exceptions.py`, `backend/audit_exception_evidence.py`, `backend/audit_exception_guard.py` | Approval storage/matching and fix protection. |
+| `backend/audit_history.py`, `backend/logging_utils.py`, `backend/http_logging.py` | Log-derived history, file/syslog logging, HTTP metadata. |
+| `backend/auth_local.py`, `backend/auth_ldap.py`, `backend/session_store.py`, `backend/security.py`, `backend/security_setup.py` | Authentication, sessions, request/transport protections, setup/accounts. |
+| `backend/maintenance.py` | Evidence and expired/orphaned job cleanup. |
+
+The [README alignment review](docs/readme-review.md) records section coverage, implementation evidence, validation, and remaining code limitations from this update.
