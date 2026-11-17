@@ -32,9 +32,9 @@
     <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
   </nav>
   <div id="main" class="transition-all duration-300">
-    <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+    <header class="mb-6 bg-linear-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
       <div class="max-w-7xl mx-auto flex items-center gap-4 p-6">
-        <button id="menu_btn" class="p-2 rounded hover:bg-white/30" aria-label="Menu">
+        <button id="menu_btn" class="p-2 rounded-sm hover:bg-white/30" aria-label="Menu">
           <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
         <div class="flex items-center gap-4">
@@ -48,7 +48,7 @@
     </header>
 
     <main class="max-w-7xl mx-auto p-6 space-y-6">
-      <section class="rounded-2xl border border-slate-200/70 bg-white p-6 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+      <section class="rounded-2xl border border-slate-200/70 bg-white p-6 shadow-xs dark:border-slate-700/60 dark:bg-slate-800">
         <div class="flex items-start gap-4 mb-5">
           <span class="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-emerald-100 via-emerald-50 to-transparent text-xs font-bold tracking-wide text-emerald-700 ring-1 ring-emerald-100 dark:from-emerald-900/60 dark:via-emerald-900/20 dark:text-emerald-200 dark:ring-emerald-900/60">NS</span>
           <div>
@@ -58,7 +58,7 @@
           </div>
         </div>
 
-        <div class="rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-sm text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-300">
+        <div class="rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-sm text-slate-600 shadow-xs dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-300">
           <div class="font-medium text-slate-800 dark:text-slate-100">Operator sequence</div>
           <div class="mt-2 grid gap-2 md:grid-cols-4 text-xs">
             <div>1. Save mapped conversion set on `/`</div>
@@ -70,16 +70,16 @@
 
         <div class="mt-6 grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
           <div class="space-y-5">
-            <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+            <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-xs dark:border-slate-700/60 dark:bg-slate-800">
               <div class="grid gap-4 md:grid-cols-2">
                 <label class="flex flex-col gap-1">
                   <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Project name</span>
-                  <input id="snapshot_project_name" type="text" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="Campus Core Upgrade" />
+                  <input id="snapshot_project_name" type="text" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-xs focus:border-sky-400 focus:outline-hidden focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="Campus Core Upgrade" />
                   <span class="text-xs text-slate-500 dark:text-slate-400">Use the same project name you used when saving the conversion set.</span>
                 </label>
                 <label class="flex flex-col gap-1">
                   <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Saved conversion set</span>
-                  <select id="snapshot_conversion_set_select" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+                  <select id="snapshot_conversion_set_select" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-xs focus:border-sky-400 focus:outline-hidden focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
                     <option value="">Select a saved conversion set...</option>
                   </select>
                   <span class="text-xs text-slate-500 dark:text-slate-400">The page auto-selects the latest saved set for a project’s first baseline when one is available.</span>
@@ -89,29 +89,29 @@
             </section>
 
             <div class="grid gap-5 lg:grid-cols-2">
-              <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+              <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-xs dark:border-slate-700/60 dark:bg-slate-800">
                 <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Pre-migration baseline</p>
                 <h3 class="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">Collect legacy MAC table state over SSH</h3>
                 <div class="mt-4 space-y-3">
                   <label class="flex flex-col gap-1">
                     <span class="text-xs font-medium text-slate-600 dark:text-slate-300">Legacy switches (one per line)</span>
-                    <textarea id="snapshot_devices" class="min-h-[9rem] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="switch1.example.com&#10;10.0.0.5"></textarea>
+                    <textarea id="snapshot_devices" class="min-h-[9rem] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-xs focus:border-sky-400 focus:outline-hidden focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" placeholder="switch1.example.com&#10;10.0.0.5"></textarea>
                   </label>
                   <div class="grid gap-3 md:grid-cols-2">
                     <label class="flex flex-col gap-1">
                       <span class="text-xs font-medium text-slate-600 dark:text-slate-300">SSH username</span>
-                      <input id="snapshot_username" type="text" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" autocomplete="username" />
+                      <input id="snapshot_username" type="text" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-xs focus:border-sky-400 focus:outline-hidden focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" autocomplete="username" />
                     </label>
                     <label class="flex flex-col gap-1">
                       <span class="text-xs font-medium text-slate-600 dark:text-slate-300">SSH password</span>
-                      <input id="snapshot_password" type="password" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" autocomplete="current-password" />
+                      <input id="snapshot_password" type="password" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-xs focus:border-sky-400 focus:outline-hidden focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" autocomplete="current-password" />
                     </label>
                   </div>
-                  <button id="snapshot_capture_btn" type="button" class="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700">Capture pre-migration baseline</button>
+                  <button id="snapshot_capture_btn" type="button" class="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-xs transition hover:bg-emerald-700">Capture pre-migration baseline</button>
                 </div>
               </section>
 
-              <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+              <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-xs dark:border-slate-700/60 dark:bg-slate-800">
                 <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Post-migration validation</p>
                 <h3 class="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">Compare current Mist state</h3>
                 <div class="mt-4 space-y-3 text-sm text-slate-600 dark:text-slate-300">
@@ -122,11 +122,11 @@
                   </div>
                   <label class="flex flex-col gap-1">
                     <span class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Baseline to compare</span>
-                    <select id="snapshot_baseline_select" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+                    <select id="snapshot_baseline_select" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-xs focus:border-sky-400 focus:outline-hidden focus:ring-1 focus:ring-sky-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
                       <option value="">Latest baseline for this project</option>
                     </select>
                   </label>
-                  <button id="snapshot_compare_btn" type="button" class="inline-flex items-center justify-center rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700">Compare current Mist state to baseline</button>
+                  <button id="snapshot_compare_btn" type="button" class="inline-flex items-center justify-center rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-xs transition hover:bg-sky-700">Compare current Mist state to baseline</button>
                 </div>
               </section>
             </div>
@@ -136,7 +136,7 @@
           </div>
 
           <div class="space-y-5">
-            <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+            <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-xs dark:border-slate-700/60 dark:bg-slate-800">
               <div class="flex items-center justify-between gap-3">
                 <div>
                   <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Project history</p>
@@ -147,7 +147,7 @@
               <div id="snapshot_history" class="mt-3 space-y-2 text-sm text-slate-600 dark:text-slate-300">Enter a project name to load snapshot history.</div>
             </section>
 
-            <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+            <section class="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-xs dark:border-slate-700/60 dark:bg-slate-800">
               <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Comparison results</p>
               <h3 class="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100">MAC reconciliation report</h3>
               <div id="snapshot_compare_filters" class="mt-3 flex flex-wrap gap-2"></div>

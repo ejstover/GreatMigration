@@ -1,1 +1,1 @@
-module.exports = { content: ['./templates/**/*.html', './backend/auth_*.py'], darkMode: 'media', theme: { extend: {} }, plugins: [] };
+module.exports = { theme: { colors: require('./tailwind.colors.json') }, plugins: [] };

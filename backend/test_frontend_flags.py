@@ -28,9 +28,9 @@ def test_network_snapshot_ui_moves_to_dedicated_template():
     assert 'id="snapshot_compare_btn"' in snapshot_html
     assert '/api/network-state/baselines/jobs' in snapshot_html
     assert '/api/network-state/compare' in snapshot_html
-    assert "bg-gradient-to-r from-emerald-500 to-sky-500" in snapshot_html
+    assert "bg-linear-to-r from-emerald-500 to-sky-500" in snapshot_html
     assert "The page auto-selects the latest saved set for a project’s first baseline" in snapshot_html
-    assert "rounded-2xl border border-slate-200/70 bg-white p-6 shadow-sm" in snapshot_html
+    assert "rounded-2xl border border-slate-200/70 bg-white p-6 shadow-xs" in snapshot_html
     assert "bg-[linear-gradient(120deg,#92400e,#f59e0b,#0f766e)]" not in snapshot_html
 
 

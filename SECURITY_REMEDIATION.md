@@ -44,7 +44,7 @@ Standards viewing still refreshes the local firmware reference. Push-enabled use
 
 Defaults: 16 MiB request bodies, 16 uploaded files, eight in-flight requests per process, two shared SSH jobs, at most eight SSH workers per job, one-hour temporary SSH retention, and 30-day saved evidence retention. `MAX_REQUEST_BYTES`, `MAX_INFLIGHT_REQUESTS`, `MAX_SSH_JOBS`, and `NETWORK_DATA_RETENTION_DAYS` configure the respective limits. Evidence retention excludes local accounts, sessions, and approved audit exceptions. Keep policy/configuration backups with access restricted to the service account and administrators.
 
-Frontend assets are committed. Rebuild after template changes with `npm ci --ignore-scripts` and `npm run build:css`; copy the pinned Sortable asset from `node_modules/sortablejs` if changing that dependency. Node is needed only to rebuild assets.
+Frontend assets are committed. Rebuild after template changes with `npm ci --ignore-scripts` and `npm run build:css`; copy the pinned Sortable asset from `node_modules/sortablejs` if changing that dependency. Node is needed only to rebuild assets. The one-shot build uses Tailwind's native compiler/scanner API without the vulnerable JavaScript glob/watcher chain. The existing palette and base styles are preserved for compatibility.
 
 ## Reproducible validation
 
@@ -65,7 +65,7 @@ Live production Mist writes, a real corporate LDAP directory, and physical switc
 
 ## Verified local result
 
-- 337 tests passed on Windows/Python 3.11, including Chromium and real SSH transport tests against isolated local servers.
+- 338 tests passed on Windows/Python 3.11, including Chromium and real SSH transport tests against isolated local servers.
 - Clean requirements resolution: 60 runtime packages, zero known vulnerabilities.
 - npm audit: zero known vulnerabilities.
 - Package compatibility, Python compilation, PowerShell syntax, static undefined-name checks, and whitespace checks passed.

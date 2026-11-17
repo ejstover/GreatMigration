@@ -38,9 +38,9 @@
       <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
     </nav>
     <div id="main" class="transition-all duration-300">
-    <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+    <header class="mb-6 bg-linear-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
       <div class="max-w-7xl mx-auto flex items-center gap-4 p-6">
-        <button id="menu_btn" class="p-2 rounded hover:bg-white/30" aria-label="Menu">
+        <button id="menu_btn" class="p-2 rounded-sm hover:bg-white/30" aria-label="Menu">
           <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
         <div class="flex items-center gap-4">
@@ -57,9 +57,9 @@
     <div class="mb-4 flex items-center justify-between">
       <h2 class="text-lg font-medium">Rules</h2>
       <div class="flex items-center gap-2">
-        <button id="add_rule" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
-        <button id="save_rules" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
-        <button id="cancel_rules" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
+        <button id="add_rule" class="add_rule px-3 py-1 rounded-sm bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+        <button id="save_rules" class="save_rules px-3 py-1 rounded-sm bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+        <button id="cancel_rules" class="cancel_rules px-3 py-1 rounded-sm bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
       </div>
     </div>
     <div class="overflow-x-auto">
@@ -77,9 +77,9 @@
       </table>
     </div>
     <div class="mt-4 flex justify-end gap-2">
-      <button id="add_rule_bottom" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
-      <button id="save_rules_bottom" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
-      <button id="cancel_rules_bottom" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
+      <button id="add_rule_bottom" class="add_rule px-3 py-1 rounded-sm bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+      <button id="save_rules_bottom" class="save_rules px-3 py-1 rounded-sm bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+      <button id="cancel_rules_bottom" class="cancel_rules px-3 py-1 rounded-sm bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
     </div>
     <div id="save_status" class="text-sm mt-4"></div>
     <div id="profile_status" class="text-sm text-red-600 dark:text-red-400 mt-2"></div>
@@ -146,7 +146,7 @@
     function createValueControl(field, value){
       if(field === 'mode'){
         const sel = document.createElement('select');
-        sel.className = 'cond-value border rounded p-1 flex-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
+        sel.className = 'cond-value border rounded-sm p-1 flex-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
         const options = ['', 'access', 'trunk'];
         options.forEach(opt=>{
           const o=document.createElement('option');
@@ -159,7 +159,7 @@
       }
       if(field === 'poe_active'){
         const sel = document.createElement('select');
-        sel.className = 'cond-value border rounded p-1 flex-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
+        sel.className = 'cond-value border rounded-sm p-1 flex-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
         const options = [
           {value:'', label:'--select PoE state--'},
           {value:'true', label:'true'},
@@ -176,7 +176,7 @@
         return sel;
       }
       const inp = document.createElement('input');
-      inp.className = 'cond-value border rounded p-1 flex-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
+      inp.className = 'cond-value border rounded-sm p-1 flex-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
       if(Array.isArray(value)) inp.value = value.join(',');
       else inp.value = value || '';
       return inp;
@@ -186,7 +186,7 @@
       const div = document.createElement('div');
       div.className = 'flex items-center gap-2 mb-1';
       const sel = document.createElement('select');
-      sel.className = 'border rounded p-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
+      sel.className = 'border rounded-sm p-1 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700';
       conditionOptions.forEach(opt=>{
         const o=document.createElement('option');
         o.value=opt.value;
@@ -251,11 +251,11 @@
         const tr=document.createElement('tr');
         tr.dataset.idx=idx;
         tr.innerHTML=`<td class="p-2 drag-handle" draggable="true">☰</td>
-          <td class="p-2"><input class="border rounded p-1 w-full name bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value=""/></td>
+          <td class="p-2"><input class="border rounded-sm p-1 w-full name bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700" value=""/></td>
           <td class="p-2"><div class="conds"></div><button class="add-cond text-xs text-sky-600">+ condition</button></td>
           <td class="p-2">
             <label class="tooltip">
-              <select class="usage border rounded p-1 mr-2 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700"></select>
+              <select class="usage border rounded-sm p-1 mr-2 bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700"></select>
               <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor"><path d="M18 10A8 8 0 112 10a8 8 0 0116 0zM9 9h2v6H9V9zm0-4h2v2H9V5z"/></svg>
               <span class="tip">Select the Mist port profile to apply when this rule matches.</span>
             </label>

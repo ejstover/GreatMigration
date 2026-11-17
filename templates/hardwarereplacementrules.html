@@ -24,9 +24,9 @@
       <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
     </nav>
     <div id="main" class="transition-all duration-300">
-    <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+    <header class="mb-6 bg-linear-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
       <div class="max-w-7xl mx-auto flex items-center gap-4 p-6">
-        <button id="menu_btn" class="p-2 rounded hover:bg-white/30" aria-label="Menu">
+        <button id="menu_btn" class="p-2 rounded-sm hover:bg-white/30" aria-label="Menu">
           <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
         <div class="flex items-center gap-4">
@@ -40,13 +40,13 @@
     </header>
 
     <div class="max-w-5xl mx-auto p-6 space-y-8">
-      <section class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-6">
+      <section class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow-sm p-6">
         <div class="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <h2 class="text-lg font-medium">Replacement Rules</h2>
           <div class="flex items-center gap-2">
-            <button id="add_rule" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
-            <button id="save_rules" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
-            <button id="cancel_rules" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
+            <button id="add_rule" class="add_rule px-3 py-1 rounded-sm bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+            <button id="save_rules" class="save_rules px-3 py-1 rounded-sm bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+            <button id="cancel_rules" class="cancel_rules px-3 py-1 rounded-sm bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
           </div>
         </div>
         <div class="overflow-x-auto">
@@ -62,13 +62,13 @@
           </table>
         </div>
         <div class="mt-4 flex justify-end gap-2">
-          <button id="add_rule_bottom" class="add_rule px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
-          <button id="save_rules_bottom" class="save_rules px-3 py-1 rounded bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
-          <button id="cancel_rules_bottom" class="cancel_rules px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
+          <button id="add_rule_bottom" class="add_rule px-3 py-1 rounded-sm bg-emerald-600 text-white hover:bg-emerald-700 text-sm">Add Rule</button>
+          <button id="save_rules_bottom" class="save_rules px-3 py-1 rounded-sm bg-sky-600 text-white hover:bg-sky-700 text-sm">Save</button>
+          <button id="cancel_rules_bottom" class="cancel_rules px-3 py-1 rounded-sm bg-red-600 text-white hover:bg-red-700 text-sm">Cancel</button>
         </div>
       </section>
 
-      <section class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow p-6">
+      <section class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow-sm p-6">
         <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between mb-4">
           <div>
             <h3 class="text-lg font-medium">Accessories</h3>
@@ -90,12 +90,12 @@
     </div>
 
   <div id="model_modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center">
-    <div class="bg-white dark:bg-slate-800 p-6 rounded shadow-lg w-80">
+    <div class="bg-white dark:bg-slate-800 p-6 rounded-sm shadow-lg w-80">
       <h3 id="modal_title" class="text-lg font-medium mb-3"></h3>
-      <input id="modal_input" type="text" class="w-full border rounded p-2 mb-4 dark:bg-slate-900 dark:border-slate-700" />
+      <input id="modal_input" type="text" class="w-full border rounded-sm p-2 mb-4 dark:bg-slate-900 dark:border-slate-700" />
       <div class="flex justify-end gap-2">
-        <button id="modal_cancel" class="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700">Cancel</button>
-        <button id="modal_ok" class="px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700">OK</button>
+        <button id="modal_cancel" class="px-3 py-1 rounded-sm bg-red-600 text-white hover:bg-red-700">Cancel</button>
+        <button id="modal_ok" class="px-3 py-1 rounded-sm bg-emerald-600 text-white hover:bg-emerald-700">OK</button>
       </div>
     </div>
     </div>
@@ -254,8 +254,8 @@ function renderRules(){
   rulesDoc.rules.forEach((rule, idx)=>{
     const tr=document.createElement('tr');
     tr.dataset.idx=idx;
-    tr.innerHTML=`<td class="p-2"><select class="cisco border rounded p-1 w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700"></select></td>
-      <td class="p-2"><select class="juniper border rounded p-1 w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700"></select></td>
+    tr.innerHTML=`<td class="p-2"><select class="cisco border rounded-sm p-1 w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700"></select></td>
+      <td class="p-2"><select class="juniper border rounded-sm p-1 w-full bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700"></select></td>
       <td class="p-2"><button class="del text-red-500">✕</button></td>`;
     const cSel = tr.querySelector('.cisco');
     const jSel = tr.querySelector('.juniper');

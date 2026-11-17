@@ -37,9 +37,9 @@
       <button id="logout_btn" class="hidden w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">Log out</button>
     </nav>
     <div id="main" class="transition-all duration-300">
-    <header class="mb-6 bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
+    <header class="mb-6 bg-linear-to-r from-emerald-500 to-sky-500 text-white shadow-lg">
       <div class="max-w-7xl mx-auto flex items-center gap-4 p-6">
-        <button id="menu_btn" class="p-2 rounded hover:bg-white/30" aria-label="Menu">
+        <button id="menu_btn" class="p-2 rounded-sm hover:bg-white/30" aria-label="Menu">
           <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
         <div class="flex items-center gap-4">
@@ -53,7 +53,7 @@
     </header>
 
     <div class="max-w-7xl mx-auto p-6 space-y-6">
-      <section class="bg-white dark:bg-slate-800 rounded-2xl shadow p-6 space-y-4 no-print">
+      <section class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm p-6 space-y-4 no-print">
         <h2 class="text-xl font-semibold">Scope</h2>
         <p class="text-sm text-slate-600 dark:text-slate-300">Run compliance checks across one or more Mist sites. Use the filters below to choose sites or audit the entire organization.</p>
         <div class="flex flex-col md:flex-row gap-6">
@@ -64,13 +64,13 @@
             </label>
             <div class="space-y-2">
               <label class="block text-sm font-medium">Search sites</label>
-              <input id="site_search" type="text" placeholder="Start typing a site name..." class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" />
+              <input id="site_search" type="text" placeholder="Start typing a site name..." class="w-full border rounded-sm p-2 dark:bg-slate-900 dark:border-slate-700" />
             </div>
             <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
               <span id="selection_summary">0 sites selected</span>
               <div class="space-x-2">
-                <button id="select_all" class="px-2 py-1 rounded border text-xs">Select all</button>
-                <button id="clear_selection" class="px-2 py-1 rounded border text-xs">Clear</button>
+                <button id="select_all" class="px-2 py-1 rounded-sm border text-xs">Select all</button>
+                <button id="clear_selection" class="px-2 py-1 rounded-sm border text-xs">Clear</button>
               </div>
             </div>
           </div>
@@ -80,17 +80,17 @@
         </div>
         <div class="flex flex-wrap items-center gap-3">
           <label id="active_checks_control" class="hidden text-sm"><input id="include_active_checks" type="checkbox" class="mr-2" />Run active cable diagnostics</label>
-          <button id="run_audit" class="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed">Run audit</button>
+          <button id="run_audit" class="px-4 py-2 rounded-sm bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed">Run audit</button>
           <span id="audit_status" class="text-sm text-slate-600 dark:text-slate-300"></span>
         </div>
       </section>
 
-      <details id="exception_management" class="no-print bg-white dark:bg-slate-800 rounded-2xl shadow p-6">
+      <details id="exception_management" class="no-print bg-white dark:bg-slate-800 rounded-2xl shadow-sm p-6">
         <summary class="font-semibold cursor-pointer">Exceptions <span class="font-normal text-sm text-slate-500">— saved configuration approvals</span></summary>
         <p class="mt-3 text-sm text-slate-600 dark:text-slate-300">Approvals apply only to the saved value and standard. This register includes approvals that no longer match and revoked records. Site selections above filter this list.</p>
         <div class="my-3 flex flex-wrap items-center gap-3">
-          <label class="text-sm">Organization <select id="exception_org" class="ml-2 border rounded p-1 dark:bg-slate-900"><option value="">All organizations</option></select></label>
-          <button id="refresh_exceptions" type="button" class="text-sm border rounded px-3 py-1">Refresh exceptions</button>
+          <label class="text-sm">Organization <select id="exception_org" class="ml-2 border rounded-sm p-1 dark:bg-slate-900"><option value="">All organizations</option></select></label>
+          <button id="refresh_exceptions" type="button" class="text-sm border rounded-sm px-3 py-1">Refresh exceptions</button>
         </div>
         <p id="exception_register_status" role="status" class="text-sm mb-3"></p>
         <div id="exception_register" class="space-y-3"></div>
@@ -100,13 +100,13 @@
         <form id="exception_form" class="space-y-4">
           <h2 id="exception_dialog_title" class="text-xl font-semibold">Add to exceptions</h2>
           <p class="text-sm text-slate-600 dark:text-slate-300">Approve this configuration deviation until revoked. A changed value or standard will require a new approval.</p>
-          <pre id="exception_preview" class="text-xs whitespace-pre-wrap break-words bg-slate-100 dark:bg-slate-900 rounded p-3"></pre>
+          <pre id="exception_preview" class="text-xs whitespace-pre-wrap break-words bg-slate-100 dark:bg-slate-900 rounded-sm p-3"></pre>
           <label class="block text-sm font-medium" for="exception_reason">Reason for approval</label>
-          <textarea id="exception_reason" required maxlength="2000" rows="3" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-600" placeholder="Explain why this local variance is expected"></textarea>
+          <textarea id="exception_reason" required maxlength="2000" rows="3" class="w-full border rounded-sm p-2 dark:bg-slate-900 dark:border-slate-600" placeholder="Explain why this local variance is expected"></textarea>
           <p id="exception_dialog_error" class="text-sm text-rose-600 dark:text-rose-300" role="alert"></p>
           <div class="flex justify-end gap-3">
-            <button id="exception_cancel" type="button" class="border rounded px-4 py-2">Cancel</button>
-            <button id="exception_submit" type="submit" class="rounded px-4 py-2 bg-emerald-600 text-white disabled:opacity-50">Approve exception</button>
+            <button id="exception_cancel" type="button" class="border rounded-sm px-4 py-2">Cancel</button>
+            <button id="exception_submit" type="submit" class="rounded-sm px-4 py-2 bg-emerald-600 text-white disabled:opacity-50">Approve exception</button>
           </div>
         </form>
       </dialog>
@@ -117,8 +117,8 @@
           <p class="text-sm text-slate-500 dark:text-slate-400">This deviation will be actionable again when the audit refreshes. The approval record will be retained.</p>
           <p id="exception_revoke_error" role="alert" class="text-sm text-rose-600 dark:text-rose-300"></p>
           <div class="flex justify-end gap-3">
-            <button id="exception_revoke_cancel" type="button" class="border rounded px-4 py-2">Cancel</button>
-            <button id="exception_revoke_submit" type="submit" class="rounded px-4 py-2 bg-rose-600 text-white disabled:opacity-50">Revoke approval</button>
+            <button id="exception_revoke_cancel" type="button" class="border rounded-sm px-4 py-2">Cancel</button>
+            <button id="exception_revoke_submit" type="submit" class="rounded-sm px-4 py-2 bg-rose-600 text-white disabled:opacity-50">Revoke approval</button>
           </div>
         </form>
       </dialog>
@@ -224,7 +224,7 @@
 
       function exceptionCard(record, allowRevoke = false) {
         const card = document.createElement('article');
-        card.className = 'border-l-4 border-amber-400 rounded bg-amber-50/60 dark:bg-amber-950/30 p-4 space-y-2 text-sm';
+        card.className = 'border-l-4 border-amber-400 rounded-sm bg-amber-50/60 dark:bg-amber-950/30 p-4 space-y-2 text-sm';
         card.appendChild(textElement('p', `${record.site_name || record.site_id} · ${record.device_name || record.device_id || 'Site'} · ${record.check_id}`, 'font-semibold'));
         card.appendChild(textElement('p', record.path, 'font-mono text-xs break-words'));
         card.appendChild(textElement('pre', `Approved value: ${exceptionValue(record.observed)}\nExpected standard: ${exceptionValue(record.expected)}`, 'text-xs whitespace-pre-wrap break-words'));
@@ -233,7 +233,7 @@
         if (record.revoked_at) {
           card.appendChild(textElement('p', `Revoked by ${record.revoked_by} · ${new Date(record.revoked_at).toLocaleString()}`, 'text-xs font-semibold'));
         } else if (allowRevoke && canUseFixes) {
-          const button = textElement('button', 'Revoke exception', 'no-print text-xs font-semibold border rounded px-3 py-1 hover:border-rose-500');
+          const button = textElement('button', 'Revoke exception', 'no-print text-xs font-semibold border rounded-sm px-3 py-1 hover:border-rose-500');
           button.type = 'button';
           button.addEventListener('click', () => {
             pendingRevocation = record;
@@ -337,7 +337,7 @@
           } catch (error) {
             showStatus(`${message} Report is stale: ${error.message}`, 'error');
             document.getElementById('stale_exception_report')?.remove();
-            const warning = textElement('p', `${message} This report is stale. Run the audit again before using these results.`, 'border border-amber-400 bg-amber-50 text-amber-900 rounded p-4');
+            const warning = textElement('p', `${message} This report is stale. Run the audit again before using these results.`, 'border border-amber-400 bg-amber-50 text-amber-900 rounded-sm p-4');
             warning.id = 'stale_exception_report';
             resultsContainer.prepend(warning);
             displayedAudit = null;
@@ -380,7 +380,7 @@
         }
         filtered.forEach(site => {
           const label = document.createElement('label');
-          label.className = 'flex items-center gap-3 px-3 py-2 rounded hover:bg-white dark:hover:bg-slate-800 cursor-pointer';
+          label.className = 'flex items-center gap-3 px-3 py-2 rounded-sm hover:bg-white dark:hover:bg-slate-800 cursor-pointer';
           const checkbox = document.createElement('input');
           checkbox.type = 'checkbox';
           checkbox.className = 'w-4 h-4';
@@ -489,7 +489,7 @@
           showStatus('Run an audit to export the report.', 'error');
           return;
         }
-        exportPdfBtn?.blur();
+        exportPdfBtn?.blur-sm();
         window.requestAnimationFrame(() => window.print());
       }
 
@@ -658,7 +658,7 @@
           helper.textContent = 'Choose one eligible switch to assign the spare role.';
 
           const select = document.createElement('select');
-          select.className = 'mt-3 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100';
+          select.className = 'mt-3 w-full rounded-sm border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100';
           options.forEach(item => {
             const option = document.createElement('option');
             option.value = String(item.device_id);
@@ -671,12 +671,12 @@
 
           const cancelButton = document.createElement('button');
           cancelButton.type = 'button';
-          cancelButton.className = 'rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800';
+          cancelButton.className = 'rounded-sm border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800';
           cancelButton.textContent = 'Cancel';
 
           const confirmButton = document.createElement('button');
           confirmButton.type = 'button';
-          confirmButton.className = 'rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-slate-300';
+          confirmButton.className = 'rounded-sm bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-slate-300';
           confirmButton.textContent = 'Select switch';
 
           const close = payload => {
@@ -903,7 +903,7 @@
         link.href = href;
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
-        link.className = 'text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50';
+        link.className = 'text-xs font-semibold px-3 py-1 rounded-sm border border-emerald-500 text-emerald-600 hover:bg-emerald-50';
         link.textContent = label;
         return link;
       }
@@ -925,7 +925,7 @@
         wrapper.className = 'mt-2 space-y-2 text-xs text-slate-700 dark:text-slate-300';
 
         const summary = document.createElement('div');
-        summary.className = 'rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 px-3 py-2';
+        summary.className = 'rounded-sm border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 px-3 py-2';
         summary.textContent = `${scope} metric ${metric}: ${scorePercent}`;
         wrapper.appendChild(summary);
 
@@ -951,7 +951,7 @@
             const impactedAps = Number.isFinite(Number(impact.num_aps)) ? Number(impact.num_aps) : 0;
             const degradedTotal = Number.isFinite(Number(classifier.degraded_total)) ? Number(classifier.degraded_total) : 0;
             const li = document.createElement('li');
-            li.className = 'rounded border border-slate-200 dark:border-slate-700 px-3 py-2 bg-white/70 dark:bg-slate-950/40';
+            li.className = 'rounded-sm border border-slate-200 dark:border-slate-700 px-3 py-2 bg-white/70 dark:bg-slate-950/40';
             const snippets = [];
             if (impactedUsers > 0) {
               snippets.push(`${impactedUsers} users`);
@@ -978,7 +978,7 @@
         container.className = 'space-y-3';
         list.forEach(finding => {
           const item = document.createElement('div');
-          item.className = 'border-l-4 pl-4 py-2 bg-white/60 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 rounded';
+          item.className = 'border-l-4 pl-4 py-2 bg-white/60 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 rounded-sm';
           const title = document.createElement('div');
           title.className = 'text-sm font-semibold flex flex-wrap gap-2 items-center';
           title.textContent = finding.site_name || finding.site_id;
@@ -996,7 +996,7 @@
           if (finding.exception_candidate) {
             item.appendChild(textElement('p', finding.exception_candidate.path, 'mt-2 font-mono text-xs text-slate-500 dark:text-slate-400'));
             if (canUseFixes) {
-              const approvalButton = textElement('button', 'Add to exceptions', 'no-print mt-2 text-xs font-semibold px-3 py-1 rounded border border-amber-500 text-amber-800 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950');
+              const approvalButton = textElement('button', 'Add to exceptions', 'no-print mt-2 text-xs font-semibold px-3 py-1 rounded-sm border border-amber-500 text-amber-800 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950');
               approvalButton.type = 'button';
               approvalButton.addEventListener('click', () => openExceptionDialog(finding));
               item.appendChild(approvalButton);
@@ -1014,7 +1014,7 @@
               wrapper.className = 'flex items-center gap-2';
               const button = document.createElement('button');
               button.type = 'button';
-              button.className = 'no-print text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
+              button.className = 'no-print text-xs font-semibold px-3 py-1 rounded-sm border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
               button.textContent = action.button_label || '1 Click Fix Now';
               button.addEventListener('click', () => runOneClickFix(action, button));
               const status = document.createElement('span');
@@ -1044,7 +1044,7 @@
             item.appendChild(sleDetails);
           } else if (finding.details && typeof finding.details === 'object') {
             const details = document.createElement('pre');
-            details.className = 'mt-2 text-xs bg-slate-100 dark:bg-slate-900/80 text-slate-700 dark:text-slate-300 rounded p-2 overflow-x-auto';
+            details.className = 'mt-2 text-xs bg-slate-100 dark:bg-slate-900/80 text-slate-700 dark:text-slate-300 rounded-sm p-2 overflow-x-auto';
             details.textContent = JSON.stringify(finding.details, null, 2);
             item.appendChild(details);
           }
@@ -1100,7 +1100,7 @@
         setExportEnabled(Boolean(data));
         resultsContainer.innerHTML = '';
         if (!data) return;
-        (data.exception_errors || []).forEach(error => resultsContainer.appendChild(textElement('p', `${error}. No findings were suppressed.`, 'rounded border border-rose-400 bg-rose-50 text-rose-800 p-4 text-sm')));
+        (data.exception_errors || []).forEach(error => resultsContainer.appendChild(textElement('p', `${error}. No findings were suppressed.`, 'rounded-sm border border-rose-400 bg-rose-50 text-rose-800 p-4 text-sm')));
 
         if (data.errors && data.errors.length) {
           const errorBox = document.createElement('div');
@@ -1129,7 +1129,7 @@
         const durationDisplay = data.duration_ms != null ? `${formatCount(data.duration_ms)} ms` : '—';
 
         const meta = document.createElement('div');
-        meta.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6';
+        meta.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow-sm p-6';
 
         const summaryHeader = document.createElement('div');
         summaryHeader.className = 'flex items-center justify-between gap-3';
@@ -1162,7 +1162,7 @@
         if (approved.length) {
           const section = document.createElement('section');
           section.id = 'approved_exceptions';
-          section.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6 space-y-3';
+          section.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow-sm p-6 space-y-3';
           section.appendChild(textElement('h3', `Approved exceptions (${approved.length})`, 'text-lg font-semibold'));
           section.appendChild(textElement('p', 'These deviations match saved approvals and are excluded from actionable issue totals.', 'text-sm text-slate-500 dark:text-slate-400'));
           approved.forEach(finding => section.appendChild(exceptionCard(finding.exception, true)));
@@ -1219,7 +1219,7 @@
             } else {
               levelChecks.forEach(check => {
                 const card = document.createElement('div');
-                card.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6 space-y-3';
+                card.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow-sm p-6 space-y-3';
               const header = document.createElement('div');
               header.className = 'flex flex-wrap items-center justify-between gap-3';
               const title = document.createElement('div');
@@ -1282,7 +1282,7 @@
                   wrapper.className = 'flex items-center gap-2';
                   const button = document.createElement('button');
                   button.type = 'button';
-                  button.className = 'no-print text-xs font-semibold px-3 py-1 rounded border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
+                  button.className = 'no-print text-xs font-semibold px-3 py-1 rounded-sm border border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed';
                   button.textContent = action.button_label || '1 Click Fix Now';
                   button.addEventListener('click', () => runOneClickFix(action, button));
                   const status = document.createElement('span');
@@ -1317,7 +1317,7 @@
                 card.appendChild(stats);
 
                 if (!totalFindingsForBadge && (check.approved_exceptions || []).length) {
-                  card.appendChild(textElement('p', 'No actionable findings — approved exceptions present', 'rounded border border-amber-300 bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-200 px-4 py-3 text-sm'));
+                  card.appendChild(textElement('p', 'No actionable findings — approved exceptions present', 'rounded-sm border border-amber-300 bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-200 px-4 py-3 text-sm'));
                 } else {
                   card.appendChild(renderCategorizedFindings(siteFindings, deviceFindings, fallbackFindings));
                 }
@@ -1333,7 +1333,7 @@
         const siteHistory = data.site_history || {};
         if (sites.length) {
           const siteListCard = document.createElement('div');
-          siteListCard.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6';
+          siteListCard.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow-sm p-6';
           siteListCard.innerHTML = '<h3 class="text-lg font-semibold mb-3">Audited sites</h3>';
           const siteList = document.createElement('div');
           siteList.className = 'space-y-2';
@@ -1341,7 +1341,7 @@
           sideColumn.appendChild(siteListCard);
 
           const historyCard = document.createElement('div');
-          historyCard.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow p-6';
+          historyCard.className = 'card bg-white dark:bg-slate-800 rounded-2xl shadow-sm p-6';
           const historyTitle = document.createElement('h3');
           historyTitle.className = 'text-lg font-semibold';
           historyTitle.textContent = 'Historical audits';

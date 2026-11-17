@@ -1,3 +1,19 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss" source(none);
+@config "../tailwind.config.cjs";
+@source "../templates";
+@source "../backend/auth_local.py";
+@source "../backend/auth_ldap.py";
+
+/* Preserve the application's established v3 base styles during the compiler upgrade. */
+@layer base {
+  *, ::before, ::after, ::backdrop, ::file-selector-button {
+    border-color: #e5e7eb;
+  }
+  input::placeholder, textarea::placeholder { color: #9ca3af; }
+  button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
+  dialog { margin: auto; }
+}
+@theme {
+  --default-ring-width: 3px;
+  --default-ring-color: #3b82f6;
+}

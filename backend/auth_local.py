@@ -67,7 +67,7 @@ def _html_login(error: Optional[str] = None) -> str:
       <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zM10 5a3 3 0 00-3 3 .75.75 0 101.5 0A1.5 1.5 0 0110 6.5a1.5 1.5 0 011.5 1.5c0 .401-.08.558-.494.969-.458.451-1.168 1.15-1.168 2.531h1.5c0-.822.447-1.2.903-1.642.571-.56 1.009-1.078 1.009-1.858A3 3 0 0010 5zm0 8a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/></svg>
     </a>
     <div class="min-h-screen flex items-center justify-center p-6">
-      <div class="w-full max-w-md bg-white dark:bg-slate-800 rounded-2xl shadow p-6">
+      <div class="w-full max-w-md bg-white dark:bg-slate-800 rounded-2xl shadow-sm p-6">
         <h1 class="text-xl font-semibold">Sign in</h1>
         <p class="text-sm text-slate-600 dark:text-slate-300">Use your local account</p>
         {msg}
@@ -75,13 +75,13 @@ def _html_login(error: Optional[str] = None) -> str:
           <input type="hidden" name="csrf_token" value="{{{{CSRF_TOKEN}}}}" />
           <div>
             <label class="block text-sm font-medium mb-1">Username</label>
-            <input name="username" autocomplete="username" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" required />
+            <input name="username" autocomplete="username" class="w-full border rounded-sm p-2 dark:bg-slate-900 dark:border-slate-700" required />
           </div>
           <div>
             <label class="block text-sm font-medium mb-1">Password</label>
-            <input name="password" type="password" autocomplete="current-password" class="w-full border rounded p-2 dark:bg-slate-900 dark:border-slate-700" required />
+            <input name="password" type="password" autocomplete="current-password" class="w-full border rounded-sm p-2 dark:bg-slate-900 dark:border-slate-700" required />
           </div>
-          <button class="w-full mt-2 px-3 py-2 rounded text-white bg-emerald-600 hover:bg-emerald-700">Sign in</button>
+          <button class="w-full mt-2 px-3 py-2 rounded-sm text-white bg-emerald-600 hover:bg-emerald-700">Sign in</button>
         </form>
       </div>
     </div>

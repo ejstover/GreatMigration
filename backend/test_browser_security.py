@@ -126,3 +126,26 @@ def test_browser_readonly_controls_and_logout(browser_server):
         page.wait_for_url(origin + "/login")
         assert page.request.get(origin + "/me").status == 401
         browser.close()
+
+
+def test_browser_compiler_upgrade_preserves_login_styles(browser_server):
+    from playwright.sync_api import sync_playwright
+    origin, _ = browser_server
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(color_scheme="light")
+        page.goto(origin + "/login", wait_until="networkidle")
+        style = page.evaluate("""() => {
+          const button = getComputedStyle(document.querySelector('button'));
+          const input = getComputedStyle(document.querySelector('input[name="username"]'));
+          const body = getComputedStyle(document.body);
+          return {background:body.backgroundColor, color:body.color,
+            button:button.backgroundColor, radius:button.borderRadius,
+            border:input.borderColor, borderWidth:input.borderTopWidth};
+        }""")
+        assert style == {"background": "rgb(248, 250, 252)", "color": "rgb(15, 23, 42)",
+                         "button": "rgb(5, 150, 105)", "radius": "4px",
+                         "border": "rgb(229, 231, 235)", "borderWidth": "1px"}
+        page.emulate_media(color_scheme="dark")
+        assert page.evaluate("getComputedStyle(document.body).backgroundColor") == "rgb(15, 23, 42)"
+        browser.close()
