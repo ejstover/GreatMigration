@@ -24,6 +24,8 @@ password_hash = hash_password("browser-test-password")
     "reader": {"password_hash": password_hash, "can_push": False},
 }))
 import requests
+import dotenv
+dotenv.load_dotenv = lambda *args, **kwargs: False
 from urllib.parse import urlsplit
 
 def synthetic_send(self, request, **kwargs):

@@ -4365,7 +4365,7 @@ DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
     SwitchTemplateConfigurationCheck(),
     SiteSleSummaryCheck(),
     ConfigurationOverridesCheck(),
-    FirmwareManagementCheck(),
+    FirmwareManagementCheck(refresh_standards=False),
     CloudManagementCheck(),
     SwitchCableTestCheck(),
     SwitchPowerSupplyHealthCheck(),
