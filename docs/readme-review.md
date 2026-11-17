@@ -1,6 +1,6 @@
 # README alignment review
 
-Reviewed 2026-11-17 against source revision `14283c8` and the accompanying documentation changes. The intended readers are network engineers and installation administrators. This review changes documentation and sample settings only; it does not change runtime APIs, application behavior, local installation configuration, or dependencies.
+Reviewed 2026-11-17 against source revision `14283c8` and the accompanying documentation changes. The intended readers are network engineers and installation administrators. The original review changed documentation and sample settings only. The quickstart implementation follow-up below updates the launcher findings; the original application-review results remain historical.
 
 ## Outcome
 
@@ -10,7 +10,7 @@ Material corrections:
 
 - Manual installation now explicitly copies the sample to `backend/.env`, generates the signing key, creates the account before local-auth startup, and uses Uvicorn `--env-file` before module imports.
 - Initial manual accounts are read-only; quickstart's initial local account is explicitly described as push-enabled. Current local roles come from account records, not legacy `LOCAL_PUSH_USERS` when the database is configured.
-- Listener flags are distinguished from quickstart-only `APP_HOST`/`API_PORT`. Python/PowerShell differences and update limitations are documented.
+- Listener flags are distinguished from quickstart-only `APP_HOST`/`API_PORT`. Both launchers now share a Python implementation; normal startup is offline and setup/upgrade are explicit.
 - Firmware refresh is demand-driven with a 90-day cache threshold. AP `alpha` and switch `junos_suggested` filters, inventory filtering, and explicit organization-policy synchronization are described separately.
 - Port-rule precedence and UI save locations are documented. Hardware replacement overrides are distinguished from base device mappings.
 - `LEGACY_VLANS` adds to built-in `10,500-599`; `EXCLUDE_VLANS` affects temporary naming prefixes rather than deleting VLANs from output.
@@ -41,7 +41,7 @@ Every heading in the prior README is accounted for below. Entries grouped with `
 | Prerequisites | Clarify Python 3.11 CI coverage, Linux venv package, runtime/development split | [security.yml](../.github/workflows/security.yml); [requirements.txt](../backend/requirements.txt); [package.json](../package.json) |
 | Quick start scripts | Correct shared behavior, privileged initial account, flags and limitations | [quickstart.py](../quickstart.py); [quickstart.ps1](../quickstart.ps1) |
 | Python (cross-platform) | Retain supported entry point; document clean-branch update behavior and bind settings | [quickstart.py](../quickstart.py): `main`, `ensure_git_repo`, `ensure_env_file`, `start_api` |
-| PowerShell (Windows-friendly) | Replace new-target example with intended existing-checkout command and working alternatives | [quickstart.ps1](../quickstart.ps1): target resolution, `Ensure-GitRepo`, `Start-App` |
+| PowerShell (Windows-friendly) | Delegate all workflows to Python; retain PowerShell command/option names | [quickstart.ps1](../quickstart.ps1): interpreter selection and argument forwarding |
 | Manual setup | Replace with complete Windows/Linux commands; samples are usable without mandatory JSON copying | [security_setup.py](../backend/security_setup.py); [auth_local.py](../backend/auth_local.py): `_load_users`; rule/mapping loaders |
 | First-run checklist | Correct ordering and add explicit read-only validation/SSH trust | [security.py](../backend/security.py); [ssh_collect.py](../backend/ssh_collect.py): `_collect_device` |
 | Extras: LDAP, syslog, and logging | Merge into configuration/operations; document UDP and early initialization | [auth_ldap.py](../backend/auth_ldap.py); [logging_utils.py](../backend/logging_utils.py); [http_logging.py](../backend/http_logging.py) |
@@ -64,16 +64,16 @@ Added sections cover saved conversion sets, Network Snapshot, backups/restoratio
 
 ## Remaining code and setup defects
 
-These findings are documented, not fixed, by this change. Reproductions use mocks or temporary synthetic installations.
+The original documentation review recorded these findings. The quickstart follow-up fixes the three launcher defects listed below; remaining application/manual-start limitations are still documented.
 
 | Finding | Evidence / confirmation | Documented alternative |
 | --- | --- | --- |
-| PowerShell fails on a nonexistent target before it can clone/create it | Main calls `Resolve-Path $TargetDir` before `Ensure-GitRepo`. Resolution failure reproduced on a verified absent scratch path. | Python helper or manual clone/setup. |
-| PowerShell clean Git status can throw a null-method error | `Ensure-GitRepo` calls `(git status --porcelain).Trim()`; mocked empty output reproduced the error without running Git mutations. | Python helper or manual setup. |
-| Both helpers can switch branches without updating the newly selected branch | `current_branch`/`currentBranch` is not refreshed after checkout. Python mock confirms checkout occurs without fetch/pull. | Switch and fast-forward update explicitly before setup. |
+| Fixed: PowerShell rejected nonexistent clone targets | Wrapper forwards the target to shared Python setup without `Resolve-Path`. | Use explicit `setup --dir` / `setup -TargetDir`. |
+| Fixed: empty PowerShell Git status caused a null-method error | All Git handling now uses Python subprocess results; PowerShell contains no Git workflow. | Covered by local clean-checkout upgrade tests. |
+| Fixed: branch switching skipped the intended update | Upgrade fetches an explicit revision, validates ancestry, switches/creates the target branch, and fast-forwards to that revision. | Normal start/setup never updates an existing checkout. |
 | Bare manual Uvicorn startup can miss file-only syslog configuration | `http_logging`/`logging_utils` initialize before `app.py` calls dotenv. Early initialization confirmed by import order. | Use `--env-file backend/.env`, or process-level settings before startup. |
 | Unset help URL still references the older repository | `README_URL` constants in app/local/LDAP auth point to `jacob-hopkins`; configured sample uses current Git remote `ejstover`. | Keep explicit `HELP_URL`. |
-| Quickstart LDAP generation is incomplete for a real directory | Filters copy `# LDAP_` and `# PUSH_GROUP_DN` settings, but omit `READONLY_GROUP_DN`; placeholders are not validated before automatic start. | Setup-only mode, explicitly configure all directory/group values, then start manually. |
+| Quickstart LDAP generation is incomplete for a real directory | Generation now includes `READONLY_GROUP_DN`, but deployment-specific directory/group placeholders still require operator review before startup. | Setup-only mode, explicitly configure all directory/group values, then start manually. |
 
 Additional operational limitations requiring deliberate handling:
 
@@ -82,6 +82,32 @@ Additional operational limitations requiring deliberate handling:
 - SSH jobs and baseline bookkeeping are process-local even though capacity leases/sessions use shared SQLite. A single worker is recommended; unfinished jobs do not resume after restart. Baseline saving occurs during job polling.
 - Local custom model names still depend on online model listing; custom names do not provide physical port layouts, and saving requires an existing parent directory.
 - Snapshot reconciliation matches MAC locations rather than VLAN/service health; project-name normalization can cause distinct display names to share a storage key.
+
+## Quickstart implementation follow-up
+
+The launcher now separates offline startup, setup, explicit fast-forward upgrade,
+service controls, and reboot registration. PowerShell delegates to Python. New
+helpers provide single-worker runtime locking/environment loading and native
+Windows Task Scheduler, Linux systemd, and macOS launchd definitions. Upgrades
+preserve `origin`, refuse local work/divergence, and continue through the updated
+launcher with a stage/revision recovery journal.
+
+Windows/Python 3.11 validation: the full backend/launcher run passed **412 tests**
+(355 existing backend tests plus the initial 57 launcher cases), with 45 existing
+dependency/API deprecation warnings. Expanded launcher verification passed all
+**69 cases** across the complete launcher run and the final focused recheck.
+Launcher cases include real local-Git fetch/update/updated-launcher continuation,
+real synthetic ASGI process startup/shutdown, environment loading before imports,
+wrong-nonce rejection, maintenance locking, PowerShell option/exit-code forwarding,
+branch creation/switching, and mocked native registration/control/recovery. Ruff's fatal-error
+selection passed. A restricted initial run blocked Git's local transport and
+loopback connections; the isolated suite passed with those accesses permitted.
+
+No actual tasks/services were installed and no machine was rebooted. Linux/macOS
+execution and native boot behavior are not verified by this Windows run. CI now
+includes launcher tests on all three platforms; the [native smoke checklist](quickstart-validation.md)
+remains a separate release gate. No production credentials, package updates,
+application API changes, or frontend asset changes were needed for this follow-up.
 
 ## Validation performed
 
