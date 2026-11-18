@@ -1193,7 +1193,7 @@
           }, {});
 
           checks.forEach(check => {
-            const level = CHECK_LEVEL_MAP[check.id] || 'org';
+            const level = CHECK_LEVEL_MAP[check.id] || ({device: 'device', site: 'site', organization: 'org'}[check.scope]) || 'org';
             if (!checksByLevel[level]) {
               checksByLevel[level] = [];
             }
@@ -1246,7 +1246,7 @@
               const deviceFindings = Array.isArray(check.device_level_findings) ? check.device_level_findings : [];
               const fallbackFindings = Array.isArray(check.findings) ? check.findings : [];
               const totalFindingsForBadge = siteFindings.length + deviceFindings.length + (!siteFindings.length && !deviceFindings.length ? fallbackFindings.length : 0);
-              const badgeSeverity = totalFindingsForBadge ? check.severity : 'success';
+              const badgeSeverity = totalFindingsForBadge ? check.severity : check.coverage?.unevaluated ? 'warning' : 'success';
               const badge = createSeverityBadge(badgeSeverity);
               const controls = document.createElement('div');
               controls.className = 'flex items-center gap-2';
@@ -1315,6 +1315,17 @@
                 const passingCount = typeof check.passing_sites === 'number' ? check.passing_sites : Math.max((data.total_sites || 0) - failingCount, 0);
                 stats.innerHTML = `<span><strong>${passingCount}</strong> site${passingCount === 1 ? '' : 's'} passing</span><span><strong>${failingCount}</strong> site${failingCount === 1 ? '' : 's'} with findings</span>`;
                 card.appendChild(stats);
+
+                if (check.coverage) {
+                  card.appendChild(textElement('p', `${check.coverage.pass || 0} passing targets · ${check.coverage.fail || 0} failing · ${check.coverage.excluded || 0} excluded · ${check.coverage.unevaluated || 0} unevaluated`, 'mt-2 text-xs text-slate-600 dark:text-slate-300'));
+                  const incomplete = (check.evaluations || []).filter(row => row.status === 'unevaluated');
+                  if (incomplete.length) {
+                    const details = document.createElement('details');
+                    details.appendChild(textElement('summary', 'Could not evaluate these targets', 'text-amber-700 dark:text-amber-300'));
+                    incomplete.forEach(row => details.appendChild(textElement('p', `${row.target.name || row.target.id || 'Target population'}: ${row.message}`, 'mt-1 text-sm')));
+                    card.appendChild(details);
+                  }
+                }
 
                 if (!totalFindingsForBadge && (check.approved_exceptions || []).length) {
                   card.appendChild(textElement('p', 'No actionable findings — approved exceptions present', 'rounded-sm border border-amber-300 bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-200 px-4 py-3 text-sm'));

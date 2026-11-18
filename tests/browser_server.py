@@ -16,6 +16,7 @@ os.environ.update(AUTH_METHOD="local", SESSION_SECRET="browser-tests-" + "x" * 4
                   SESSION_HTTPS_ONLY="false", MIST_TOKEN="browser-synthetic-token",
                   LOCAL_USERS_FILE=str(args.data / "users.json"), SYSLOG_HOST="", SYSLOG_SERVER="",
                   SECURITY_DB_PATH=str(args.data / "sessions.sqlite3"),
+                  STANDARDS_STORE_PATH=str(args.data / "policy-catalog.json"),
                   MIST_BASE_URL="https://api.ac2.mist.com", MIST_ORG_ID="org1")
 from security import hash_password
 password_hash = hash_password("browser-test-password")

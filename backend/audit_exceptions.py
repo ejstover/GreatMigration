@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import uuid
+import re
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,11 @@ SUPPORTED_CHECK_IDS = frozenset({
     "required_site_variables", "firmware_management", "cloud_management", "spare_switch_presence",
     "virtual_chassis_roles",
 })
+
+
+def supported_check_id(check_id):
+    # Validate stored identities without consulting mutable or unavailable policy storage.
+    return check_id in SUPPORTED_CHECK_IDS or bool(isinstance(check_id, str) and re.fullmatch(r"custom_[A-Za-z0-9_-]{1,73}", check_id))
 
 
 class ExceptionStoreError(ValueError):
@@ -75,7 +81,7 @@ def load_records(path: Path | None = None) -> list[dict[str, Any]]:
                     continue
                 if not isinstance(record.get(key), str) or not record[key].strip():
                     raise ValueError(f"Invalid exception field: {key}")
-            if record["check_id"] not in SUPPORTED_CHECK_IDS:
+            if not supported_check_id(record["check_id"]):
                 raise ValueError("Unsupported exception check")
             if record["id"] in ids or record["fingerprint"] != fingerprint(record):
                 raise ValueError("Duplicate ID or invalid exception evidence")
@@ -157,7 +163,7 @@ def approve(candidate: Mapping[str, Any], reason: str, actor: str, *, site_name:
     if not isinstance(reason, str) or not reason.strip() or len(reason.strip()) > 2000:
         raise ValueError("A reason of 1–2000 characters is required")
     try:
-        if (candidate["check_id"] not in SUPPORTED_CHECK_IDS or candidate["fingerprint"] != fingerprint(candidate)
+        if (not supported_check_id(candidate["check_id"]) or candidate["fingerprint"] != fingerprint(candidate)
                 or not actor.strip() or any(not isinstance(candidate.get(key), str) or not candidate[key].strip()
                                             for key in IDENTITY_FIELDS if key != "device_id")):
             raise ValueError("Invalid exception evidence or approver")

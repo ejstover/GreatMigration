@@ -7,6 +7,7 @@ import time
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 import requests
+from standards_specialists import OPTIONS, option as policy_option, pattern_option
 
 from http_logging import install_http_logging
 
@@ -224,7 +225,7 @@ def _collect_site_variables_from_docs(*docs: Any) -> Dict[str, Any]:
 
 def _load_site_variable_defaults() -> Dict[str, str]:
     _, defaults = load_site_variable_config("MIST_SITE_VARIABLES", DEFAULT_REQUIRED_SITE_VARIABLES)
-    return defaults
+    return policy_option("variable_defaults", defaults)
 
 
 def _site_display_name(doc: Any, default: str) -> str:
@@ -255,7 +256,7 @@ def _format_dns_var_group_label(options: Sequence[str]) -> str:
 
 def _evaluate_dns_variable_groups(variables: Mapping[str, Any]) -> Tuple[bool, List[str]]:
     missing: List[str] = []
-    for group in DNS_OVERRIDE_REQUIRED_VAR_GROUPS:
+    for group in policy_option("dns_variable_groups", DNS_OVERRIDE_REQUIRED_VAR_GROUPS):
         if not any(_value_is_set(variables.get(name)) for name in group):
             label = _format_dns_var_group_label(group)
             if label:
@@ -269,8 +270,8 @@ def _allowed_templates_for_site(site_name: str) -> Tuple[Tuple[str, ...], Tuple[
             dict.fromkeys(
                 name
                 for name in (
-                    DNS_OVERRIDE_LAB_TEMPLATE_NAME,
-                    DNS_OVERRIDE_TEMPLATE_NAME,
+                    policy_option("lab_template_name", DNS_OVERRIDE_LAB_TEMPLATE_NAME),
+                    policy_option("production_template_name", DNS_OVERRIDE_TEMPLATE_NAME),
                 )
                 if isinstance(name, str) and name
             )
@@ -279,8 +280,8 @@ def _allowed_templates_for_site(site_name: str) -> Tuple[Tuple[str, ...], Tuple[
             dict.fromkeys(
                 value
                 for value in (
-                    *(DNS_OVERRIDE_LAB_TEMPLATE_IDS or ()),
-                    *(DNS_OVERRIDE_PROD_TEMPLATE_IDS or ()),
+                    *(policy_option("lab_template_ids", DNS_OVERRIDE_LAB_TEMPLATE_IDS) or ()),
+                    *(policy_option("production_template_ids", DNS_OVERRIDE_PROD_TEMPLATE_IDS) or ()),
                 )
                 if isinstance(value, str) and value
             )
@@ -289,14 +290,14 @@ def _allowed_templates_for_site(site_name: str) -> Tuple[Tuple[str, ...], Tuple[
     allowed_names = tuple(
         dict.fromkeys(
             name
-            for name in (DNS_OVERRIDE_TEMPLATE_NAME,)
+            for name in (policy_option("production_template_name", DNS_OVERRIDE_TEMPLATE_NAME),)
             if isinstance(name, str) and name
         )
     )
     allowed_ids = tuple(
         dict.fromkeys(
             value
-            for value in (DNS_OVERRIDE_PROD_TEMPLATE_IDS or ())
+            for value in (policy_option("production_template_ids", DNS_OVERRIDE_PROD_TEMPLATE_IDS) or ())
             if isinstance(value, str) and value
         )
     )
@@ -690,7 +691,7 @@ def _propose_spare_switch_name(current_name: str) -> Optional[str]:
     suffix = suffix_match.group(1) if suffix_match else "1"
 
     candidate = f"{match.group('region')}{match.group('site')}MDFSS{suffix}"
-    if SWITCH_LLDPNAME_PATTERN and SWITCH_LLDPNAME_PATTERN.fullmatch(candidate) is None:
+    if pattern_option("switch_pattern", SWITCH_LLDPNAME_PATTERN) and pattern_option("switch_pattern", SWITCH_LLDPNAME_PATTERN).fullmatch(candidate) is None:
         return None
     return candidate
 
@@ -866,7 +867,7 @@ def _execute_set_spare_switch_role_action(
 
 def _parse_switch_location(name: str) -> Optional[Tuple[str, str, str]]:
     text = (name or "").strip()
-    if SWITCH_LLDPNAME_PATTERN is not None and not SWITCH_LLDPNAME_PATTERN.fullmatch(text):
+    if pattern_option("switch_pattern", SWITCH_LLDPNAME_PATTERN) is not None and not pattern_option("switch_pattern", SWITCH_LLDPNAME_PATTERN).fullmatch(text):
         return None
     match = SWITCH_LOCATION_EXTRACT_PATTERN.match(text)
     if not match:
@@ -880,7 +881,7 @@ def _initial_number_map(names: Iterable[str]) -> Tuple[Dict[str, int], Set[int]]
     for name in names:
         if not isinstance(name, str):
             continue
-        m = AP_NAME_PATTERN.fullmatch(name.strip())
+        m = pattern_option("ap_pattern", AP_NAME_PATTERN).fullmatch(name.strip())
         if not m:
             continue
         try:
@@ -918,7 +919,7 @@ def _next_available_name(
 def _needs_rename(name: Optional[str]) -> bool:
     if not name:
         return True
-    return AP_NAME_PATTERN.fullmatch(name.strip()) is None
+    return pattern_option("ap_pattern", AP_NAME_PATTERN).fullmatch(name.strip()) is None
 
 
 def _extract_trailing_number(name: Optional[str]) -> Optional[int]:
@@ -941,6 +942,8 @@ def _rename_device(
     device_id: str,
     new_name: str,
 ) -> None:
+    if pattern_option("ap_pattern", AP_NAME_PATTERN).fullmatch(new_name) is None:
+        raise ValueError("The proposed AP name does not satisfy the current naming standard; rename it manually.")
     response = requests.put(
         f"{base_url}/sites/{site_id}/devices/{device_id}",
         headers=headers,
@@ -1237,7 +1240,7 @@ def _clear_dns_overrides_for_site(
         label
         for label in (
             _format_dns_var_group_label(group)
-            for group in DNS_OVERRIDE_REQUIRED_VAR_GROUPS
+            for group in policy_option("dns_variable_groups", DNS_OVERRIDE_REQUIRED_VAR_GROUPS)
         )
         if label
     ]
@@ -2047,10 +2050,34 @@ def execute_audit_action(
     from audit_exceptions import locked_records
     from audit_exception_guard import guarded_execute
 
-    with locked_records() as records:
-        return guarded_execute(_execute_audit_action_unchecked, action_id, base_url, token, site_ids,
-                               records=records, context_loader=context_loader, dry_run=dry_run,
-                               pause=pause, device_map=device_map, metadata=metadata)
+    import standards_store
+    from standards_engine import semantic_hash
+    policy_ids = {
+        AP_RENAME_ACTION_ID: "device_naming_convention",
+        CLEAR_DNS_OVERRIDE_ACTION_ID: "configuration_overrides",
+        SET_SITE_VARIABLES_ACTION_ID: "required_site_variables",
+        ENABLE_CLOUD_MANAGEMENT_ACTION_ID: "cloud_management",
+        SET_SPARE_SWITCH_ROLE_ACTION_ID: "spare_switch_presence",
+        SET_VIRTUAL_CHASSIS_ROLES_ACTION_ID: "virtual_chassis_roles",
+    }
+    policy_id = policy_ids.get(action_id)
+    document = standards_store.load()
+    policy = next((p for p in document["policies"] if p["id"] == policy_id and p.get("enabled")), None)
+    if policy is None:
+        raise ValueError("The standard supporting this fix is disabled or unavailable")
+    if (metadata or {}).get("standard_policy_hash") not in (None, semantic_hash(policy)):
+        raise ValueError("The standard changed. Run the audit again before applying this fix.")
+    params = policy["requirement"]["parameters"]
+    if action_id == AP_RENAME_ACTION_ID and not params.get("ap_pattern"):
+        raise ValueError("AP naming is disabled in the current standard")
+    policy_token = OPTIONS.set(params)
+    try:
+        with locked_records() as records:
+            return guarded_execute(_execute_audit_action_unchecked, action_id, base_url, token, site_ids,
+                                   records=records, context_loader=context_loader, dry_run=dry_run,
+                                   pause=pause, device_map=device_map, metadata=metadata)
+    finally:
+        OPTIONS.reset(policy_token)
 
 
 __all__ = ["execute_audit_action"]

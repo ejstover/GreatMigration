@@ -182,7 +182,7 @@ PAGE_COPY: dict[str, dict[str, str]] = {
     },
     "standards": {
         "title": "Standards",
-        "tagline": "Review model-specific firmware standards across recent revisions",
+        "tagline": "Define, preview, and audit your network standards",
     },
     "network_snapshot": {
         "title": "Network Snapshot",
@@ -2533,6 +2533,9 @@ def api_audit_run(
             "finished_at": finished_at.isoformat(),
             "duration_ms": duration_ms,
         }
+        for key in ("evaluation_coverage", "collection_errors", "collected_at", "standards_revision"):
+            if key in audit_result:
+                summary[key] = audit_result[key]
 
         breakdown = ", ".join(f"{site['name']}:{site['issues']}" for site in summary_sites) or "none"
         device_breakdown = ", ".join(
@@ -2616,16 +2619,17 @@ def api_add_audit_exception(request: Request, payload: Dict[str, Any] = Body(...
         site_id, check_id = payload.get("site_id"), payload.get("check_id")
         if not isinstance(site_id, str) or not site_id.strip() or not isinstance(check_id, str):
             raise ValueError("site_id and check_id are required")
-        if check_id not in aexceptions.SUPPORTED_CHECK_IDS:
+        if not aexceptions.supported_check_id(check_id):
             raise ValueError("This audit check does not support exceptions")
-        checks = build_default_runner(check_ids=[check_id], refresh_standards=False).checks
+        verification_runner = build_default_runner(check_ids=[check_id], refresh_standards=False)
+        checks = verification_runner.checks
         if not checks:
             raise ValueError("Unknown audit check")
         headers = {"Authorization": f"Token {_load_mist_token()}", "Accept": "application/json"}
         context = _fetch_site_context(base_url.rstrip("/"), headers, site_id)
-        if context.unavailable_sources or payload.get("device_id") in context.unavailable_device_ids:
+        if not check_id.startswith("custom_") and (context.unavailable_sources or payload.get("device_id") in context.unavailable_device_ids):
             return JSONResponse({"ok": False, "error": "Current configuration is incomplete; approval was not saved. Retry the audit."}, status_code=502)
-        result = SiteAuditRunner(checks).run([context], exception_records=[], origin=base_url)
+        result = verification_runner.run([context], exception_records=[], origin=base_url)
         finding = next((finding for check in result["checks"] for finding in check["findings"]
                         if finding.get("exception_candidate", {}).get("fingerprint") == payload.get("fingerprint")
                         and finding.get("exception_candidate", {}).get("path") == payload.get("path")
@@ -6715,3 +6719,9 @@ async def api_push_batch(
             "phase_status": phase_status,
         }
     )
+
+
+# Keep standards routes separate from the migration endpoints.
+import sys as _standards_sys
+from standards_api import router as _standards_router
+app.include_router(_standards_router(_standards_sys.modules[__name__]))

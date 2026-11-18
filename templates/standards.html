@@ -8,6 +8,8 @@
   <link rel="stylesheet" href="/static/app.css" />
   <meta name="csrf-token" content="{{CSRF_TOKEN}}" />
   <script src="/static/security.js" defer></script>
+  <link rel="stylesheet" href="/static/standards.css" />
+  <script src="/static/standards.js" defer></script>
 
 </head>
 <body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100 overflow-x-hidden">
@@ -40,7 +42,34 @@
       </div>
     </header>
 
-    <div class="max-w-7xl mx-auto p-6">
+    <div id="standards_workspace" class="max-w-7xl mx-auto p-6 standards-workspace">
+      <div class="standards-heading">
+        <div><p class="standards-kicker">Network assurance / policy catalog</p><h2>Your network. Your standards.</h2>
+        <p class="standards-subtitle">Define requirements from Mist fields, inspect the evidence, and put the same standards to work in every audit.</p></div>
+      </div>
+      <div class="standards-tabs" role="tablist" aria-label="Standards">
+        <button id="policies_tab" class="standards-tab" role="tab" data-standards-tab="policies" aria-selected="true" aria-controls="policies_panel">Policies</button>
+        <button id="sources_tab" class="standards-tab" role="tab" data-standards-tab="sources" aria-selected="false" aria-controls="sources_panel">Data Sources</button>
+        <button id="firmware_tab" class="standards-tab" role="tab" data-standards-tab="firmware" aria-selected="false" aria-controls="firmware_panel">Firmware Matrix</button>
+      </div>
+      <p id="standards_notice" class="standards-notice" role="status" aria-live="polite" hidden></p>
+      <section id="policies_panel" role="tabpanel" aria-labelledby="policies_tab">
+        <div class="standards-grid">
+          <aside class="standards-card">
+            <h3>Policy catalog</h3><p id="policy_count" class="standards-help">Loading standards…</p>
+            <div class="standards-toolbar"><button id="new_policy" type="button" class="standards-button primary">New standard</button></div>
+            <label class="standards-field" for="policy_filter">Find a standard</label><input id="policy_filter" class="standards-search" placeholder="Search policies" />
+            <div id="policy_list" class="standards-list"></div>
+          </aside>
+          <article id="policy_editor" class="standards-card"><h3>Select a standard</h3><p class="standards-help">Inspect an imported standard or create your first field rule.</p></article>
+        </div>
+      </section>
+      <section id="sources_panel" role="tabpanel" aria-labelledby="sources_tab" hidden>
+        <div class="standards-heading"><div><h3>Data sources</h3><p id="schema_version" class="standards-help"></p></div><button id="new_source" type="button" class="standards-button primary">Add data source</button></div>
+        <div id="source_list" class="standards-source-list"></div>
+        <article id="source_editor" class="standards-card" style="margin-top:1.25rem"><h3>Choose a source to inspect its mapping</h3><p class="standards-help">Every registered source exposes its documented and discovered fields to policy authors.</p></article>
+      </section>
+      <section id="firmware_panel" role="tabpanel" aria-labelledby="firmware_tab" hidden>
       <section class="bg-white dark:bg-slate-800 dark:border-slate-700 rounded-2xl shadow-sm p-6 space-y-4">
         <div class="flex flex-col md:flex-row md:items-end gap-3 justify-between">
           <div>
@@ -66,6 +95,11 @@
         </div>
         <p id="standards_empty" class="hidden text-sm text-slate-500 dark:text-slate-300">No standards match this filter.</p>
       </section>
+      </section>
+      <details class="standards-card" style="margin-top:1.25rem"><summary>Catalog recovery</summary>
+        <p class="standards-help">Restore the previous saved catalog or the initial import. Only validated backups can be activated.</p>
+        <div class="standards-toolbar"><label for="restore_choice">Backup</label><select id="restore_choice"><option value="backup">Previous saved revision</option><option value="import">Initial imported configuration</option></select><button id="restore_standards" type="button" class="standards-button">Restore catalog</button></div>
+      </details>
     </div>
   </div>
 
@@ -169,9 +203,15 @@
     });
     filterInput.addEventListener('input', renderTable);
 
-    loadStandards().catch((error) => {
-      meta.textContent = error.message;
-      emptyState.classList.remove('hidden');
+    let firmwareLoaded = false;
+    window.addEventListener('standards-firmware-open', () => {
+      if (firmwareLoaded) return;
+      firmwareLoaded = true;
+      loadStandards().catch((error) => {
+        firmwareLoaded = false;
+        meta.textContent = error.message;
+        emptyState.classList.remove('hidden');
+      });
     });
   </script>
 </body>

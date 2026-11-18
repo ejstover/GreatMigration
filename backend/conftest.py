@@ -37,6 +37,7 @@ def isolated_runtime(monkeypatch, tmp_path):
     import compliance
 
     monkeypatch.setenv("SECURITY_DB_PATH", str(tmp_path / "security.sqlite3"))
+    monkeypatch.setenv("STANDARDS_STORE_PATH", str(tmp_path / "standards.json"))
     monkeypatch.setattr(conversion_sets, "DATA_DIR", tmp_path / "conversion_sets")
     monkeypatch.setattr(network_state_snapshots, "DATA_DIR", tmp_path / "network_state")
     monkeypatch.setattr(ssh_collect, "JOB_ROOT", tmp_path / "tmp_ssh_jobs")

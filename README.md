@@ -238,9 +238,11 @@ The menu shows the current user and logout. Server-side permissions apply even w
 | Config Conversion | `/` | Parse, map, preview, deploy, save conversion sets. |
 | Network Snapshot | `/network-snapshot` | Legacy MAC baseline and post-cutover Mist placement comparison. |
 | Port Profile Rules | `/rules` | Ordered interface-to-usage rules. |
-| Standards | `/standards` | Firmware baselines and explicit onboarding-policy synchronization. |
+| Standards | `/standards` | Editable standards, Mist field discovery, passive previews, firmware baselines, and explicit onboarding-policy synchronization. |
 | Compliance Audit | `/audit` | Checks, history, exceptions, exports, eligible fixes. |
 | Help | `HELP_URL` | Configured runbook/documentation. |
+
+See [Editable network standards](docs/dynamic-standards.md) for the policy builder, source mappings, advanced rules, and migration recovery.
 
 ### Hardware and port-rule preparation
 

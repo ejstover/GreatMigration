@@ -44,6 +44,9 @@ def expand_finding(check: Any, context: Any, finding: Any, origin: str = "") -> 
     # Imported at call time so the runner can use this module without a cycle.
     import compliance as c
 
+    if getattr(check, "policy", {}).get("requirement", {}).get("kind") not in (None, "specialist"):
+        return [finding]
+
     device = next((d for d in context.devices if isinstance(d, dict)
                    and str(d.get("id")) == finding.device_id), None)
     if finding.device_id in context.unavailable_device_ids or context.unavailable_sources:
@@ -149,6 +152,11 @@ def expand_finding(check: Any, context: Any, finding: Any, origin: str = "") -> 
     for path, observed, expected, part_details, actions in parts:
         item = replace(finding, details=copy.deepcopy(part_details), actions=copy.deepcopy(actions))
         if observed is not None:
+            if getattr(check, "policy", None):
+                from standards_engine import semantic_hash
+                policy = check.policy
+                if semantic_hash(policy) != policy.get("imported_semantics"):
+                    expected = {**expected, "policy_hash": semantic_hash(policy)}
             item.exception_candidate = candidate_for(context, check_id, finding.device_id, path, observed, expected, origin)
         result.append(item)
     return result

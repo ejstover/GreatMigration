@@ -26,6 +26,9 @@ def protects(record, device_id, field):
 
 
 def action_protected(action_id, record, device_id=None, variables=None):
+    if record["check_id"].startswith("custom_"):
+        # General expressions can depend on multiple fields and relationships.
+        return record["device_id"] is None or record["device_id"] == device_id
     field = {
         AP_RENAME_ACTION_ID: "name", CLEAR_DNS_OVERRIDE_ACTION_ID: "ip_config.dns",
         ENABLE_CLOUD_MANAGEMENT_ACTION_ID: "disable_auto_config",
@@ -103,9 +106,11 @@ def guarded_execute(dispatch, action_id, base_url, token, site_ids, *, records, 
             continue
         summary["site_name"] = context.site_name
         check_ids = {r["check_id"] for r in relevant if r["site_id"] == site_id}
-        checks = c.build_default_runner(check_ids=check_ids, refresh_standards=False).checks
-        result = c.SiteAuditRunner(checks).run([context], exception_records=relevant, origin=base_url)
+        runner = c.build_default_runner(check_ids=check_ids, refresh_standards=False)
+        result = runner.run([context], exception_records=relevant, origin=base_url)
         approved = [f["exception"] for check in result["checks"] for f in check["approved_exceptions"]]
+        if any(row.get("coverage", {}).get("unevaluated") for row in result["checks"]):
+            approved.extend(r for r in relevant if r["site_id"] == site_id and r["check_id"].startswith("custom_"))
         org_id = context.site.get("org_id") or context.setting.get("org_id")
         if not org_id:
             skip("Cannot verify the organization for current audit exceptions; no changes made.")
@@ -134,7 +139,9 @@ def guarded_execute(dispatch, action_id, base_url, token, site_ids, *, records, 
             scoped_devices = {site_id: allowed}
             run = bool(allowed)
         elif action_id == SET_SITE_VARIABLES_ACTION_ID:
+            from standards_specialists import option
             _, defaults = c.load_site_variable_config()
+            defaults = option("variable_defaults", defaults)
             variables = scoped_metadata.get("variables") or defaults
             allowed = {}
             for key, value in variables.items():

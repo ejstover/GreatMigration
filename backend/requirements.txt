@@ -10,6 +10,7 @@ itsdangerous==2.2.0
 fpdf2==2.9.0
 netmiko==4.6.0
 websocket-client==1.8.0
+regex==2026.11.15
 
 starlette==1.10.0
 python-dotenv==1.2.4
