@@ -35,7 +35,7 @@ passlib==1.7.4
 pillow==13.0.0
 pyasn1==0.6.5
 pycparser==3.12
-pydantic==2.12.5
+pydantic==2.14.3
 pydantic-core==2.41.5
 pygments==2.21.0
 pynacl==1.6.2
