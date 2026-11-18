@@ -44,6 +44,7 @@ python-dotenv==1.2.4
 python-multipart==0.0.34
 pyyaml==6.0.3
 requests==2.34.2
+regex==2026.11.15
 rich==14.2.0
 ruamel-yaml==0.19.1
 scp==0.15.0

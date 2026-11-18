@@ -33,6 +33,7 @@ from audit_actions import (
 )
 from logging_utils import get_user_logger
 from audit_exception_evidence import expand_finding
+from standards_specialists import option as policy_option
 
 
 logger = get_user_logger()
@@ -1075,7 +1076,7 @@ def _format_dns_var_group_label(options: Sequence[str]) -> str:
 
 def _evaluate_dns_variable_groups(variables: Mapping[str, Any]) -> Tuple[bool, List[str]]:
     missing: List[str] = []
-    for group in DNS_OVERRIDE_REQUIRED_VAR_GROUPS:
+    for group in policy_option("dns_variable_groups", DNS_OVERRIDE_REQUIRED_VAR_GROUPS):
         if not any(_has_value(variables.get(name)) for name in group):
             label = _format_dns_var_group_label(group)
             if label:
@@ -1089,8 +1090,8 @@ def _expected_template_details(site_name: Optional[str]) -> Dict[str, Any]:
         allowed_names = [
             name
             for name in (
-                DNS_OVERRIDE_LAB_TEMPLATE_NAME,
-                DNS_OVERRIDE_TEMPLATE_NAME,
+                policy_option("lab_template_name", DNS_OVERRIDE_LAB_TEMPLATE_NAME),
+                policy_option("production_template_name", DNS_OVERRIDE_TEMPLATE_NAME),
             )
             if isinstance(name, str) and name
         ]
@@ -1098,29 +1099,29 @@ def _expected_template_details(site_name: Optional[str]) -> Dict[str, Any]:
             dict.fromkeys(
                 value
                 for value in (
-                    *(DNS_OVERRIDE_LAB_TEMPLATE_IDS or ()),
-                    *(DNS_OVERRIDE_PROD_TEMPLATE_IDS or ()),
+                    *(policy_option("lab_template_ids", DNS_OVERRIDE_LAB_TEMPLATE_IDS) or ()),
+                    *(policy_option("production_template_ids", DNS_OVERRIDE_PROD_TEMPLATE_IDS) or ()),
                 )
                 if isinstance(value, str) and value
             )
         )
-        preferred = DNS_OVERRIDE_LAB_TEMPLATE_NAME or (allowed_names[0] if allowed_names else "")
+        preferred = policy_option("lab_template_name", DNS_OVERRIDE_LAB_TEMPLATE_NAME) or (allowed_names[0] if allowed_names else "")
     else:
         allowed_names = [
             name
             for name in (
-                DNS_OVERRIDE_TEMPLATE_NAME,
+                policy_option("production_template_name", DNS_OVERRIDE_TEMPLATE_NAME),
             )
             if isinstance(name, str) and name
         ]
         allowed_ids = tuple(
             dict.fromkeys(
                 value
-                for value in (DNS_OVERRIDE_PROD_TEMPLATE_IDS or ())
+                for value in (policy_option("production_template_ids", DNS_OVERRIDE_PROD_TEMPLATE_IDS) or ())
                 if isinstance(value, str) and value
             )
         )
-        preferred = DNS_OVERRIDE_TEMPLATE_NAME
+        preferred = policy_option("production_template_name", DNS_OVERRIDE_TEMPLATE_NAME)
     return {
         "site_type": "lab" if is_lab else "production",
         "allowed_template_names": tuple(allowed_names),
@@ -2734,7 +2735,7 @@ def _normalize_switch_role(role: Any) -> str:
 
 
 def _is_excluded_switch_role_for_cable_test(device: Mapping[str, Any]) -> bool:
-    return _normalize_switch_role(device.get("role")) in CABLE_TEST_EXCLUDED_ROLES
+    return _normalize_switch_role(device.get("role")) in policy_option("excluded_roles", CABLE_TEST_EXCLUDED_ROLES)
 
 
 def _collect_wired_client_map(wired_clients: Sequence[Mapping[str, Any]]) -> Dict[Tuple[str, str], List[Dict[str, Any]]]:
@@ -2852,8 +2853,8 @@ def _collect_port_evidence(
     has_lldp_neighbor = bool(neighbor_names)
     profile_text = _collect_port_profile_text(device, port_id)
     traffic_classification = "low"
-    if (rx_bytes is not None and rx_bytes >= CABLE_TEST_ACTIVE_TRAFFIC_BYTES_THRESHOLD) or (
-        tx_bytes is not None and tx_bytes >= CABLE_TEST_ACTIVE_TRAFFIC_BYTES_THRESHOLD
+    if (rx_bytes is not None and rx_bytes >= policy_option("active_traffic_bytes", CABLE_TEST_ACTIVE_TRAFFIC_BYTES_THRESHOLD)) or (
+        tx_bytes is not None and tx_bytes >= policy_option("active_traffic_bytes", CABLE_TEST_ACTIVE_TRAFFIC_BYTES_THRESHOLD)
     ):
         traffic_classification = "active"
 
@@ -3381,7 +3382,7 @@ class SwitchPowerSupplyHealthCheck(ComplianceCheck):
             for idx, psu in enumerate(psu_entries):
                 status_raw = psu.get("status")
                 status = str(status_raw).strip().lower() if status_raw is not None else ""
-                if status == "ok":
+                if status in getattr(self, "healthy_statuses", ["ok"]):
                     continue
                 failed_psus.append(
                     {
@@ -3601,7 +3602,7 @@ class SpareSwitchPresenceCheck(ComplianceCheck):
             if isinstance(role, str) and role.strip().lower() == "spare":
                 spare_count += 1
 
-        if spare_count == 0:
+        if spare_count < getattr(self, "minimum_spares", 1):
             candidate_switches = []
             for device in switches:
                 device_id = device.get("id")
@@ -3633,7 +3634,8 @@ class SpareSwitchPresenceCheck(ComplianceCheck):
                 Finding(
                     site_id=context.site_id,
                     site_name=context.site_name,
-                    message="Site does not have a switch with role 'spare'.",
+                    message=("Site does not have a switch with role 'spare'." if getattr(self, "minimum_spares", 1) == 1
+                             else f"Site requires at least {self.minimum_spares} switches with role 'spare'."),
                     details={
                         "total_switches": len(switches),
                         "spare_switches": spare_count,
@@ -4072,12 +4074,14 @@ class SiteSleSummaryCheck(ComplianceCheck):
 
     def __init__(self, duration: str = "1d") -> None:
         self.duration = duration
+        self.source_errors: List[str] = []
         self._sle_rollup_cache: Dict[Tuple[str, str, str], Dict[str, Dict[str, Any]]] = {}
         self._metric_summary_cache: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
 
     def prepare_run(self) -> None:
         self._sle_rollup_cache.clear()
         self._metric_summary_cache.clear()
+        self.source_errors.clear()
 
     def _get_site_rollup(
         self,
@@ -4185,6 +4189,7 @@ class SiteSleSummaryCheck(ComplianceCheck):
         headers = context.mist_headers if isinstance(context.mist_headers, Mapping) else {}
         org_id = _extract_context_org_id(context)
         if not base_url or not headers or not org_id:
+            self.source_errors.append("SLE source context is incomplete")
             return []
 
         findings: List[Finding] = []
@@ -4192,6 +4197,7 @@ class SiteSleSummaryCheck(ComplianceCheck):
             try:
                 rollup = self._get_site_rollup(base_url, headers, org_id, sle_type, context.site_id)
             except requests.RequestException as exc:
+                self.source_errors.append(f"SLE {sle_type} rollup could not be collected")
                 logger.warning(
                     "action=site_sle_summary status=failed site_id=%s sle=%s error=%s",
                     context.site_id,
@@ -4207,13 +4213,17 @@ class SiteSleSummaryCheck(ComplianceCheck):
             metrics = sle_config.get("metrics") if isinstance(sle_config.get("metrics"), Sequence) else ()
             for metric in metrics:
                 score = _coerce_sle_score(rollup.get(metric))
-                if score is None or score >= 0.999999:
+                if score is None:
+                    self.source_errors.append(f"SLE {sle_type} metric {metric} is unavailable")
+                    continue
+                if score >= getattr(self, "minimum_score", 0.999999):
                     continue
 
                 impacting_classifiers: List[Dict[str, Any]] = []
                 try:
                     summary = self._get_metric_summary(base_url, headers, context.site_id, metric)
                 except requests.RequestException as exc:
+                    self.source_errors.append(f"SLE {metric} classifiers could not be collected")
                     logger.warning(
                         "action=site_sle_metric_summary status=failed site_id=%s metric=%s error=%s",
                         context.site_id,
@@ -4377,9 +4387,5 @@ DEFAULT_CHECKS: Sequence[ComplianceCheck] = (
 
 
 def build_default_runner(check_ids: Optional[Iterable[str]] = None, *, refresh_standards: bool = True, include_active_checks: bool = False) -> SiteAuditRunner:
-    # Checks keep per-run state and read local policy during construction.
-    return SiteAuditRunner([FirmwareManagementCheck(refresh_standards=refresh_standards)
-                            if isinstance(check, FirmwareManagementCheck) else type(check)()
-                            for check in DEFAULT_CHECKS
-                            if (check_ids is None or check.id in check_ids)
-                            and (include_active_checks or not isinstance(check, SwitchCableTestCheck))])
+    from standards_integration import build_runner
+    return build_runner(check_ids, refresh_standards=refresh_standards, include_active_checks=include_active_checks)
