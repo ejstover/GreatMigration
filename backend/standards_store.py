@@ -1,6 +1,8 @@
 """Installation-local policy catalog with atomic migration, revisions and recovery."""
 from __future__ import annotations
 
+from standards_errors import StandardsValidationError
+
 import copy
 import json
 import os
@@ -17,7 +19,7 @@ from standards_specialists import seed_policies, validate_specialist
 STORE_PATH = Path(__file__).resolve().parent / "data" / "standards.json"
 
 
-class StoreError(ValueError):
+class StoreError(StandardsValidationError):
     pass
 
 
@@ -89,7 +91,7 @@ def _load_locked(target):
     try:
         validate_document(document)
     except (ValueError, TypeError, KeyError) as exc:
-        raise StoreError(f"Standards migration failed validation: {exc}. Existing configuration was retained.") from exc
+        raise StoreError("Standards migration failed validation. Existing configuration was retained.") from exc
     # The initial import remains available even after later policy changes.
     atomic_write(target.with_suffix(".import.json"), document)
     atomic_write(target, document)

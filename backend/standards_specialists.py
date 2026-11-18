@@ -1,6 +1,8 @@
 """Typed policy forms around the existing, tested specialist checks."""
 from __future__ import annotations
 
+from standards_errors import StandardsValidationError
+
 import copy
 from contextvars import ContextVar
 
@@ -76,18 +78,18 @@ def seed_policies():
 def validate_specialist(node, policy):
     check_id = node.get("check")
     if check_id not in definitions():
-        raise ValueError("Unknown specialist block")
+        raise StandardsValidationError("Unknown specialist block")
     if node is not policy.get("requirement"):
-        raise ValueError("A specialist must be the policy's root requirement; use its applicability conditions for filtering")
+        raise StandardsValidationError("A specialist must be the policy's root requirement; use its applicability conditions for filtering")
     # Existing action/exception identifiers must stay bound to their original meaning.
     if policy["id"] != check_id:
-        raise ValueError("Edit the existing specialist policy; specialist identifiers cannot be duplicated or reassigned")
+        raise StandardsValidationError("Edit the existing specialist policy; specialist identifiers cannot be duplicated or reassigned")
     if policy.get("target", {}).get("kind", "device") != "site" or any(policy.get("target", {}).get(k) for k in ("models", "device_types")):
-        raise ValueError("Specialist blocks use site targets; use field rules for device/model selectors")
+        raise StandardsValidationError("Specialist blocks use site targets; use field rules for device/model selectors")
     params = node.get("parameters", {})
     fields = definitions()[check_id][1]
     if not isinstance(params, dict) or set(params) != set(fields):
-        raise ValueError("Specialist parameters must match its published form")
+        raise StandardsValidationError("Specialist parameters must match its published form")
     for key, kind in fields.items():
         value = params[key]
         valid = False
@@ -108,7 +110,7 @@ def validate_specialist(node, policy):
             if valid and kind == "optional_pattern":
                 compile_pattern(value)
         if not valid:
-            raise ValueError(f"Invalid specialist parameter: {key}")
+            raise StandardsValidationError(f"Invalid specialist parameter: {key}")
 
 
 class TimedPattern:

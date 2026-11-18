@@ -1,6 +1,8 @@
 """Passive source collection, explicit identity mapping, and completeness tracking."""
 from __future__ import annotations
 
+from standards_errors import StandardsValidationError
+
 import copy
 import re
 import time
@@ -18,56 +20,56 @@ CONTEXT_PARAMETERS = {"org_id", "site_id", "device_id", "device_mac"}
 
 def validate_source(source):
     if not isinstance(source, dict) or not isinstance(source.get("id"), str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}", source["id"]):
-        raise ValueError("Source ID must contain 1–80 letters, numbers, underscores, or hyphens")
+        raise StandardsValidationError("Source ID must contain 1–80 letters, numbers, underscores, or hyphens")
     if not isinstance(source.get("name"), str) or not 1 <= len(source["name"].strip()) <= 200:
-        raise ValueError("Enter a source name of 1–200 characters")
+        raise StandardsValidationError("Enter a source name of 1–200 characters")
     op = operation(source.get("operation"))
     if source.get("scope") not in ("device", "site", "organization"):
-        raise ValueError("Source scope must be device, site, or organization")
+        raise StandardsValidationError("Source scope must be device, site, or organization")
     for name in ("record_path", "identity_path", "mac_path"):
         validate_path(source.get(name, []))
         if "*" in source.get(name, []):
-            raise ValueError("Source mappings must use concrete paths; use wildcard paths in policies")
+            raise StandardsValidationError("Source mappings must use concrete paths; use wildcard paths in policies")
     if source["scope"] == "device" and not source.get("identity_path") and not source.get("mac_path"):
-        raise ValueError("Device sources require an identity or MAC path")
+        raise StandardsValidationError("Device sources require an identity or MAC path")
     if source.get("pagination", "none") not in ("none", "page", "start", "cursor"):
-        raise ValueError("Choose no pagination, page, start, or cursor pagination")
+        raise StandardsValidationError("Choose no pagination, page, start, or cursor pagination")
     for name in ("parameters", "bindings"):
         if not isinstance(source.get(name, {}), dict):
-            raise ValueError(f"{name} must be an object")
+            raise StandardsValidationError(f"{name} must be an object")
     known_query = {p["name"] for p in op["parameters"] if p["in"] == "query"}
     if set(source.get("parameters", {})) - known_query:
-        raise ValueError("Source contains query parameters not documented by the operation")
+        raise StandardsValidationError("Source contains query parameters not documented by the operation")
     for name, value in source.get("parameters", {}).items():
         if type(value) not in (str, int, float, bool) or len(str(value)) > 500:
-            raise ValueError("Source query parameters must be short scalar values")
+            raise StandardsValidationError("Source query parameters must be short scalar values")
     placeholders = set(re.findall(r"\{([^}]+)\}", op["path"]))
     if set(source.get("bindings", {})) - placeholders:
-        raise ValueError("Bindings must name documented path parameters")
+        raise StandardsValidationError("Bindings must name documented path parameters")
     for name in placeholders - CONTEXT_PARAMETERS:
         value = source.get("bindings", {}).get(name)
         if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", value) or value in (".", ".."):
-            raise ValueError(f"Supply a resource identifier for {name}")
+            raise StandardsValidationError(f"Supply a resource identifier for {name}")
     if source["scope"] == "organization" and placeholders & {"site_id", "device_id", "device_mac"}:
-        raise ValueError("An organization source cannot bind site/device-specific endpoints")
+        raise StandardsValidationError("An organization source cannot bind site/device-specific endpoints")
     if source["scope"] == "site" and placeholders & {"device_id", "device_mac"}:
-        raise ValueError("A site source cannot bind device-specific endpoints")
+        raise StandardsValidationError("A site source cannot bind device-specific endpoints")
     if any(t not in ("ap", "switch", "gateway") for t in source.get("device_types", [])):
-        raise ValueError("Unknown device type")
+        raise StandardsValidationError("Unknown device type")
     mode = source.get("pagination", "none")
     if mode in ("page", "start") and mode not in known_query:
-        raise ValueError("This operation does not document the selected pagination parameter")
+        raise StandardsValidationError("This operation does not document the selected pagination parameter")
     if mode == "start":
         parameter = next(p for p in op["parameters"] if p["name"] == "start" and p["in"] == "query")
         if not re.search(r"offset|index", parameter.get("description", ""), re.I):
-            raise ValueError("This endpoint's start parameter is a time boundary, not an offset. Choose its documented cursor pagination.")
+            raise StandardsValidationError("This endpoint's start parameter is a time boundary, not an offset. Choose its documented cursor pagination.")
     if mode == "cursor":
         parameter = source.get("cursor_parameter", "cursor")
         if parameter not in known_query:
-            raise ValueError("Choose the documented cursor query parameter")
+            raise StandardsValidationError("Choose the documented cursor query parameter")
         validate_path(source.get("next_cursor_path", []))
         if not source.get("next_cursor_path"):
-            raise ValueError("Cursor pagination requires a response path for the next cursor")
+            raise StandardsValidationError("Cursor pagination requires a response path for the next cursor")
     return source
 
 
@@ -92,13 +94,13 @@ class Collector:
                     delay = 1
                 time.sleep(delay)
         if not 200 <= response.status_code < 300:
-            raise ValueError(f"Mist returned HTTP {response.status_code}")
+            raise StandardsValidationError(f"Mist returned HTTP {response.status_code}")
         return response.json()
 
     def cached_get(self, path):
         if path not in self.cache:
             if self.request_count >= 5000 or time.monotonic() > self.deadline:
-                raise ValueError("Collection budget exceeded; narrow the audit scope and retry")
+                raise StandardsValidationError("Collection budget exceeded; narrow the audit scope and retry")
             self.request_count += 1
             self.cache[path] = self.get(path)
         return self.cache[path]
@@ -110,13 +112,13 @@ class Collector:
         for name in re.findall(r"\{([^}]+)\}", path):
             value = bindings.get(name)
             if not value or str(value) in (".", ".."):
-                raise ValueError(f"No value is available for {name}")
+                raise StandardsValidationError(f"No value is available for {name}")
             path = path.replace("{" + name + "}", quote(str(value), safe=""))
         params = dict(source.get("parameters", {}))
         known_query = {p["name"] for p in op["parameters"] if p["in"] == "query"}
         for p in op["parameters"]:
             if p["in"] == "query" and p.get("required") and p["name"] not in params and p["name"] not in context:
-                raise ValueError(f"Required query parameter {p['name']} has no value")
+                raise StandardsValidationError(f"Required query parameter {p['name']} has no value")
         for name in known_query & context.keys():
             params[name] = context[name]
         mode = source.get("pagination", "none")
@@ -134,36 +136,36 @@ class Collector:
             document = self.cached_get(path + ("?" + urlencode(sorted(query.items())) if query else ""))
             value = path_value(document, source.get("record_path", []))
             if value is MISSING:
-                raise ValueError("The configured record path is absent from the response")
+                raise StandardsValidationError("The configured record path is absent from the response")
             if mode == "none":
                 if isinstance(document, dict) and isinstance(document.get("total"), int) and isinstance(value, list) and document["total"] > len(value):
-                    raise ValueError("Response is truncated; configure pagination before using this source")
+                    raise StandardsValidationError("Response is truncated; configure pagination before using this source")
                 return value
             if not isinstance(value, list):
-                raise ValueError("Paginated record mapping must resolve to an array")
+                raise StandardsValidationError("Paginated record mapping must resolve to an array")
             if not value:
                 return output
             # A server ignoring page/start must never look like a complete inventory.
             marker = __import__("hashlib").sha256(__import__("json").dumps(value, sort_keys=True).encode()).hexdigest()
             if marker in seen:
-                raise ValueError("Mist repeated a page; source collection is incomplete")
+                raise StandardsValidationError("Mist repeated a page; source collection is incomplete")
             seen.add(marker)
             output.extend(value)
             if len(output) > 100000:
-                raise ValueError("Source exceeds the 100,000-record collection limit")
+                raise StandardsValidationError("Source exceeds the 100,000-record collection limit")
             if mode == "cursor":
                 cursor = path_value(document, source["next_cursor_path"])
                 if cursor is MISSING or cursor in (None, ""):
                     return output
                 if not isinstance(cursor, (str, int)):
-                    raise ValueError("Next cursor must be a scalar token")
+                    raise StandardsValidationError("Next cursor must be a scalar token")
             else:
                 total = document.get("total") if isinstance(document, dict) else None
                 if isinstance(total, int) and len(output) >= total:
                     return output
                 if len(value) < query.get("limit", 1000):
                     return output
-        raise ValueError("Source exceeded the pagination limit")
+        raise StandardsValidationError("Source exceeded the pagination limit")
 
     def collect(self, sources, selected_contexts, org_sites=None, full_organization=False):
         source_map = {s["id"]: s for s in sources}
@@ -182,7 +184,7 @@ class Collector:
                     else:
                         org_data = self.fetch({"operation": "listOrgSites", "record_path": [], "pagination": "page"}, {"org_id": org_id})
                     if not isinstance(org_data, list):
-                        raise ValueError("Organization site list is unavailable")
+                        raise StandardsValidationError("Organization site list is unavailable")
                     expanded.extend({**s, "org_id": org_id} for s in org_data if isinstance(s, dict) and s.get("id"))
                     snapshot.complete_orgs.add(org_id)
                 except (ValueError, requests.RequestException):
@@ -204,7 +206,7 @@ class Collector:
             if per_site:
                 contexts = [{"org_id": s.get("org_id"), "site_id": s["id"]} for s in sites]
             if per_device:
-                contexts = [{"org_id": t["org_id"], "site_id": t["site_id"], "device_id": t["id"], "device_mac": t.get("mac")}
+                contexts = [{"org_id": t["org_id"], "site_id": t["site_id"], "device_id": t["id"], "device_mac": t.get("mac"), "type": t.get("type")}
                             for t in snapshot.targets if t["kind"] == "device"]
             for context in contexts:
                 types = source.get("device_types", []) or [None]
@@ -216,16 +218,16 @@ class Collector:
                             wrapper = {"org_id": context.get("org_id"), "site_id": context.get("site_id") if per_site else None, "value": copy.deepcopy(record)}
                             if source["scope"] == "device":
                                 if not isinstance(record, dict):
-                                    raise ValueError("Device source records must be objects")
+                                    raise StandardsValidationError("Device source records must be objects")
                                 identity = path_value(record, source.get("identity_path", [])) if source.get("identity_path") else MISSING
                                 mac = path_value(record, source.get("mac_path", [])) if source.get("mac_path") else MISSING
                                 if identity in (MISSING, None, "") and mac in (MISSING, None, ""):
-                                    raise ValueError("Record has no mapped identity or MAC")
+                                    raise StandardsValidationError("Record has no mapped identity or MAC")
                                 wrapper.update(device_id=str(identity) if identity is not MISSING and identity else None, mac=mac if mac is not MISSING else None)
                                 if source["id"] == "device_config":
                                     dtype = record.get("type") or device_type
                                     if dtype not in ("ap", "switch", "gateway"):
-                                        raise ValueError("Device configuration record has no supported device type")
+                                        raise StandardsValidationError("Device configuration record has no supported device type")
                                     target = {"kind": "device", "id": str(identity if identity is not MISSING and identity else mac),
                                               "org_id": context.get("org_id"), "site_id": context.get("site_id"), "type": dtype,
                                               "model": record.get("model"), "name": record.get("name", ""), "mac": record.get("mac")}
@@ -233,7 +235,7 @@ class Collector:
                                         snapshot.targets.append(target)
                             snapshot.records[source["id"]].append(wrapper)
                     except (ValueError, TypeError, KeyError, requests.RequestException) as exc:
-                        snapshot.errors.append({"source": source["id"], **context, **({"type": device_type} if device_type else {}), "error": str(exc)[:300]})
+                        snapshot.errors.append({"source": source["id"], **context, **({"type": device_type} if device_type else {}), "error": exc.public_message if isinstance(exc, StandardsValidationError) else "Mist source could not be collected; check connectivity and retry"})
                         if source["id"] == "device_config":
                             snapshot.complete_orgs.discard(context.get("org_id"))
         return snapshot

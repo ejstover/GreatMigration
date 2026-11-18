@@ -409,3 +409,77 @@ def test_active_specialist_preview_never_runs_diagnostics(web,monkeypatch):
     result=client.post('/api/standards/preview',json={'policy':p,'site_ids':['s1']})
     assert result.status_code==200,result.text
     assert result.json()['evaluation_coverage']['unevaluated']==1
+
+
+def test_disabled_switch_pattern_keeps_ap_alignment_auditable():
+    document = store.load()
+    naming = next(p for p in document["policies"] if p["id"] == "device_naming_convention")
+    naming["requirement"]["parameters"]["switch_pattern"] = None
+    store.save_entry("policies", naming, 1)
+    ctx = c.SiteContext("s1", "Site", site={"org_id": "org1"}, mist_base_url="https://api.ac2.mist.com/api/v1", devices=[
+        {"id": "ap", "type": "ap", "name": "NACHIIDF1AP1", "stats": {"lldp_stats": [{"neighbor": {"system_name": "NACHIMDFAS1"}}]}}])
+    result = build_runner(["device_naming_convention"], refresh_standards=False).run([ctx], exception_records=[], origin=ctx.mist_base_url)
+    findings = result["checks"][0]["findings"]
+    assert findings and findings[0]["exception_candidate"]["expected"]["switch_pattern"] is None
+
+
+def test_exception_fingerprints_include_fields_beyond_display_limit(monkeypatch):
+    from audit_exceptions import approve
+    requirement = {"kind": "all", "children": [compare("eq", field(path=[f"field_{i}"]), literal("good")) for i in range(41)]}
+    p = policy(requirement)
+    p["revision"] = 0
+    store.save_entry("policies", p, 0)
+    document = {"id": "d1", "type": "switch", **{f"field_{i}": "good" for i in range(40)}, "field_40": "first failure"}
+    current = snapshot([document])
+    monkeypatch.setattr(Collector, "collect", lambda *args, **kwargs: current)
+    ctx = c.SiteContext("s1", "Site", site={"org_id": "org1"}, mist_base_url="https://api.ac2.mist.com/api/v1")
+    first = build_runner([p["id"]], refresh_standards=False).run([ctx], exception_records=[], origin=ctx.mist_base_url)
+    finding = first["checks"][0]["findings"][0]
+    assert len(finding["details"]["evidence"]) == 40
+    record = approve(finding["exception_candidate"], "Accepted specific value", "operator", path=store.path().parent / "large-exceptions.json")
+    assert build_runner([p["id"]], refresh_standards=False).run([ctx], exception_records=[record], origin=ctx.mist_base_url)["total_exceptions"] == 1
+    current = snapshot([{**document, "field_40": "different failure"}])
+    changed = build_runner([p["id"]], refresh_standards=False).run([ctx], exception_records=[record], origin=ctx.mist_base_url)
+    assert changed["total_exceptions"] == 0 and changed["total_findings"] == 1
+    assert changed["checks"][0]["findings"][0]["details"]["evidence"] == finding["details"]["evidence"]
+
+
+def test_live_discovery_collects_per_device_dependencies(web, monkeypatch):
+    app, client = web
+    source = {"id": "individual_stats", "name": "Individual statistics", "operation": "getSiteDeviceStats", "scope": "device",
+              "record_path": [], "identity_path": ["id"], "mac_path": ["mac"], "pagination": "none", "parameters": {}, "bindings": {}}
+    store.save_entry("sources", source, 0)
+    calls = []
+    def get(self, path):
+        calls.append(path)
+        if path == "/sites/site1":
+            return {"id": "site1", "org_id": "org1"}
+        if path.startswith("/sites/site1/devices?"):
+            kind = parse_qs(urlsplit(path).query).get("type", ["ap"])[0]
+            return [{"id": "sw", "type": "switch", "name": "Switch"}] if kind == "switch" else []
+        if urlsplit(path).path == "/sites/site1/stats/devices/sw":
+            return {"id": "sw", "observed_only": {"health": 99}}
+        raise AssertionError(path)
+    monkeypatch.setattr(Collector, "http_get", get)
+    monkeypatch.setattr(app, "_load_mist_token", lambda: "test")
+    result = client.post("/api/standards/fields/discover", json={"source_id": source["id"], "site_ids": ["site1"]})
+    assert result.status_code == 200, result.text
+    assert any(f["path"] == ["observed_only", "health"] for f in result.json()["fields"])
+    assert any(urlsplit(path).path == "/sites/site1/stats/devices/sw" for path in calls)
+
+
+@pytest.mark.parametrize("error", [OSError("private/local/filename secret"), c.requests.ConnectionError("credential=hidden")])
+def test_api_does_not_expose_internal_errors(web, monkeypatch, error):
+    app, client = web
+    def fail(*args, **kwargs):
+        raise error
+    if isinstance(error, OSError) and not isinstance(error, c.requests.RequestException):
+        monkeypatch.setattr(store, "save_entry", fail)
+        response = client.put("/api/standards/policies/custom_naming", json={"policy": policy(), "expected_revision": 0})
+        assert response.status_code == 503
+    else:
+        monkeypatch.setattr(app, "_load_mist_token", lambda: "test")
+        monkeypatch.setattr(Collector, "cached_get", fail)
+        response = client.post("/api/standards/preview", json={"policy": policy(), "site_ids": ["s1"]})
+        assert response.status_code == 502
+    assert "filename" not in response.text and "credential" not in response.text and "hidden" not in response.text

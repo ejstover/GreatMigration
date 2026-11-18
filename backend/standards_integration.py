@@ -34,7 +34,8 @@ class FieldPolicyCheck(c.ComplianceCheck):
                                 device_id=device_id, device_name=target.get("name") if device_id else None,
                                 message=f"{self.name}: {result['message']}", severity=self.severity, details=details)
             finding.exception_candidate = exceptions.candidate_for(context, self.id, device_id,
-                "policy." + self.id, result["evidence"], {"policy_hash": semantic_hash(self.policy)}, context.mist_base_url)
+                "policy." + self.id, {"evidence": result["evidence"], "digest": result["evidence_digest"]},
+                {"policy_hash": semantic_hash(self.policy)}, context.mist_base_url)
             findings.append(finding)
         return findings
 

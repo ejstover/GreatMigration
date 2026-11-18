@@ -1,6 +1,8 @@
 """Bounded, data-only standards language. No Python expressions are executed."""
 from __future__ import annotations
 
+from standards_errors import StandardsValidationError
+
 import hashlib
 import hmac
 import json
@@ -18,7 +20,7 @@ MISSING = object()
 OPERATORS = ("eq", "ne", "gt", "gte", "lt", "lte", "matches", "in", "contains", "exists", "absent")
 
 
-class EvaluationError(ValueError):
+class EvaluationError(StandardsValidationError):
     pass
 
 
@@ -42,16 +44,16 @@ def validate_path(path):
     if not isinstance(path, list) or len(path) > 20 or any(
         type(p) not in (str, int) or isinstance(p, str) and len(p) > 250 or isinstance(p, int) and p < 0 for p in path
     ):
-        raise ValueError("A field path must be a list of keys, indexes, or * (up to 20 parts)")
+        raise StandardsValidationError("A field path must be a list of keys, indexes, or * (up to 20 parts)")
 
 
 def compile_pattern(pattern):
     if not isinstance(pattern, str) or len(pattern) > 2000:
-        raise ValueError("Regex patterns must contain at most 2,000 characters")
+        raise StandardsValidationError("Regex patterns must contain at most 2,000 characters")
     try:
         return regex.compile(pattern, regex.VERSION0)
     except regex.error as exc:
-        raise ValueError(f"Invalid regex: {exc}") from exc
+        raise StandardsValidationError("Invalid regex pattern; check its syntax") from exc
 
 
 def semantic_hash(policy):
@@ -63,19 +65,19 @@ def semantic_hash(policy):
 
 def validate_policy(policy, sources, specialist_validator=None):
     if not isinstance(policy, dict) or len(json.dumps(policy, allow_nan=False)) > 128000:
-        raise ValueError("Policy must be an object smaller than 128 KB")
+        raise StandardsValidationError("Policy must be an object smaller than 128 KB")
     if not isinstance(policy.get("id"), str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}", policy["id"]):
-        raise ValueError("Policy ID must contain 1–80 letters, numbers, underscores, or hyphens")
+        raise StandardsValidationError("Policy ID must contain 1–80 letters, numbers, underscores, or hyphens")
     if not isinstance(policy.get("name"), str) or not 1 <= len(policy["name"].strip()) <= 200:
-        raise ValueError("Enter a policy name of 1–200 characters")
+        raise StandardsValidationError("Enter a policy name of 1–200 characters")
     if policy.get("severity", "warning") not in ("info", "warning", "error"):
-        raise ValueError("Severity must be info, warning, or error")
+        raise StandardsValidationError("Severity must be info, warning, or error")
     if type(policy.get("enabled", True)) is not bool:
-        raise ValueError("Enabled must be true or false")
+        raise StandardsValidationError("Enabled must be true or false")
     if not isinstance(policy.get("requirement"), dict):
-        raise ValueError("A requirement is required")
+        raise StandardsValidationError("A requirement is required")
     if policy["requirement"].get("kind") != "specialist" and not re.fullmatch(r"custom_[A-Za-z0-9_-]{1,73}", policy["id"]):
-        raise ValueError("Custom policy IDs must start with custom_")
+        raise StandardsValidationError("Custom policy IDs must start with custom_")
     validate_selector(policy.get("target", {}))
     source_ids = {s["id"] for s in sources}
     source_map = {s["id"]: s for s in sources}
@@ -106,42 +108,42 @@ def validate_policy(policy, sources, specialist_validator=None):
         nonlocal nodes
         nodes += 1
         if depth > 16 or nodes > 250:
-            raise ValueError("Policy expressions are limited to 250 nodes and 16 levels")
+            raise StandardsValidationError("Policy expressions are limited to 250 nodes and 16 levels")
         if not isinstance(value, dict):
-            raise ValueError("Operands must be literal, field, count, or capture objects")
+            raise StandardsValidationError("Operands must be literal, field, count, or capture objects")
         kind = value.get("kind")
         if kind == "literal":
             if "value" not in value:
-                raise ValueError("Literal value is required")
+                raise StandardsValidationError("Literal value is required")
             return
         if kind == "field":
             if not isinstance(value.get("source"), str) or value["source"] not in source_ids | {"$item", "$target"}:
-                raise ValueError("Choose a registered field source")
+                raise StandardsValidationError("Choose a registered field source")
             validate_path(value.get("path"))
             if value.get("on", "current") not in ("current", "root"):
-                raise ValueError("Field context must be current or root")
+                raise StandardsValidationError("Field context must be current or root")
         elif kind in ("count", "capture"):
             operand(value.get("value"), depth + 1)
             if kind == "capture":
                 compiled = compile_pattern(value.get("pattern"))
                 if type(value.get("group")) not in (str, int):
-                    raise ValueError("A capture group must be a name or number")
+                    raise StandardsValidationError("A capture group must be a name or number")
                 if value.get("group") not in compiled.groupindex and value.get("group") not in range(compiled.groups + 1):
-                    raise ValueError("Choose a group present in the capture pattern")
+                    raise StandardsValidationError("Choose a group present in the capture pattern")
             if value.get("where") is not None:
                 condition(value["where"], depth + 1)
         else:
-            raise ValueError("Unknown operand kind")
+            raise StandardsValidationError("Unknown operand kind")
 
     def condition(node, depth=0):
         nonlocal nodes
         nodes += 1
         if not isinstance(node, dict) or depth > 16 or nodes > 250:
-            raise ValueError("Invalid condition or expression limit exceeded")
+            raise StandardsValidationError("Invalid condition or expression limit exceeded")
         kind = node.get("kind")
         if kind in ("all", "any"):
             if not isinstance(node.get("children"), list) or not node["children"]:
-                raise ValueError("All / Any groups require at least one condition")
+                raise StandardsValidationError("All / Any groups require at least one condition")
             for child in node["children"]:
                 condition(child, depth + 1)
         elif kind == "not":
@@ -149,41 +151,41 @@ def validate_policy(policy, sources, specialist_validator=None):
         elif kind == "compare":
             op = node.get("op")
             if op not in OPERATORS:
-                raise ValueError("Unknown comparison operator")
+                raise StandardsValidationError("Unknown comparison operator")
             operand(node.get("left"), depth + 1)
             if op not in ("exists", "absent"):
                 operand(node.get("right"), depth + 1)
             if op == "matches":
                 if node["right"].get("kind") != "literal":
-                    raise ValueError("A regex pattern must be a literal")
+                    raise StandardsValidationError("A regex pattern must be a literal")
                 compile_pattern(node["right"].get("value"))
             # Catch unambiguous type errors before activation; live types are checked too.
             if op in ("gt", "gte", "lt", "lte") and node.get("right", {}).get("kind") == "literal":
                 v = node["right"].get("value")
                 if type(v) not in (int, float):
-                    raise ValueError("Numeric comparisons require a numeric value")
+                    raise StandardsValidationError("Numeric comparisons require a numeric value")
             if op == "in" and node.get("right", {}).get("kind") == "literal" and not isinstance(node["right"].get("value"), list):
-                raise ValueError("Membership requires a list")
+                raise StandardsValidationError("Membership requires a list")
             if op not in ("exists", "absent", "contains") and node.get("left", {}).get("kind") == "field" and "*" in node["left"].get("path", []):
-                raise ValueError("Wildcard fields require an explicit collection quantifier or count")
+                raise StandardsValidationError("Wildcard fields require an explicit collection quantifier or count")
             types = known_types(node["left"])
             if op == "matches" and types and "string" not in types:
-                raise ValueError("Regex requires a string field")
+                raise StandardsValidationError("Regex requires a string field")
             if op in ("gt", "gte", "lt", "lte") and types and not types & {"number", "integer"}:
-                raise ValueError("Numeric comparisons require a numeric field or count")
+                raise StandardsValidationError("Numeric comparisons require a numeric field or count")
             if op in ("eq", "ne", "in", "matches") and types and types <= {"array", "object"}:
-                raise ValueError("Collection fields require an explicit quantifier or count")
+                raise StandardsValidationError("Collection fields require an explicit quantifier or count")
         elif kind == "collection":
             operand(node.get("value"), depth + 1)
             if node.get("quantifier") not in ("every", "any", "none"):
-                raise ValueError("Choose every, any, or none; use a count operand for counts")
+                raise StandardsValidationError("Choose every, any, or none; use a count operand for counts")
             condition(node.get("requirement"), depth + 1)
         elif kind == "related":
             validate_selector(node.get("selector", {}))
             if node.get("scope", "site") not in ("site", "organization"):
-                raise ValueError("Relationship scope must be site or organization")
+                raise StandardsValidationError("Relationship scope must be site or organization")
             if node.get("quantifier") not in ("every", "any", "none", "one"):
-                raise ValueError("Choose an explicit relationship quantifier")
+                raise StandardsValidationError("Choose an explicit relationship quantifier")
             operand(node.get("left"), depth + 1)
             operand(node.get("right"), depth + 1)
             condition(node.get("requirement"), depth + 1)
@@ -192,10 +194,10 @@ def validate_policy(policy, sources, specialist_validator=None):
             validate_selector(node.get("selector", {}))
         elif kind == "specialist":
             if not specialist_validator:
-                raise ValueError("Specialist blocks are unavailable")
+                raise StandardsValidationError("Specialist blocks are unavailable")
             specialist_validator(node, policy)
         else:
-            raise ValueError("Unknown requirement kind")
+            raise StandardsValidationError("Unknown requirement kind")
 
     if policy.get("when") is not None:
         condition(policy["when"])
@@ -205,12 +207,12 @@ def validate_policy(policy, sources, specialist_validator=None):
 
 def validate_selector(selector):
     if not isinstance(selector, dict) or selector.get("kind", "device") not in ("device", "site", "organization"):
-        raise ValueError("Choose a device, site, or organization target")
+        raise StandardsValidationError("Choose a device, site, or organization target")
     for key in ("org_ids", "site_ids", "device_types", "models"):
         if key in selector and (not isinstance(selector[key], list) or any(not isinstance(x, str) or len(x) > 200 for x in selector[key])):
-            raise ValueError(f"{key} must be a list of names or identifiers")
+            raise StandardsValidationError(f"{key} must be a list of names or identifiers")
     if any(t not in ("ap", "switch", "gateway") for t in selector.get("device_types", [])):
-        raise ValueError("Device types must be ap, switch, or gateway")
+        raise StandardsValidationError("Device types must be ap, switch, or gateway")
 
 
 def selected(target, selector):
@@ -273,9 +275,20 @@ class Evaluator:
         self.snapshot = snapshot
         self.steps = 0
         self.deadline = time.monotonic() + 20
-        self.evidence = []
+        self.reset_evidence()
         self.missing_count = 0
         self.unique_indexes = {}
+
+    def reset_evidence(self):
+        self.evidence = []
+        self.full_evidence = hmac.new(session_secret().encode(), b"standards-evidence-v1", hashlib.sha256)
+
+    def record_evidence(self, observed, displayed=None):
+        payload = json.dumps(_canonical_evidence(observed), sort_keys=True, allow_nan=False).encode()
+        self.full_evidence.update(len(payload).to_bytes(8, "big"))
+        self.full_evidence.update(payload)
+        if displayed is not None and len(self.evidence) < 40:
+            self.evidence.append(displayed)
 
     def tick(self):
         self.steps += 1
@@ -292,6 +305,9 @@ class Evaluator:
             obj = root if node.get("on") == "root" else target
             raw = item if source == "$item" else obj if source == "$target" else self.snapshot.resolve(source, obj)
             result = path_value(raw, node["path"])
+            self.record_evidence({"source": source, "path": node["path"],
+                                  "target": {key: obj.get(key) for key in ("kind", "id", "site_id", "org_id")},
+                                  "present": result is not MISSING, "value": result})
             if len(self.evidence) < 40:
                 sensitive = any(SENSITIVE.search(str(p)) for p in node["path"])
                 evidence = {"source": source, "path": node["path"], "present": result is not MISSING,
@@ -396,8 +412,8 @@ class Evaluator:
                     matches.append(peer)
             if node["quantifier"] == "one" and len(matches) > 1:
                 raise EvaluationError("Relationship matched more than one device")
-            if len(self.evidence) < 40:
-                self.evidence.append({"related_targets": [{"id": p["id"], "site_id": p.get("site_id"), "name": p.get("name")} for p in matches[:30]]})
+            related = [{"id": p["id"], "site_id": p.get("site_id"), "name": p.get("name")} for p in matches]
+            self.record_evidence({"related_targets": related}, {"related_targets": related[:30]})
             return self.quantify(node["quantifier"], matches, lambda peer: self.condition(node["requirement"], peer, root))
         if kind == "unique":
             value = self.value(node["value"], target, root, item)
@@ -416,8 +432,8 @@ class Evaluator:
                 self.unique_indexes[cache_key] = index
             peers = self.unique_indexes[cache_key].get(json.dumps(value, sort_keys=True), [])
             others = [p for p in peers if (p["kind"], p.get("site_id"), p["id"]) != (target["kind"], target.get("site_id"), target["id"])]
-            if others and len(self.evidence) < 40:
-                self.evidence.append({"duplicates": [{"id": p["id"], "site_id": p.get("site_id"), "name": p.get("name")} for p in others[:30]]})
+            duplicates = [{"id": p["id"], "site_id": p.get("site_id"), "name": p.get("name")} for p in others]
+            self.record_evidence({"duplicates": duplicates}, {"duplicates": duplicates[:30]} if duplicates else None)
             return not others
         raise EvaluationError("Specialist blocks must be evaluated through the specialist adapter")
 
@@ -498,7 +514,7 @@ def evaluate_policy(policy, snapshot, selected_sites=None):
             continue
         if not selected(target, policy.get("target", {})):
             continue
-        evaluator.evidence = []
+        evaluator.reset_evidence()
         try:
             if policy.get("when") is not None and not evaluator.condition(policy["when"], target):
                 status, message = "excluded", "Applicability conditions did not match"
@@ -508,5 +524,5 @@ def evaluate_policy(policy, snapshot, selected_sites=None):
         except (EvaluationError, TypeError, ValueError, KeyError) as exc:
             status, message = "unevaluated", str(exc)
         results.append({"target": {k: v for k, v in target.items() if k != "raw"}, "status": status,
-                        "message": message, "evidence": list(evaluator.evidence)})
+                        "message": message, "evidence": list(evaluator.evidence), "evidence_digest": evaluator.full_evidence.hexdigest()})
     return results

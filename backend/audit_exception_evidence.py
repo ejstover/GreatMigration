@@ -123,8 +123,9 @@ def expand_finding(check: Any, context: Any, finding: Any, origin: str = "") -> 
         if "mismatches" in details:
             path = "name.alignment"
             expected.update(switch_region=details["switch_region"], switch_site=details["switch_site"],
-                            switch_location=details["switch_location"], switch_pattern=check.switch_pattern.pattern,
-                            switch_flags=check.switch_pattern.flags)
+                            switch_location=details["switch_location"],
+                            switch_pattern=check.switch_pattern.pattern if check.switch_pattern else None,
+                            switch_flags=check.switch_pattern.flags if check.switch_pattern else None)
         name_path = next((key for key in ("name", "hostname", "device_name") if device.get(key)), "name")
         parts.append((path, {"name": path_state(device, name_path)},
                       expected, details, finding.actions))

@@ -1,6 +1,8 @@
 """Pinned Mist read-operation catalog and schema/live field discovery."""
 from __future__ import annotations
 
+from standards_errors import StandardsValidationError
+
 import copy
 import json
 import re
@@ -19,7 +21,7 @@ def catalog():
 def operation(operation_id):
     result = next((op for op in catalog()["operations"] if op["id"] == operation_id), None)
     if result is None or not result["supported"]:
-        raise ValueError("Choose a supported passive JSON operation from the Mist catalog")
+        raise StandardsValidationError("Choose a supported passive JSON operation from the Mist catalog")
     return result
 
 

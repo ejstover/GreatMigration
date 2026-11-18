@@ -1,6 +1,8 @@
 """Authenticated standards authoring, source discovery, and passive previews."""
 from __future__ import annotations
 
+from standards_errors import StandardsValidationError
+
 import copy
 
 from fastapi import APIRouter, Body, Request
@@ -18,8 +20,14 @@ def router(runtime):
     routes = APIRouter(prefix="/api/standards")
 
     def failure(exc):
-        status = 409 if isinstance(exc, store.RevisionConflict) else 503 if isinstance(exc, store.StoreError) else 400
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=status)
+        if isinstance(exc, StandardsValidationError):
+            status = 409 if isinstance(exc, store.RevisionConflict) else 503 if isinstance(exc, store.StoreError) else 400
+            message = exc.public_message
+        elif isinstance(exc, runtime.requests.RequestException):
+            status, message = 502, "Mist data could not be read; check the source connection and retry."
+        else:
+            status, message = 503, runtime._internal_error(exc)
+        return JSONResponse({"ok": False, "error": message}, status_code=status)
 
     def contexts(payload, base_url, specialist=False):
         base_url = runtime.mist_base_url(base_url)
@@ -27,26 +35,26 @@ def router(runtime):
         collector = Collector(base_url, headers)
         ids = payload.get("site_ids", [])
         if not isinstance(ids, list) or len(ids) > 2000 or any(not isinstance(s, str) or not s.strip() for s in ids):
-            raise ValueError("Choose up to 2,000 site identifiers")
+            raise StandardsValidationError("Choose up to 2,000 site identifiers")
         if payload.get("entire_org"):
             org_id = payload.get("org_id")
             if not isinstance(org_id, str) or not org_id:
-                raise ValueError("Choose an organization")
+                raise StandardsValidationError("Choose an organization")
             sites = collector.fetch({"operation": "listOrgSites", "record_path": [], "pagination": "page"}, {"org_id": org_id})
             ids = [s["id"] for s in sites if isinstance(s, dict) and s.get("id")]
         if not ids:
-            raise ValueError("Choose at least one site for a live preview")
+            raise StandardsValidationError("Choose at least one site for a live preview")
         if specialist:
             result, errors = runtime._gather_site_contexts(base_url, headers, list(dict.fromkeys(ids)))
             if errors:
-                raise ValueError("Some selected sites could not be collected; retry before previewing")
+                raise StandardsValidationError("Some selected sites could not be collected; retry before previewing")
         else:
             result = []
             from urllib.parse import quote
             for sid in dict.fromkeys(ids):
                 site = collector.cached_get("/sites/" + quote(sid, safe=""))
                 if not isinstance(site, dict) or not site.get("org_id"):
-                    raise ValueError("Site details or organization are unavailable")
+                    raise StandardsValidationError("Site details or organization are unavailable")
                 result.append(runtime.SiteContext(site_id=sid, site_name=site.get("name", sid), site=site,
                                                  mist_base_url=base_url, mist_headers=headers))
         return result, collector
@@ -69,9 +77,9 @@ def router(runtime):
         try:
             policy = payload.get("policy", {})
             if not isinstance(policy, dict):
-                raise ValueError("Policy must be an object")
+                raise StandardsValidationError("Policy must be an object")
             if policy.get("id") != policy_id:
-                raise ValueError("Policy identifier does not match the URL")
+                raise StandardsValidationError("Policy identifier does not match the URL")
             entry = store.save_entry("policies", policy, payload.get("expected_revision"))
             return {"ok": True, "policy": entry}
         except (ValueError, OSError) as exc:
@@ -83,9 +91,9 @@ def router(runtime):
         try:
             source = payload.get("source", {})
             if not isinstance(source, dict):
-                raise ValueError("Source must be an object")
+                raise StandardsValidationError("Source must be an object")
             if source.get("id") != source_id:
-                raise ValueError("Source identifier does not match the URL")
+                raise StandardsValidationError("Source identifier does not match the URL")
             entry = store.save_entry("sources", source, payload.get("expected_revision"))
             return {"ok": True, "source": entry}
         except (ValueError, OSError) as exc:
@@ -107,7 +115,7 @@ def router(runtime):
         try:
             source = next((s for s in store.load()["sources"] if s["id"] == source_id), None)
             if not source:
-                raise ValueError("Unknown data source")
+                raise StandardsValidationError("Unknown data source")
             return {"ok": True, "fields": discover(source["operation"], record_path=source.get("record_path"), collection=source["scope"] != "device")}
         except (ValueError, OSError) as exc:
             return failure(exc)
@@ -118,9 +126,11 @@ def router(runtime):
         try:
             source = next((s for s in store.load()["sources"] if s["id"] == payload.get("source_id")), None)
             if not source:
-                raise ValueError("Choose a registered source")
+                raise StandardsValidationError("Choose a registered source")
             ctxs, collector = contexts(payload, base_url)
-            snapshot = collector.collect([source], ctxs)
+            device_source = next(s for s in store.load()["sources"] if s["id"] == "device_config")
+            sources = [source] if source["id"] == "device_config" else [device_source, source]
+            snapshot = collector.collect(sources, ctxs)
             records = [r["value"] for r in snapshot.records[source["id"]]]
             return {"ok": True, "fields": discover(source["operation"], records, source.get("record_path"), collection=source["scope"] != "device"),
                     "errors": snapshot.errors, "collected_at": snapshot.collected_at}
@@ -151,7 +161,7 @@ def router(runtime):
             document = store.load()
             policy = copy.deepcopy(payload.get("policy", {}))
             if not isinstance(policy, dict):
-                raise ValueError("Policy must be an object")
+                raise StandardsValidationError("Policy must be an object")
             policy.setdefault("revision", 0)
             validate_policy(policy, document["sources"], validate_specialist)
             policy["enabled"] = True
